@@ -97,12 +97,16 @@ class ProofFixture:
         self.author = base / "author"
         self.git("clone", "-q", str(self.origin), str(self.author), cwd=base)
 
-        committed = MODULE.load_receipt(REPO_ROOT)["records"]["naranjo-online"]["chartTag"]
+        records = MODULE.load_receipt(self.repo)["records"]
+        committed = records["naranjo-online"]["chartTag"]
         major, minor, patch = committed.split(".")
         self.version = f"{major}.{minor}.{int(patch) + 1}"
         self.fleet = FakeFleet(version=self.version)
         self.fleet.gh[f"repos/{self.fleet.site}/releases/latest"] = {"tag_name": f"v{self.version}"}
-        self.fleet.gh["repos/snaraj/lidersea.com/releases/latest"] = {"tag_name": "v0.1.41"}
+        # The second application's latest release matches this copied input;
+        # a historical production constant would make valid future heads fail
+        # as "ahead" before the receipt assertions execute.
+        self.fleet.gh["repos/snaraj/lidersea.com/releases/latest"] = {"tag_name": f"v{records['lidersea-com']['chartTag']}"}
         self.fleet.gh["user"] = {"login": MODULE.ASSIGNEE, "id": OWNER_ID, "name": "t"}
         # A real, throwaway SSH signing key: the cut is signed with it and
         # GitHub is scripted to register its public half for the owner, so the
