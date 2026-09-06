@@ -77,6 +77,47 @@ def validate(value, transport=NEW, object_id=OBJECT_ID):
 
 
 class PlatformReleaseEpochTests(unittest.TestCase):
+    def test_git_remotes_require_exact_urls_and_original_object(self):
+        for name in (OLD, NEW):
+            for url in (f"https://github.com/{name}.git", "git" + "@" + f"github.com:{name}.git"):
+                result = subprocess.CompletedProcess([], 0, json.dumps({"id": OBJECT_ID, "full_name": name}), "")
+                with self.subTest(url=url), mock.patch.object(EPOCH.subprocess, "run", return_value=result) as run:
+                    self.assertEqual(EPOCH.git_remote(url), name)
+                    run.assert_called_once_with(
+                        ["gh", "api", "--hostname", "github.com", "--method", "GET", f"repos/{name}", "--jq", "{id, full_name}"],
+                        capture_output=True, text=True, check=True, timeout=15,
+                    )
+        for url in ("https://github.com/other/platform.git", "https://example.invalid/snaraj/platform.git",
+                    "https://github.com/snaraj/platform", "https://github.com/snaraj/platform.git/",
+                    "https://github.com/snaraj/Platform.git", "https://github.com/snaraj/platform.git?x=1",
+                    "ssh://git" + "@" + "github.com/snaraj/platform.git"):
+            result = subprocess.CompletedProcess([], 0, json.dumps({"id": OBJECT_ID, "full_name": NEW}), "")
+            with self.subTest(url=url), mock.patch.object(EPOCH.subprocess, "run", return_value=result) as run, self.assertRaises(ValueError):
+                EPOCH.git_remote(url)
+            run.assert_not_called()
+        for record in ({}, [], {"id": OBJECT_ID + 1, "full_name": NEW},
+                       {"id": OBJECT_ID, "full_name": OLD}, {"id": str(OBJECT_ID), "full_name": NEW},
+                       {"id": float(OBJECT_ID), "full_name": NEW}):
+            result = subprocess.CompletedProcess([], 0, json.dumps(record), "")
+            with self.subTest(record=record), mock.patch.object(EPOCH.subprocess, "run", return_value=result), self.assertRaises(ValueError):
+                EPOCH.git_remote(f"https://github.com/{NEW}.git")
+
+    def test_git_remote_cli_is_separate_and_lookup_failure_is_closed(self):
+        url = f"https://github.com/{NEW}.git"
+        argv = ["epoch", "--git-remote", url]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(EPOCH, "git_remote", return_value=NEW) as remote, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(EPOCH.main(), 0)
+        self.assertEqual(output.getvalue().strip(), NEW)
+        remote.assert_called_once_with(url)
+        with mock.patch.object(sys, "argv", argv + ["v0.1.70"]), mock.patch.object(EPOCH, "git_remote") as remote, redirect_stdout(io.StringIO()):
+            self.assertEqual(EPOCH.main(), 1)
+        remote.assert_not_called()
+        for error in (subprocess.CalledProcessError(1, ["gh"], stderr="private diagnostic"),
+                      subprocess.TimeoutExpired(["gh"], 15), OSError("unavailable")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(sys, "argv", argv), mock.patch.object(EPOCH.subprocess, "run", side_effect=error), redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(EPOCH.main(), 1)
+            self.assertNotIn("private diagnostic", output.getvalue())
+
     def test_closed_publication_edges_and_roots(self):
         self.assertEqual(EPOCH.CHECKPOINT_TAG, "v0.1.68")
         self.assertEqual(EPOCH.CHECKPOINT_SOURCE, CHECKPOINT)

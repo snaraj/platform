@@ -106,7 +106,8 @@ class PrePushSecurityContractTests(unittest.TestCase):
     def test_hook_is_bound_to_one_exact_non_delete_branch_update(self):
         text = HOOK.read_text(encoding="utf-8")
         self.assertIn('[[ "${remote_name}" == origin ]]', text)
-        self.assertIn("https://github.com/snaraj/website-infrastructure.git", text)
+        self.assertIn('platform_release_epoch.py"', text)
+        self.assertIn('--git-remote "${remote_url}" >/dev/null', text)
         self.assertIn('[[ "${updates}" -eq 1', text)
         self.assertIn('[[ "${local_ref}" == refs/heads/* ]]', text)
         self.assertIn('[[ "${remote_ref}" == refs/heads/* ]]', text)
@@ -148,7 +149,8 @@ class PrePushSecurityContractTests(unittest.TestCase):
             base = Path(directory)
             repo = base / "repo"
             repo.mkdir()
-            (repo / "scripts").mkdir()
+            (repo / "scripts" / "ci").mkdir(parents=True)
+            shutil.copy2(ROOT / "scripts/ci/platform_release_epoch.py", repo / "scripts/ci/platform_release_epoch.py")
             (repo / ".githooks").mkdir()
             (repo / "policies").mkdir()
             shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
@@ -182,6 +184,20 @@ class PrePushSecurityContractTests(unittest.TestCase):
                     "printf '%s\\n' \"$@\" > \"${MOCK_GITLEAKS_LOG}\"\n"
                 )
             mock_binary.chmod(0o700)
+            gh = binary_dir / "gh"
+            gh.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'test "$#" = 8 && test "$1 $2 $3 $4 $5 $7 $8" = \'api --hostname github.com --method GET --jq {id, full_name}\'\n'
+                'name="${6#repos/}"; id=1327645656\n'
+                'case "${MOCK_GH_MODE:-valid}" in\n'
+                '  unavailable) exit 1;; replacement) id=1327645657;;\n'
+                '  alias) name=snaraj/website-infrastructure;;\n'
+                'esac\n'
+                'printf \'{"id":%s,"full_name":"%s"}\\n\' "$id" "$name"\n',
+                encoding="utf-8",
+            )
+            gh.chmod(0o700)
             run_git(repo, "init", "-q")
             run_git(repo, "config", "user.name", "Synthetic")
             run_git(repo, "config", "user.email", "synthetic@example.invalid")
@@ -199,6 +215,8 @@ class PrePushSecurityContractTests(unittest.TestCase):
             for exact_remote in (
                 "https://github.com/snaraj/website-infrastructure.git",
                 "git" + "@" + "github.com:snaraj/website-infrastructure.git",
+                "https://github.com/snaraj/platform.git",
+                "git" + "@" + "github.com:snaraj/platform.git",
             ):
                 run_git(
                     repo, "config", "--add",
@@ -236,6 +254,8 @@ class PrePushSecurityContractTests(unittest.TestCase):
             for remote_url in (
                 "https://github.com/snaraj/website-infrastructure.git",
                 ssh_remote,
+                "https://github.com/snaraj/platform.git",
+                "git" + "@" + "github.com:snaraj/platform.git",
             ):
                 for remote_sha in ("0" * 40, baseline):
                     with self.subTest(remote_url=remote_url, remote_sha=remote_sha):
@@ -268,6 +288,24 @@ class PrePushSecurityContractTests(unittest.TestCase):
                         self.assertIn("--max-archive-depth=1", arguments)
                         self.assertIn("--max-target-megabytes=2", arguments)
                         self.assertFalse(sentinel.exists())
+            for remote_url, mode in (
+                ("https://github.com/snaraj/platform.git", "replacement"),
+                ("https://github.com/snaraj/platform.git", "alias"),
+                ("https://github.com/snaraj/platform.git", "unavailable"),
+                ("https://github.com/snaraj/foreign.git", "valid"),
+                ("https://example.invalid/snaraj/platform.git", "valid"),
+            ):
+                with self.subTest(remote_url=remote_url, mode=mode):
+                    call_log.unlink(missing_ok=True)
+                    denied = subprocess.run(
+                        [required_tool(BASH, BASH_REQUIRED), str(repo / ".githooks/pre-push"), "origin", remote_url],
+                        cwd=repo, input=f"refs/heads/review {commit} refs/heads/review {baseline}\n",
+                        text=True, capture_output=True,
+                        env={**environment, "MOCK_GH_MODE": mode}, check=False,
+                    )
+                    self.assertNotEqual(denied.returncode, 0)
+                    self.assertFalse(call_log.exists(), "denied remote reached the publication scan")
+                    self.assertFalse(sentinel.exists())
 
 
 class PublicationHistoryValidatorTests(unittest.TestCase):

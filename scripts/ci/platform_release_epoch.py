@@ -46,6 +46,26 @@ def repository(name: str, object_id: object) -> str:
     return name
 
 
+def git_remote(url: str) -> str:
+    """Bind either exact Git transport to the original, currently named object."""
+    names = [name for name in (OLD_REPOSITORY, NEW_REPOSITORY)
+             if url in (f"https://github.com/{name}.git", "git" + "@" + f"github.com:{name}.git")]
+    if len(names) != 1:
+        raise ValueError("Git remote is outside the closed repository URL set")
+    name = names[0]
+    # A URL allowance alone would also admit a replacement at that name. Use
+    # the configured GitHub CLI for one bounded GET, never a credential export.
+    result = subprocess.run(
+        ["gh", "api", "--hostname", "github.com", "--method", "GET",
+         f"repos/{name}", "--jq", "{id, full_name}"],
+        capture_output=True, text=True, check=True, timeout=15,
+    )
+    record = json.loads(result.stdout)
+    if not isinstance(record, dict) or repository(record.get("full_name"), record.get("id")) != name:
+        raise ValueError("Git remote does not name the current original repository")
+    return name
+
+
 def identity(tag: str) -> dict[str, object]:
     epoch = 1 if version(tag) < version(FIRST_V2_TAG) else 2
     name = OLD_REPOSITORY if epoch == 1 else NEW_REPOSITORY
@@ -113,7 +133,8 @@ def metadata_repository(tag: str, name: str | None, object_id: object) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tag")
+    parser.add_argument("tag", nargs="?")
+    parser.add_argument("--git-remote")
     parser.add_argument("--repository")
     parser.add_argument("--repository-id", type=int)
     parser.add_argument("--base-tag")
@@ -122,6 +143,11 @@ def main() -> int:
     parser.add_argument("--source-sha")
     args = parser.parse_args()
     try:
+        if args.git_remote is not None:
+            if any(value is not None for key, value in vars(args).items() if key != "git_remote"):
+                raise ValueError("Git remote verification cannot carry release inputs")
+            print(git_remote(args.git_remote))
+            return 0
         if args.repository_json is not None:
             record = json.loads(args.repository_json.read_bytes())
             repository(record.get("full_name"), record.get("id"))
@@ -146,6 +172,9 @@ def main() -> int:
                 raise ValueError("frozen selector source changed or is unavailable")
         print(json.dumps(value, sort_keys=True))
         return 0
+    except subprocess.SubprocessError:
+        print("RELEASE_EPOCH_DENIED: repository lookup failed or timed out")
+        return 1
     except (KeyError, TypeError, ValueError, OSError) as error:
         print("RELEASE_EPOCH_DENIED: " + str(error))
         return 1

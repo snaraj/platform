@@ -191,6 +191,10 @@ and dependency-governed Draft capacity is recorded durably in
 - `.githooks/**` — DELIVERY: the pre-push hook implements delivery-lane
   requirements 2 and 3. Changing what it PERMITS is a security-control
   change and needs an owner decision, not a lane call (issue #83).
+  The owner's 2026-09-05 repository-rename authorization covers issue #330's
+  exact old/new HTTPS and SSH origin set, conditional on fresh proof of the
+  original repository object. Single-ref, ancestry, exact-object, privacy,
+  history and secret-scan requirements remain intact.
 - `kubernetes/flux-system/**` — DELIVERY: the GitOps desired state this
   lane authors, and what the reviewed-state model above pins.
 - `kubernetes/websites/*/release.yaml` — the former DELIVERY grant applied

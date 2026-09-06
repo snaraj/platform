@@ -76,6 +76,9 @@ against v2 releases as part of a repository rename.
 4. Update local origin URLs and explicitly select the new repository in
    delivery commands: `ready_check.py --repo snaraj/platform` and
    `promote_releases.py --github-repository snaraj/platform <command>`.
+   The mandatory pre-push hook accepts the exact new HTTPS or SSH origin only
+   after a fresh GET proves its name and original repository ID. Keep GitHub
+   CLI access available for that check; a failed lookup stops publication.
    Generated scheduler configuration carries that explicit selection. Local
    reviewer-App tooling must also verify the renamed original object before
    use. Updating configuration does not start a contained process.

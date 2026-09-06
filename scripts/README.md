@@ -13,7 +13,10 @@ This folder is where we make “prove it first” real: none of these files is p
 [`ci/platform_release_epoch.py`](./ci/platform_release_epoch.py) closes the
 existing repository's one name transition: it pins the immutable repository
 object and checkpoint, selects v1/v2 assets and publisher subjects by external
-tag, and freezes the legacy selector source/digest. It authorizes no rename or
+tag, and freezes the legacy selector source/digest. Its `--git-remote` mode
+requires the exact old/new HTTPS or SSH URL to match a fresh original-object
+record from a bounded GitHub CLI GET; the pre-push hook uses this mode before
+the unchanged publication scan. It authorizes no rename or
 live operation; the [transition runbook](../docs/runbooks/platform-repository-transition.md)
 sequences those separately.
 [`ci/platform_release_contract.py`](./ci/platform_release_contract.py) is the
