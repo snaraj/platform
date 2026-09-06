@@ -30,7 +30,7 @@ check: check-fast check-gitleaks check-shell check-workflows check-kubernetes ch
 check-fast: export PYTHONDONTWRITEBYTECODE = 1
 check-fast:
 	@TMPDIR="$$(realpath "$${TMPDIR:-/tmp}")" $(PYTHON) scripts/validate_repository.py all
-	@TMPDIR="$$(realpath "$${TMPDIR:-/tmp}")" $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
+	@TMPDIR="$$(realpath "$${TMPDIR:-/tmp}")" $(PYTHON) -B scripts/ci/run_python_tests.py --verbose
 
 release-check:
 	@$(PYTHON) scripts/validate_repository.py release
@@ -84,6 +84,6 @@ coverage coverage-refresh:
 	  export COVERAGE_FILE="$$data_dir/data"; \
 	  export COVERAGE_RCFILE="$$PWD/scripts/ci/coveragerc"; \
 	  export COVERAGE_SOURCE_ROOT="$$PWD/scripts"; \
-	  TMPDIR="$$tmp_root" $(PYTHON) -B -m coverage run -m unittest discover -s tests -p 'test_*.py'; \
+	  TMPDIR="$$tmp_root" $(PYTHON) -B -m coverage run scripts/ci/run_python_tests.py --coverage; \
 	  $(PYTHON) -B -m coverage combine >/dev/null; \
 	  $(PYTHON) -B scripts/ci/coverage_gate.py $(COVERAGE_GATE_MODE) --data-file "$$data_dir/data"

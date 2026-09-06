@@ -88,6 +88,10 @@ class ProofFixture:
         source = tracked_copy(base / "source")
         self.origin = base / "origin.git"
         self.git("clone", "-q", "--bare", str(source), str(self.origin), cwd=base)
+        # Local transport clears GIT_CONFIG_* before receive-pack. Keep this
+        # disposable receiver synchronous too: otherwise its detached auto
+        # maintenance can recreate files while TemporaryDirectory removes it.
+        self.git("config", "--local", "receive.autogc", "false", cwd=self.origin)
         self.repo = base / "repo"
         self.git("clone", "-q", str(self.origin), str(self.repo), cwd=base)
         self.author = base / "author"
@@ -513,6 +517,15 @@ class MutationTests(unittest.TestCase):
         self.fixture.fleet.gh[f"repos/{self.fixture.fleet.site}/releases/tags/v{self.fixture.version}"]["immutable"] = False
         self.assertIsNone(self.fixture.prove())
         self.assertTrue(any("not an immutable final release" in line for line in self.fixture.log_lines))
+
+    def test_bare_receiver_does_not_launch_detached_auto_maintenance(self):
+        trace = Path(self.fixture.tmp.name) / "git-trace.json"
+        self.fixture.env["GIT_TRACE2_EVENT"] = str(trace)
+        self.fixture.cut()
+        children = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()
+                    if json.loads(line).get("event") == "child_start"]
+        self.assertTrue(any(any("receive-pack" in arg for arg in argv) for argv in children))
+        self.assertFalse(any("maintenance" in argv or "gc" in argv for argv in children), children)
 
     def test_a_request_changes_posts_and_retires_review_attention_too(self):
         # AGENTS.md, Verdict format: posting the verdict also removes

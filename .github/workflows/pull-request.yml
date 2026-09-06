@@ -209,7 +209,7 @@ jobs:
           export COVERAGE_FILE="${coverage_data_root}/data"
           export COVERAGE_RCFILE="${PWD}/scripts/ci/coveragerc"
           export COVERAGE_SOURCE_ROOT="${PWD}/scripts"
-          "${venv_python}" -B -m coverage run -m unittest discover -s tests -p 'test_*.py'
+          "${venv_python}" -B -m coverage run scripts/ci/run_python_tests.py --coverage
           "${venv_python}" -B -m coverage combine
           "${venv_python}" -B scripts/ci/coverage_gate.py gate --data-file "${COVERAGE_FILE}"
       - name: Check shell
