@@ -1,8 +1,8 @@
 # Issue 195 chart acquisition receipt
 
-Captured 2026-09-05 for issues #320, which kept lidersea.com at `0.1.41` and
-advanced naranjo.online to `0.1.76`; it supersedes the issues #318 capture of
-2026-09-04. The canonical, machine-checked record is
+Captured 2026-09-06 for issues #331/#332, which advanced lidersea.com to
+`0.1.42` and advanced naranjo.online to `0.1.77`; it supersedes the issues
+#320 capture of 2026-09-05. The canonical, machine-checked record is
 `195-chart-acquisition-receipt.json`; this Markdown is its explanatory view
 and must not be used as an independent source of release pins. This receipt
 is public, credential-free evidence for the exact chart artifacts committed
@@ -24,13 +24,13 @@ workload indexes; chart trust remains each chart's exact Cosign signature.
 
 | workload and canonical chart repository | tag | OCI manifest / config / chart-layer digests | Chart.yaml identity | embedded workload image | Linux ARM64 child |
 | --- | --- | --- | --- | --- | --- |
-| lidersea.com — `ghcr.io/snaraj/charts/lidersea-com` | `0.1.41` | `sha256:a3d242a2689c2c41a8d6960e848ea3b195ae14bc80cbf9461de36f69d4845cb6` / `sha256:ae045bde722060e04ae5f8b6c3fc4135386068026d787692c055852ade98f289` / `sha256:2c2b92acd6488afe16b1deb034e445ce3064256c1971415f8600eb601fdd09cc` | name/version/appVersion `lidersea-com` / `0.1.41` / `0.1.41` | `ghcr.io/snaraj/lidersea-com:v0.1.41@sha256:f661cdf9e33e8b36389b7f2d130a6fff6cbc1bbcb1c460968de416a831fdd86d` | `sha256:39929c6aaf5cc3c4feca57a7eac12858e83cc84505b99fdf0e0b57d6752d88e9` |
-| naranjo.online — `ghcr.io/snaraj/charts/naranjo-online` | `0.1.76` | `sha256:f6af207beeca485c7c47e8b66efd1e5061a82c65d329ec0b8096571948308fc2` / `sha256:767fa7691ebb0a6ade7e1c5fbc2c3e53c60f06d9f2f0dca9e802d51af9043ee0` / `sha256:3801778d0cf8e06b92517f051ac63eea4790a0ff5ae4c6d6e59a7f8c687854e4` | name/version/appVersion `naranjo-online` / `0.1.76` / `0.1.76` | `ghcr.io/snaraj/naranjo-online:v0.1.76@sha256:a27d48f5c2b50c95fc9e060e67a500eaeba8445e038a2ec3f3d98d37267c7d4b` | `sha256:90ba385feb4fb7291a17622a7543e957d7f8c9c068c4df9c8044221564246825` |
+| lidersea.com — `ghcr.io/snaraj/charts/lidersea-com` | `0.1.42` | `sha256:5a944c4602cd1b1df8b6613bc2daa037dcc00b2616402de33e5eece1edd8cdf7` / `sha256:9f9bc51575f980940cb8562e6b50d0ac078a560b9cc67678b0169895d3747c16` / `sha256:7497364e68af0f909625735bb1b7fe64120fd6920a2ff0e16dcefd9ebe352d99` | name/version/appVersion `lidersea-com` / `0.1.42` / `0.1.42` | `ghcr.io/snaraj/lidersea-com:v0.1.42@sha256:d23a20d3c222f7acb7e3a5e2391767eb5762dae3865eb1546b809d0811b8abc9` | `sha256:f424768e07081d7f8fd85f0ea05e3e1e85421d62de27fe08109193a3813b0de9` |
+| naranjo.online — `ghcr.io/snaraj/charts/naranjo-online` | `0.1.77` | `sha256:04d584000b998903cdc116b7c79517505870dc47c72af8934db59b29008129d1` / `sha256:2c90ca3c8e6422c92189c14719c8f7332f99d7898a223ce67d92db980b10553e` / `sha256:81ad1493529cb84d2129f1d4c71df3c14d944019bba0b372115e2ce5b2644ef0` | name/version/appVersion `naranjo-online` / `0.1.77` / `0.1.77` | `ghcr.io/snaraj/naranjo-online:v0.1.77@sha256:cbe54d2943640e71b927e0c40e8512ec81de5266339c3a50413cbd3f47240971` | `sha256:382588655ee0ffcb62737672544c731f1d3f40f749e591b0a9a84d097ab1d5fb` |
 
 Publisher Release bindings:
 
-- lidersea.com: protected-main source `382272756fafe6b7e7f52602fd6263299b5c2589`; immutable Release asset `sha256:34404bf9c348f50c0f4d0ff0a3a6efbe8b41eedf40d9ab58b1b3fa3eb4ff26d9`.
-- naranjo.online: protected-main source `beaaf95a33a300cdadc9e5b69535a89edd165c78`; immutable Release asset `sha256:bdd4dc843ee0b935981a209a279247a3ecd3d58ac3c01b5831c1772f14027253`.
+- lidersea.com: protected-main source `ff25643033f89996b32826a3ac02d0bee9074536`; immutable Release asset `sha256:b6e90ea1ff09854fae7319af3741ff5640ae3da8a2a7e4937d041b68fda30422`.
+- naranjo.online: protected-main source `d64b63addaec320aaeb0565cc65ae38ad37c72a3`; immutable Release asset `sha256:d48254d845e4f0e6285a81f06026da4c067982f7d7286567bcb26df33f77d141`.
 
 Each `vX.Y.Z` annotated tag was dereferenced to the commit above, and that
 same commit is what the Release asset's own `source_sha` field reports — two
@@ -50,10 +50,10 @@ Cosign accepted only these certificate subjects, with issuer
 
 Exact-layer inspection hashes provide a reproducible custody check:
 
-- lidersea `Chart.yaml`: `sha256:5e1727720c3277fbb9d0e9be0b5994c15b1d7b1eba20cb7ae1f4e2c19c49c341`
-- lidersea `values.yaml`: `sha256:c93a729c03094830ea161404ffefaeab8947f90cd0fe7568ea79506183f713b9`
-- naranjo `Chart.yaml`: `sha256:6ee1b8829a6bfd46ea579ddc8e7d04fbfa0a0ddf85896fabc1796def4716a08c`
-- naranjo `values.yaml`: `sha256:1d42f6850efe58c8e54d8af699a63c3ad472f48c3d0fe688ea4d9a595c5f7e05`
+- lidersea `Chart.yaml`: `sha256:381af60b25e001bf2f8d3d79d67379dca3accb307f885b6e54d5c590e224de6c`
+- lidersea `values.yaml`: `sha256:980b76e70e057291b69f12878586aaaf25364110985ffdedc575370980466844`
+- naranjo `Chart.yaml`: `sha256:62dffd028ecba410345a6428352ffe054163405b9604bfd9edda4418021500be`
+- naranjo `values.yaml`: `sha256:b3729e72366baa1d3fb7907c4a841f0e778c05c3a4e597cc883ddd8a7c8d7344`
 
 Future updates repeat this exact sequence: resolve the reviewed tag, verify the
 exact manifest, config, sole layer and signer, inspect chart identity and

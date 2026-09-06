@@ -257,32 +257,32 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
             sites["naranjo-online"]["chart"],
             {
                 "layer_digest": (
-                    "sha256:3801778d0cf8e06b92517f05"
-                    "1ac63eea4790a0ff5ae4c6d6e"
-                    "59a7f8c687854e4"
+                    "sha256:81ad1493529cb84d2129f1d4"
+                    "c71df3c14d944019bba0b3721"
+                    "15e2ce5b2644ef0"
                 ),
                 "manifest_digest": (
-                    "sha256:f6af207beeca485c7c47e8b6"
-                    "6efd1e5061a82c65d329ec0b8"
-                    "096571948308fc2"
+                    "sha256:04d584000b998903cdc116b7"
+                    "c79517505870dc47c72af8934"
+                    "db59b29008129d1"
                 ),
                 "repository": "ghcr.io/snaraj/charts/naranjo-online",
-                "version": "0.1.76",
+                "version": "0.1.77",
             },
         )
         self.assertEqual(
             sites["naranjo-online"]["workload"],
             {
                 "arm64_digest": (
-                    "sha256:90ba385feb4fb7291a17622a"
-                    "7543e957d7f8c9c068c4df9c"
-                    "8044221564246825"
+                    "sha256:382588655ee0ffcb62737672"
+                    "544c731f1d3f40f749e591b0"
+                    "a9a84d097ab1d5fb"
                 ),
                 "image": (
-                    "ghcr.io/snaraj/naranjo-online:v0.1.76@"
-                    "sha256:a27d48f5c2b50c95fc9e060"
-                    "e67a500eaeba8445e038a2ec"
-                    "3f3d98d37267c7d4b"
+                    "ghcr.io/snaraj/naranjo-online:v0.1.77@"
+                    "sha256:cbe54d2943640e71b927e0c"
+                    "40e8512ec81de5266339c3a5"
+                    "0413cbd3f47240971"
                 ),
             },
         )
@@ -290,15 +290,15 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
             sites["lidersea-com"]["workload"],
             {
                 "arm64_digest": (
-                    "sha256:39929c6aaf5cc3c4feca57a7"
-                    "eac12858e83cc84505b99fdf"
-                    "0e0b57d6752d88e9"
+                    "sha256:f424768e07081d7f8fd85f0e"
+                    "a05e3e1e85421d62de27fe08"
+                    "109193a3813b0de9"
                 ),
                 "image": (
-                    "ghcr.io/snaraj/lidersea-com:v0.1.41@"
-                    "sha256:f661cdf9e33e8b36389b7f2"
-                    "d130a6fff6cbc1bbcb1c4609"
-                    "68de416a831fdd86d"
+                    "ghcr.io/snaraj/lidersea-com:v0.1.42@"
+                    "sha256:d23a20d3c222f7acb7e3a5e"
+                    "2391767eb5762dae3865eb15"
+                    "46b809d0811b8abc9"
                 ),
             },
         )
@@ -1072,11 +1072,11 @@ class AcquisitionReceiptViewCoherenceTests(unittest.TestCase):
     RECEIPT_DIR = ROOT / "docs" / "assurance"
     LAYER_INSPECTION_HASHES = {
         # naranjo-online Chart.yaml / values.yaml
-        "6ee1b8829a6bfd46ea579ddc8e7d04fbfa0a0ddf85896fabc1796def4716a08c",
-        "1d42f6850efe58c8e54d8af699a63c3ad472f48c3d0fe688ea4d9a595c5f7e05",
+        "62dffd028ecba410345a6428352ffe054163405b9604bfd9edda4418021500be",
+        "b3729e72366baa1d3fb7907c4a841f0e778c05c3a4e597cc883ddd8a7c8d7344",
         # lidersea-com Chart.yaml / values.yaml
-        "5e1727720c3277fbb9d0e9be0b5994c15b1d7b1eba20cb7ae1f4e2c19c49c341",
-        "c93a729c03094830ea161404ffefaeab8947f90cd0fe7568ea79506183f713b9",
+        "381af60b25e001bf2f8d3d79d67379dca3accb307f885b6e54d5c590e224de6c",
+        "980b76e70e057291b69f12878586aaaf25364110985ffdedc575370980466844",
     }
 
     @classmethod
