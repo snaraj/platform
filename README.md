@@ -112,7 +112,7 @@ require current operational evidence.
 | [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) |
 | [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) |
 
-Current selections: lidersea.com `0.1.41` and naranjo.online `0.1.76`, captured 2026-09-05 for issues #320 in `docs/assurance/195-chart-acquisition-receipt.json`.
+Current selections: lidersea.com `0.1.42` and naranjo.online `0.1.77`, captured 2026-09-06 for issues #331/#332 in `docs/assurance/195-chart-acquisition-receipt.json`.
 
 These are the committed chart selections. The acquisition receipt proves their
 artifact bindings; current readiness and public traffic require a separate
