@@ -346,14 +346,12 @@ spec:
                 self.assertIn("issue 222", entry["statement"])
 
         workflow = (ROOT / ".github/workflows/platform-release.yml").read_text()
-        ignore = "--ignorefile policies/platform-selector-trivy-ignore.yaml"
-        self.assertEqual(workflow.count(ignore), 1)
-        selector_scan = workflow.split(
-            "- name: Sign and attest the changed selector digest", 1
-        )[1].split("- name: Bind the selector digest used by release identity", 1)[0]
-        self.assertIn("--image-src remote --platform linux/arm64", selector_scan)
-        self.assertIn("--ignore-unfixed=false", selector_scan)
-        self.assertIn(ignore, selector_scan)
+        # This retained policy documents the frozen historical image. Current
+        # source publication has no image build, scan exception, or package write.
+        self.assertNotIn("policies/platform-selector-trivy-ignore.yaml", workflow)
+        self.assertNotIn("packages:", workflow)
+        self.assertNotIn("docker/", workflow)
+        self.assertIn("platform_release_epoch.py", workflow)
 
     def test_issue_211_pvc_grant_remains_namespaced_and_exact(self):
         access = (ROOT / "kubernetes/flux-system/access.yaml").read_text()

@@ -15,6 +15,7 @@ set -euo pipefail
 : "${SELECTOR_BUILD_SHA:?SELECTOR_BUILD_SHA is required}"
 : "${GITHUB_API_URL:?GITHUB_API_URL is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+: "${GITHUB_REPOSITORY_ID:?GITHUB_REPOSITORY_ID is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
@@ -37,8 +38,8 @@ ref_json="${RUNNER_TEMP}/platform-ref.json"
 tag_json="${RUNNER_TEMP}/platform-tag.json"
 release_json="${RUNNER_TEMP}/platform-release.json"
 notes="${RUNNER_TEMP}/platform-notes.md"
-identity_asset="${RUNNER_TEMP}/platform-release-identity.v1.json"
-identity_bundle="${RUNNER_TEMP}/platform-release-identity.v1.json.sigstore.json"
+identity_asset="${RUNNER_TEMP}/platform-release-identity.upload.json"
+identity_bundle="${RUNNER_TEMP}/platform-release-identity.upload.sigstore.json"
 identity_download="${RUNNER_TEMP}/platform-release-identity.download.json"
 bundle_download="${RUNNER_TEMP}/platform-release-identity.sigstore.download.json"
 asset_upload_json="${RUNNER_TEMP}/platform-release-asset-upload.json"
@@ -66,9 +67,17 @@ burned_main_run_id='33152936164'
 burned_platform_run_id='33153400419'
 burned_run_attempt='1'
 burned_selector_digest='sha256:c9f8d59013bc5ca9431e3ccd22227e4e05920746829318cacf1ccb70b17d2e61'
-identity_asset_name='platform-release-identity.v1.json'
-identity_bundle_name='platform-release-identity.v1.json.sigstore.json'
-identity_subject='https://github.com/snaraj/website-infrastructure/.github/workflows/platform-release.yml@refs/heads/main'
+epoch_contract='scripts/ci/platform_release_epoch.py'
+# The external tag and authenticated repository context choose trust roots;
+# downloaded payload fields never choose their own signing identity.
+epoch="$(python3 -I -B "${epoch_contract}" "${TAG}" \
+  --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
+  --base-tag "${BASE_TAG}" --base-sha "${BASE_SHA}" --source-sha "${SOURCE_SHA}")"
+identity_asset_name="$(jq -er '.asset' <<<"${epoch}")"
+identity_bundle_name="$(jq -er '.bundle' <<<"${epoch}")"
+test "${SELECTOR_IMAGE_DIGEST}" = "$(jq -er '.selector_digest' <<<"${epoch}")"
+test "${SELECTOR_BUILD_SHA}" = "$(jq -er '.selector_source' <<<"${epoch}")"
+transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
 identity_issuer='https://token.actions.githubusercontent.com'
 
 get_json() {
@@ -94,7 +103,11 @@ get_public_json() {
 
 download_identity_asset() {
   local token="$1" release_record="$2" name="$3" output="$4" count="$5"
-  local asset_id status expected
+  local asset_id status expected policy
+  policy="$(python3 -I -B "${epoch_contract}" "$6")" || return
+  local identity_asset_name identity_bundle_name
+  identity_asset_name="$(jq -er '.asset' <<<"${policy}")"
+  identity_bundle_name="$(jq -er '.bundle' <<<"${policy}")"
   if [ "${count}" = 1 ]; then
     expected="[\"${identity_asset_name}\"]"
   else
@@ -104,10 +117,10 @@ download_identity_asset() {
   jq -e --argjson count "${count}" --argjson expected "${expected}" '
     (.assets | type == "array") and (.assets | length == $count) and
     (([.assets[].name] | sort) == ($expected | sort))' \
-    "${release_record}" >/dev/null
+    "${release_record}" >/dev/null || return
   asset_id="$(jq -er --arg name "${name}" '
     [.assets[] | select(.name == $name)] | select(length == 1) |
-    .[0].id | select(type == "number" and . > 0)' "${release_record}")"
+    .[0].id | select(type == "number" and . > 0)' "${release_record}")" || return
   status="$(curl --silent --show-error --location \
     --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --output "${output}" --write-out '%{http_code}' \
@@ -119,7 +132,9 @@ download_identity_asset() {
 }
 
 verify_identity_signature() {
-  local identity="$1" bundle="$2"
+  local identity="$1" bundle="$2" tag="$3" policy identity_subject
+  policy="$(python3 -I -B "${epoch_contract}" "${tag}")" || return
+  identity_subject="$(jq -er '.subject' <<<"${policy}")" || return
   env -u COSIGN_REPOSITORY cosign verify-blob \
     --bundle "${bundle}" \
     --certificate-identity "${identity_subject}" \
@@ -128,12 +143,13 @@ verify_identity_signature() {
 }
 
 download_identity_pair() {
-  local release_record="$1"
+  local release_record="$1" tag="$2" policy
+  policy="$(python3 -I -B "${epoch_contract}" "${tag}")" || return
   download_identity_asset "${write_token}" "${release_record}" \
-    "${identity_asset_name}" "${identity_download}" 2
+    "$(jq -er '.asset' <<<"${policy}")" "${identity_download}" 2 "${tag}" || return
   download_identity_asset "${write_token}" "${release_record}" \
-    "${identity_bundle_name}" "${bundle_download}" 2
-  verify_identity_signature "${identity_download}" "${bundle_download}"
+    "$(jq -er '.bundle' <<<"${policy}")" "${bundle_download}" 2 "${tag}" || return
+  verify_identity_signature "${identity_download}" "${bundle_download}" "${tag}"
 }
 
 upload_identity_asset() {
@@ -153,19 +169,19 @@ upload_identity_asset() {
 validate_identity_runs() {
   local identity="$1" main_id main_attempt platform_id platform_attempt
   main_id="$(jq -er '.main_ci.run_id | select(type == "number" and . > 0)' \
-    "${identity}")"
+    "${identity}")" || return
   main_attempt="$(jq -er '.main_ci.run_attempt | select(type == "number" and . > 0)' \
-    "${identity}")"
+    "${identity}")" || return
   platform_id="$(jq -er '.platform_release.run_id | select(type == "number" and . > 0)' \
-    "${identity}")"
+    "${identity}")" || return
   platform_attempt="$(jq -er '.platform_release.run_attempt | select(type == "number" and . > 0)' \
-    "${identity}")"
+    "${identity}")" || return
   test "$(get_public_json \
     "${api}/actions/runs/${main_id}/attempts/${main_attempt}" \
-    "${legacy_main_run_json}")" = 200
+    "${legacy_main_run_json}")" = 200 || return
   test "$(get_public_json \
     "${api}/actions/runs/${platform_id}/attempts/${platform_attempt}" \
-    "${legacy_platform_run_json}")" = 200
+    "${legacy_platform_run_json}")" = 200 || return
   python3 -I -B "${contract}" identity-run-records \
     --identity "${identity}" \
     --main-run-json "${legacy_main_run_json}" \
@@ -240,7 +256,9 @@ write_current_identity() {
     --platform-run-id "${platform_run_id}" \
     --platform-run-attempt "${platform_run_attempt}" \
     --selector-image-digest "${selector_digest}" \
-    --selector-build-sha "${SELECTOR_BUILD_SHA}" > "${identity_asset}"
+    --selector-build-sha "${SELECTOR_BUILD_SHA}" \
+    --github-repository "${GITHUB_REPOSITORY}" \
+    --github-repository-id "${GITHUB_REPOSITORY_ID}" > "${identity_asset}"
 }
 
 write_current_notes() {
@@ -297,7 +315,7 @@ validate_burned_partial() {
     "${api}/releases/${burned_draft_id}" "${release_json}")"
   test "${status}" = 200
   write_burned_notes
-  download_identity_pair "${release_json}"
+  download_identity_pair "${release_json}" "${burned_tag}"
   test "$(get_public_json \
     "${api}/actions/runs/${burned_main_run_id}/attempts/${burned_run_attempt}" \
     "${legacy_main_run_json}")" = 200
@@ -338,22 +356,34 @@ classify_current_release() {
   if [ "${status}" = 200 ]; then
     tag_object="$(jq -er '.object.sha' "${ref_json}")"
     tree_sha="$(git rev-parse "${SOURCE_SHA}^{tree}")"
-    download_identity_pair "${release_json}"
+    download_identity_pair "${release_json}" "${TAG}" || return
     evidence_selector_digest="$(python3 -I -B "${contract}" \
       selector-image-from-release --release-json "${release_json}" \
       --identity "${identity_download}" --bundle "${bundle_download}" \
       --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
-      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" \
-      --selector-build-sha "${SELECTOR_BUILD_SHA}")"
-    test "${evidence_selector_digest}" = "${SELECTOR_IMAGE_DIGEST}"
+      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
+      --selector-build-sha "${SELECTOR_BUILD_SHA}")" || return
+    test "${evidence_selector_digest}" = "${SELECTOR_IMAGE_DIGEST}" || return
+    # A completed previous attempt must reproduce its successful run records.
+    # Only the current publisher's own just-created identity can name a still
+    # running attempt, bound to this job's independently verified main-CI input.
+    if jq -e --argjson run "${GITHUB_RUN_ID}" --argjson attempt "${GITHUB_RUN_ATTEMPT}" '
+      .platform_release.run_id == $run and .platform_release.run_attempt == $attempt
+    ' "${identity_download}" >/dev/null; then
+      jq -e --argjson run "${MAIN_RUN_ID}" --argjson attempt "${MAIN_RUN_ATTEMPT}" '
+        .main_ci.run_id == $run and .main_ci.run_attempt == $attempt
+      ' "${identity_download}" >/dev/null || return
+    else
+      validate_identity_runs "${identity_download}" || return
+    fi
     record_args=(--release-json "${release_json}" \
       --identity "${identity_download}" --bundle "${bundle_download}" \
-      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" \
+      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
       --selector-build-sha "${SELECTOR_BUILD_SHA}")
   fi
   python3 -I -B "${contract}" identity-release-state \
     --http-status "${status}" --require "${required}" \
-    "${record_args[@]}" --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
+    "${record_args[@]}" "${transport_args[@]}" --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
     --selector-build-sha "${SELECTOR_BUILD_SHA}"
 }
 
@@ -377,7 +407,7 @@ classify_predecessor_release() {
   tag_object="$(jq -er '.object.sha' "${ref_json}")"
   if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then
     tree_sha="$(git rev-parse "${BASE_SHA}^{tree}")"
-    download_identity_pair "${release_json}"
+    download_identity_pair "${release_json}" "${BASE_TAG}" || return
     predecessor_build_sha="$(jq -er '.selector.provenance.source_sha |
       select(type == "string" and test("^[0-9a-f]{40}$"))' \
       "${identity_download}")"
@@ -386,7 +416,7 @@ classify_predecessor_release() {
       --release-json "${release_json}" --identity "${identity_download}" \
       --bundle "${bundle_download}" --tag "${BASE_TAG}" \
       --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
-      --source-tree-sha "${tree_sha}" \
+      --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
       --selector-build-sha "${predecessor_build_sha}")"
     validate_selector_transition \
       "${predecessor_selector_digest}" "${predecessor_build_sha}"
@@ -447,6 +477,12 @@ preflight_publication_state() {
   local recovery_tagger_date recovery_message recovery_release_state
   local current_tagger_date current_message current_tag_state current_release_state
   local current_draft_state
+  local repository_json="${RUNNER_TEMP}/platform-repository.json"
+  test "$(get_json "${write_token}" "${api}" "${repository_json}")" = 200
+  python3 -I -B "${epoch_contract}" "${TAG}" \
+    --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
+    --repository-json "${repository_json}" \
+    --base-tag "${BASE_TAG}" --base-sha "${BASE_SHA}" --source-sha "${SOURCE_SHA}" >/dev/null
 
   predecessor_tagger_date="$(git show -s --format=%cI "${BASE_SHA}")"
   predecessor_message="Platform release ${BASE_TAG} from ${BASE_SHA}"
@@ -737,14 +773,14 @@ publish_current_release() {
     write_current_identity "${release_id}" "${tag_object}"
     env -u COSIGN_REPOSITORY cosign sign-blob --yes \
       --bundle "${identity_bundle}" "${identity_asset}" >/dev/null
-    verify_identity_signature "${identity_asset}" "${identity_bundle}"
+    verify_identity_signature "${identity_asset}" "${identity_bundle}" "${TAG}"
     upload_identity_asset "${release_id}" "${identity_asset_name}" \
       "${identity_asset}"
     upload_identity_asset "${release_id}" "${identity_bundle_name}" \
       "${identity_bundle}"
     test "$(get_json "${write_token}" "${api}/releases/${release_id}" \
       "${release_json}")" = 200
-    download_identity_pair "${release_json}"
+    download_identity_pair "${release_json}" "${TAG}"
     cmp -s "${identity_asset}" "${identity_download}"
     cmp -s "${identity_bundle}" "${bundle_download}"
     tree_sha="$(git rev-parse "${SOURCE_SHA}^{tree}")"
@@ -753,7 +789,7 @@ publish_current_release() {
       --bundle "${bundle_download}" \
       --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
       --tag-object-sha "${tag_object}" \
-      --source-tree-sha "${tree_sha}" \
+      --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
       --selector-build-sha "${SELECTOR_BUILD_SHA}" >/dev/null
 
     jq -n --arg tag "${TAG}" --arg target "${SOURCE_SHA}" \

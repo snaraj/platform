@@ -77,8 +77,8 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         'tagger[date]=${tagger_date}',
         'run_write_gh release create "${recovery_tag}" --verify-tag',
         '--target "${recovery_source_sha}"',
-        "identity_asset_name='platform-release-identity.v1.json'",
-        "identity_bundle_name='platform-release-identity.v1.json.sigstore.json'",
+        'identity_asset_name="$(jq -er \'.asset\' <<<"${epoch}")"' ,
+        'identity_bundle_name="$(jq -er \'.bundle\' <<<"${epoch}")"' ,
         '(.assets | length == $count)',
         '(([.assets[].name] | sort) == ($expected | sort))',
         'selector-image-from-release --release-json "${release_json}"',
@@ -2890,8 +2890,8 @@ class PublicationTransactionShellTests(unittest.TestCase):
         validate_single_asset_publication_transaction(script)
 
         mutation_tokens = (
-            "identity_asset_name='platform-release-identity.v1.json'",
-            "identity_bundle_name='platform-release-identity.v1.json.sigstore.json'",
+            'identity_asset_name="$(jq -er \'.asset\' <<<"${epoch}")"' ,
+            'identity_bundle_name="$(jq -er \'.bundle\' <<<"${epoch}")"' ,
             '(.assets | length == $count)',
             '(([.assets[].name] | sort) == ($expected | sort))',
             "'{body:$body,draft:true,name:$name,prerelease:false,tag_name:$tag,target_commitish:$target}'",
@@ -3332,6 +3332,8 @@ class PredecessorWaitShellTests(unittest.TestCase):
             )
             prelude = r'''
 python3() {
+  # This fixture exercises historical predecessor ordering, not new publication.
+  if [[ "${3-}" == */platform_release_epoch.py ]] && [ "$#" -gt 4 ]; then return 0; fi
   if [ "${4-}" = release-window ]; then
     if [ "${MOCK_WINDOW_STATUS}" -ne 0 ]; then
       return "${MOCK_WINDOW_STATUS}"
@@ -3422,6 +3424,7 @@ curl() {
   test "${token}" = "${MOCK_READ_TOKEN}"
   printf 'GET %s\n' "${url}" >> "${MOCK_CALLS}"
   case "${url}" in
+    */repos/owner/platform) printf '{"full_name":"owner/platform","id":1}' > "${output}"; printf '200' ;;
     */git/ref/tags/*) cp "${MOCK_RECORDS}/ref.json" "${output}"; printf '200' ;;
     */git/tags/*) cp "${MOCK_RECORDS}/tag.json" "${output}"; printf '200' ;;
     */releases/tags/*)
@@ -3473,6 +3476,7 @@ sleep() { printf 'SLEEP %s\n' "$1" >> "${MOCK_CALLS}"; }
                     "TARGET_TAG": target_tag,
                     "GITHUB_API_URL": "https://api.github.test",
                     "GITHUB_REPOSITORY": "owner/platform",
+                    "GITHUB_REPOSITORY_ID": "1",
                     "GITHUB_OUTPUT": f"{relative}/output",
                     "RUNNER_TEMP": relative,
                 }
@@ -3520,7 +3524,7 @@ sleep() { printf 'SLEEP %s\n' "$1" >> "${MOCK_CALLS}"; }
             pending_attempts=1, tag_snapshot_changes=True
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertEqual(output, f"attestation=PASS:owner/platform:{self.SOURCE}\n")
+        self.assertEqual(output, f"attestation=PASS:owner/platform:{self.SOURCE}\nrepository_name=owner/platform\n")
         self.assertNotIn("token", output.lower())
         self.assertEqual(calls.count("/git/ref/tags/"), 1)
         self.assertEqual(calls.count("/releases/tags/"), 1)
@@ -3530,7 +3534,7 @@ sleep() { printf 'SLEEP %s\n' "$1" >> "${MOCK_CALLS}"; }
         )
         self.assertEqual(raced.returncode, 0, raced.stdout + raced.stderr)
         self.assertEqual(
-            raced_output, f"attestation=PASS:owner/platform:{self.SOURCE}\n"
+            raced_output, f"attestation=PASS:owner/platform:{self.SOURCE}\nrepository_name=owner/platform\n"
         )
         self.assertEqual(raced_calls.count("/releases/tags/"), 3)
 
@@ -3542,7 +3546,7 @@ sleep() { printf 'SLEEP %s\n' "$1" >> "${MOCK_CALLS}"; }
             release_state="missing",
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertEqual(output, f"attestation=PASS:owner/platform:{self.SOURCE}\n")
+        self.assertEqual(output, f"attestation=PASS:owner/platform:{self.SOURCE}\nrepository_name=owner/platform\n")
         self.assertEqual(calls.count("/releases/tags/"), 1)
         self.assertNotIn("SLEEP", calls)
 
@@ -3562,8 +3566,8 @@ sleep() { printf 'SLEEP %s\n' "$1" >> "${MOCK_CALLS}"; }
     def test_future_predecessors_consume_the_two_asset_identity_receipt(self):
         script = self.script()
         for required in (
-            "platform-release-identity.v1.json",
-            "platform-release-identity.v1.json.sigstore.json",
+            'identity_name="$(jq -er \'.asset\' <<<"${policy}")"',
+            'bundle_name="$(jq -er \'.bundle\' <<<"${policy}")"',
             "Accept: application/octet-stream",
             'if [ "${tag}" = v0.1.40 ]; then',
             'identity-release-state \\\n',
@@ -4563,7 +4567,7 @@ class WorkflowStructureTests(unittest.TestCase):
             "app-id: ${{ vars.PLATFORM_RELEASE_APP_ID }}",
             "private-key: ${{ secrets.PLATFORM_RELEASE_APP_PRIVATE_KEY }}",
             "owner: snaraj",
-            "repositories: website-infrastructure",
+            "repositories: ${{ steps.predecessor.outputs.repository_name }}",
             "permission-administration: read",
             "skip-token-revoke: false",
             "IMMUTABLE_SETTINGS_TOKEN: ${{ steps.immutable-settings-token.outputs.token }}",
@@ -4610,49 +4614,14 @@ class WorkflowStructureTests(unittest.TestCase):
             "base_tag=\"$(jq -er '.base_tag'",
             "BASE_SHA: ${{ steps.release.outputs.base_sha }}",
             "BASE_TAG: ${{ steps.release.outputs.base_tag }}",
-            "permissions:\n      contents: write\n      id-token: write\n      packages: write",
-            "SELECTOR_IMAGE: ghcr.io/snaraj/website-infrastructure/platform-release-selector",
+            "permissions:\n      contents: write\n      id-token: write",
             "Install checksum-verified release tools",
-            "Select the immutable selector image lineage",
-            'git diff --quiet "${BASE_SHA}" "${SOURCE_SHA}" --',
-            "cmd/platform-release-selector internal/releaseselector go.mod",
-            '[ "${BASE_SHA}" = 6d85c2b01dd4bd66add4192372b26bcdf1b0a951 ]',
-            '[ "${BASE_TAG}" = v0.1.42 ]',
-            '[ "${TAG}" = v0.1.43 ]',
-            "'sha256:c9f8d59013bc5ca9431e3ccd22227e4e05920746829318cacf1ccb70b17d2e61'",
-            'test "${predecessor_status}" = 404',
-            'if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then',
-            "platform-release-identity.v1.json.sigstore.json",
-            "cosign verify-blob",
-            "identity-run-records",
-            '--source-tree-sha "${tree_sha}"',
-            '--base-tag "${BASE_TAG}" --target-tag "${TAG}"',
-            '--emit > "${legacy_predecessor}"',
-            "actions/runs/${legacy_main_id}/attempts/${legacy_main_attempt}",
-            "actions/runs/${legacy_platform_id}/attempts/${legacy_platform_attempt}",
-            "state=reuse",
-            "state=build",
-            "if: steps.selector-image-state.outputs.state == 'build'",
-            "docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0",
-            "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0",
-            "context: https://github.com/snaraj/website-infrastructure.git#${{ steps.release.outputs.source_sha }}",
-            "platforms: linux/arm64",
-            "push-by-digest=true",
-            "provenance: mode=max,version=v1",
-            "sbom: true",
-            "--format '{{ json .Provenance.SLSA }}'",
-            '$definition.externalParameters.configSource == {',
-            '"digest": {"sha1": $source}',
-            ".runDetails.metadata.buildkit_completeness.resolvedDependencies == true",
-            ".runDetails.metadata.buildkit_hermetic == true",
-            "trivy image --image-src remote --platform linux/arm64",
-            'identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/platform-release.yml@refs/heads/main"',
-            "issuer='https://token.actions.githubusercontent.com'",
-            'cosign verify --certificate-identity "${identity}"',
-            "cosign verify-attestation --type slsaprovenance1",
+            'scripts/ci/platform_release_epoch.py "${tag}"',
+            '--repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}"',
+            '--base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${source_sha}"',
             "MAIN_RUN_ID: ${{ github.event.workflow_run.id }}",
             "MAIN_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}",
-            "SELECTOR_IMAGE_DIGEST: ${{ steps.selector-image.outputs.digest }}",
+            "SELECTOR_IMAGE_DIGEST: ${{ steps.release.outputs.selector_digest }}",
             "bash scripts/ci/publish-platform-release.sh",
         ):
             if required not in publish_job:
@@ -4892,100 +4861,30 @@ class WorkflowStructureTests(unittest.TestCase):
         if transaction.count('test "${release_race_verified}" = true') != 2:
             raise ValueError("both Release races lack terminal exact assertions")
 
-        selector_required = (
-            "permissions:\n      contents: write\n      id-token: write\n      packages: write",
-            "SELECTOR_IMAGE: ghcr.io/snaraj/website-infrastructure/platform-release-selector",
-            "Install checksum-verified release tools",
-            "Select the immutable selector image lineage",
-            'if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then',
-            "platform-release-identity.v1.json.sigstore.json",
-            "cosign verify-blob",
-            "identity-run-records",
-            '--source-tree-sha "${tree_sha}"',
-            "validate_platform_predecessor.py",
-            "actions/workflows/pull-request.yml/runs?branch=main&event=push&head_sha=${BASE_SHA}&status=success&per_page=100",
-            "actions/workflows/platform-release.yml/runs?branch=main&event=workflow_run&head_sha=${BASE_SHA}&status=success&per_page=100",
-            '--repository .',
-            '--base-tag "${BASE_TAG}" --target-tag "${TAG}"',
-            '--main-runs-json "${legacy_main_runs}"',
-            '--platform-runs-json "${legacy_platform_runs}"',
-            '--emit > "${legacy_predecessor}"',
-            "actions/runs/${legacy_main_id}/attempts/${legacy_main_attempt}",
-            "actions/runs/${legacy_platform_id}/attempts/${legacy_platform_attempt}",
-            "state=reuse",
-            "state=build",
-            "docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0",
-            "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0",
-            "context: https://github.com/snaraj/website-infrastructure.git#${{ steps.release.outputs.source_sha }}",
-            "platforms: linux/arm64",
-            "push-by-digest=true",
-            "provenance: mode=max,version=v1",
-            "sbom: true",
-            '$definition.externalParameters.configSource == {',
-            '"digest": {"sha1": $source}',
-            ".runDetails.metadata.buildkit_completeness.resolvedDependencies == true",
-            ".runDetails.metadata.buildkit_hermetic == true",
-            'cosign sign --yes "${SELECTOR_IMAGE}@${DIGEST}"',
-            "cosign attest --yes",
-            'identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/platform-release.yml@refs/heads/main"',
-            "issuer='https://token.actions.githubusercontent.com'",
-            'cosign verify --certificate-identity "${identity}"',
-            "cosign verify-attestation --type slsaprovenance1",
-            'MAIN_RUN_ID: ${{ github.event.workflow_run.id }}',
-            'MAIN_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}',
-            'SELECTOR_IMAGE_DIGEST: ${{ steps.selector-image.outputs.digest }}',
-        )
-        for required in selector_required:
+        # Publication retains canonical signature/run/asset verification. The
+        # suspended selector is carried by one frozen tuple; no image builder
+        # or package-writing authority remains on the source release path.
+        for forbidden in ("packages:", "docker/", "docker login", "cosign sign --", "cosign attest "):
+            if forbidden in publish_job:
+                raise ValueError("retired selector publication authority returned")
+        for required in (
+            'SELECTOR_BUILD_SHA: ${{ steps.release.outputs.selector_source }}',
+            "selector_digest=%s", "selector_source=%s",
+            "$(jq -er '.selector_digest' <<<\"${epoch}\")",
+            "$(jq -er '.selector_source' <<<\"${epoch}\")",
+        ):
             if required not in publish_job:
-                raise ValueError(f"selector workflow lost exact guard: {required}")
-        if "index .Provenance" in publish_job:
-            raise ValueError("single-platform selector provenance must not use map indexing")
-        if publish_job.count(
-            "if: steps.selector-image-state.outputs.state == 'build'"
-        ) != 4:
-            raise ValueError("all four selector-build steps must be build-only")
+                raise ValueError("frozen selector output wiring changed")
+        for required in ('platform_release_epoch.py', '--repository-json "${repository_json}"',
+                         '--source-sha "${SOURCE_SHA}"'):
+            if required not in transaction or required not in predecessor_wait:
+                raise ValueError("publication epoch or object proof was removed")
         if not (
-            publish_job.index("Install checksum-verified release tools")
-            < publish_job.index("Select the immutable selector image lineage")
+            publish_job.index('scripts/ci/platform_release_epoch.py "${tag}"')
+            < publish_job.index("Install checksum-verified release tools")
+            < publish_job.index("bash scripts/ci/publish-platform-release.sh")
         ):
-            raise ValueError("Cosign must be installed before receipt consumption")
-        if publish_job.count("state=reuse") != 3 or publish_job.count("state=build") != 2:
-            raise ValueError("selector reuse and reviewed changed-build branches drifted")
-        for repeated in (
-            "BASE_SHA: ${{ steps.release.outputs.base_sha }}",
-            "BASE_TAG: ${{ steps.release.outputs.base_tag }}",
-        ):
-            if publish_job.count(repeated) != 2:
-                raise ValueError(f"selector and publisher must both receive {repeated}")
-        selector_start = publish_job.index("Select the immutable selector image lineage")
-        selector_end = publish_job.index("Set up Buildx for a changed selector image")
-        selector = publish_job[selector_start:selector_end]
-        legacy_start = selector.index(
-            'if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then'
-        )
-        current_identity_path = selector[:legacy_start]
-        ordinary_path, legacy_path = selector[legacy_start:].split(
-            "\n          else\n", 1
-        )
-        if ".body" in current_identity_path:
-            raise ValueError("current selector reuse must not trust Release Markdown")
-        if (
-            'git diff --quiet "${BASE_SHA}" "${SOURCE_SHA}" --'
-            not in ordinary_path
-            or "cmd/platform-release-selector internal/releaseselector go.mod"
-            not in ordinary_path
-            or 'git diff --quiet "${BASE_SHA}" "${SOURCE_SHA}" --'
-            in current_identity_path + legacy_path
-        ):
-            raise ValueError(
-                "only an ordinary release may rebuild changed selector inputs"
-            )
-        if '"${predecessor_identity}" 1' in legacy_path or "download_asset" in legacy_path:
-            raise ValueError("zero-asset v0.1.40 path must not download an identity asset")
-        if "--require-ready" in legacy_path or "0000000000000000000000000000000000000000" in legacy_path:
-            raise ValueError("legacy exception retained a static predecessor seed")
-        if legacy_path.count('--header "Authorization: Bearer ${GH_TOKEN}"') != 4:
-            raise ValueError("all four legacy immutable checks must use job authentication")
+            raise ValueError("closed epoch must precede signed publication")
         for retired in (
             "selector-seed",
             "validate_selector_seed",
@@ -5049,7 +4948,7 @@ class WorkflowStructureTests(unittest.TestCase):
             "app-id: ${{ vars.PLATFORM_RELEASE_APP_ID }}",
             "private-key: ${{ secrets.PLATFORM_RELEASE_APP_PRIVATE_KEY }}",
             "owner: snaraj",
-            "repositories: website-infrastructure",
+            "repositories: ${{ steps.predecessor.outputs.repository_name }}",
             "permission-administration: read",
             "skip-token-revoke: false",
             "IMMUTABLE_SETTINGS_TOKEN: ${{ steps.immutable-settings-token.outputs.token }}",
@@ -5204,8 +5103,8 @@ class WorkflowStructureTests(unittest.TestCase):
             '-f object="${SOURCE_SHA}" -f type=commit',
             'run_write_gh release create "${recovery_tag}" --verify-tag',
             '--target "${recovery_source_sha}"',
-            "identity_asset_name='platform-release-identity.v1.json'",
-            "identity_bundle_name='platform-release-identity.v1.json.sigstore.json'",
+            'identity_asset_name="$(jq -er \'.asset\' <<<"${epoch}")"' ,
+            'identity_bundle_name="$(jq -er \'.bundle\' <<<"${epoch}")"' ,
             '(.assets | length == $count)',
             '(([.assets[].name] | sort) == ($expected | sort))',
             'if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then',
@@ -5284,7 +5183,7 @@ class WorkflowStructureTests(unittest.TestCase):
 
         workflow_mutants = (
             workflow.replace("permission-administration: read", "permission-administration: write", 1),
-            workflow.replace("repositories: website-infrastructure", "repositories: other-repository", 1),
+            workflow.replace("repositories: ${{ steps.predecessor.outputs.repository_name }}", "repositories: other-repository", 1),
             workflow.replace("deployment: false", "deployment: true", 1),
             workflow.replace(
                 "outputs:\n      attestation: ${{ steps.immutable-settings.outputs.attestation }}",
@@ -5330,15 +5229,8 @@ class WorkflowStructureTests(unittest.TestCase):
                 "bash scripts/ci/verify-platform-release-settings.sh",
                 1,
             ),
-            workflow.replace(
-                'current_identity="${RUNNER_TEMP}/current-platform-release-identity.json"',
-                '.body\n          current_identity="${RUNNER_TEMP}/current-platform-release-identity.json"',
-                1,
-            ),
-            workflow.replace(
-                "Authorization: Bearer ${GH_TOKEN}",
-                "Authorization: crossed",
-            ),
+            workflow.replace('scripts/ci/platform_release_epoch.py "${tag}"', "true", 1),
+            workflow.replace("id-token: write", "id-token: write\n      packages: write", 1),
             workflow + "\nselector-seed=retired\n",
         )
         for index, mutant in enumerate(workflow_mutants):

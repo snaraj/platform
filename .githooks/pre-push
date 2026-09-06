@@ -7,13 +7,11 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 remote_name="${1:-}"
 remote_url="${2:-}"
 [[ "${remote_name}" == origin ]] || exit 1
-github_ssh_url='git'
-github_ssh_url+='@'
-github_ssh_url+='github.com:snaraj/website-infrastructure.git'
-case "${remote_url}" in
-  https://github.com/snaraj/website-infrastructure.git|"${github_ssh_url}") ;;
-  *) exit 1 ;;
-esac
+# The closed old/new HTTPS and SSH URLs must still name the original GitHub
+# object. This GET-only check rejects foreign names, redirects and replacements
+# before any publication scan or advertised-main lookup.
+python3 -I -B "${repo_root}/scripts/ci/platform_release_epoch.py" \
+  --git-remote "${remote_url}" >/dev/null
 updates=0
 candidate=''
 baseline=''

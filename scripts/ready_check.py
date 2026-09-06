@@ -95,6 +95,9 @@ class Refusal(Exception):
 _SPEC = importlib.util.spec_from_file_location("ready_check_review_receipt", Path(__file__).resolve().parent / "validate_review_receipt.py")
 RECEIPTS = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(RECEIPTS)
+_EPOCH_SPEC = importlib.util.spec_from_file_location("ready_check_release_epoch", Path(__file__).resolve().parent / "ci/platform_release_epoch.py")
+EPOCH = importlib.util.module_from_spec(_EPOCH_SPEC)
+_EPOCH_SPEC.loader.exec_module(EPOCH)
 
 
 def gh(path, listing=False):
@@ -214,6 +217,16 @@ def ready_decision(head, labels, comments, checks, behind_by, state=None, base_r
     return lanes, tiers, blockers
 
 
+def verify_repository(repository, record):
+    """The name change cannot redirect local delivery authority to a new object."""
+    try:
+        EPOCH.repository(record.get("full_name"), record.get("id"))
+        if record["full_name"] != repository:
+            raise ValueError("configured repository name is stale")
+    except (KeyError, TypeError, ValueError) as error:
+        raise Refusal("delivery repository name or object is foreign") from error
+
+
 def snapshot(repository, number):
     """Every input the rule reads, bound to the pull request's exact head."""
     pull = gh(f"repos/{repository}/pulls/{number}")
@@ -242,10 +255,11 @@ def snapshot(repository, number):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("pull_request", type=int)
-    parser.add_argument("--repo", default=REPOSITORY)
+    parser.add_argument("--repo", choices=(EPOCH.OLD_REPOSITORY, EPOCH.NEW_REPOSITORY), default=REPOSITORY)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        verify_repository(args.repo, gh(f"repos/{args.repo}"))
         pull = snapshot(args.repo, args.pull_request)
         lanes, tiers, blockers = ready_decision(pull["head"], pull["labels"], pull["comments"], pull["checks"],
                                                 pull["behind_by"], pull["state"], pull["baseRef"], pull["defaultBranch"],

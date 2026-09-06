@@ -2904,7 +2904,7 @@ def launchd_plist(repo: str, log_path: str, token_command: str = "") -> str:
         f"  <key>Label</key><string>{LAUNCHD_LABEL}</string>\n"
         "  <key>ProgramArguments</key>\n  <array>\n"
         "    <string>/usr/bin/env</string><string>python3</string><string>-I</string><string>-B</string>\n"
-        f"    <string>{escape(script)}</string><string>tick</string><string>--repo</string><string>{escape(repo)}</string>\n"
+        f"    <string>{escape(script)}</string><string>--github-repository</string><string>{escape(REPOSITORY)}</string><string>tick</string><string>--repo</string><string>{escape(repo)}</string>\n"
         "  </array>\n"
         f"  <key>StartInterval</key><integer>{LAUNCHD_INTERVAL_SECONDS}</integer>\n"
         "  <key>RunAtLoad</key><true/>\n"
@@ -2932,7 +2932,9 @@ def launchd_plist(repo: str, log_path: str, token_command: str = "") -> str:
 
 
 def main(argv=None) -> int:
+    global REPOSITORY
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser.add_argument("--github-repository", choices=(READY.EPOCH.OLD_REPOSITORY, READY.EPOCH.NEW_REPOSITORY), default=REPOSITORY)
     sub = parser.add_subparsers(dest="mode", required=True)
     for name in ("status", "verify"):
         p = sub.add_parser(name)
@@ -2946,7 +2948,14 @@ def main(argv=None) -> int:
     p.add_argument("--log", required=True)
     p.add_argument("--token-command", default="")
     args = parser.parse_args(argv)
+    previous_repository = REPOSITORY
+    REPOSITORY = args.github_repository
     try:
+        if args.mode != "launchd-plist":
+            try:
+                READY.verify_repository(REPOSITORY, GitHub().api(f"repos/{REPOSITORY}"))
+            except READY.Refusal as error:
+                raise Refusal(str(error)) from error
         if args.mode == "status":
             report = status(args.repo.resolve(), GitHub())
             for slug, entry in report.items():
@@ -2971,6 +2980,8 @@ def main(argv=None) -> int:
     except Refusal as error:
         print(f"DENY: {error}", file=sys.stderr)
         return 1
+    finally:
+        REPOSITORY = previous_repository
     return 2
 
 

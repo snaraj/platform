@@ -8,6 +8,7 @@ import base64
 import binascii
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -15,6 +16,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+
+
+_epoch_spec = importlib.util.spec_from_file_location(
+    "platform_release_epoch", Path(__file__).with_name("platform_release_epoch.py")
+)
+EPOCH = importlib.util.module_from_spec(_epoch_spec)
+_epoch_spec.loader.exec_module(EPOCH)
 
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
@@ -892,6 +900,8 @@ def render_release_identity(
     platform_run_attempt: int,
     selector_image_digest: str,
     selector_build_sha: str,
+    github_repository: str | None = None,
+    github_repository_id: int | None = None,
 ) -> str:
     """Render the canonical signed platform release identity payload."""
     head_sha = _exact_commit(repository, head_sha, "release-identity head SHA")
@@ -910,6 +920,15 @@ def render_release_identity(
         or window.base_tag != expected_base_tag
     ):
         raise ContractError("release identity is not the derived exact-next edge")
+    try:
+        selected = EPOCH.identity(tag)
+        if selected["version"] == 2 or github_repository is not None or github_repository_id is not None:
+            selected = EPOCH.publication(
+                github_repository, github_repository_id, tag,
+                expected_base_tag, expected_base_sha,
+            )
+    except ValueError as error:
+        raise ContractError(str(error)) from error
     integer_fields = {
         "release ID": release_id,
         "main run ID": main_run_id,
@@ -963,8 +982,8 @@ def render_release_identity(
             "tag_name": tag,
             "target_commitish": head_sha,
         },
-        "repository": "snaraj/website-infrastructure",
-        "schema": RELEASE_IDENTITY_SCHEMA,
+        "repository": selected["repository"],
+        "schema": selected["schema"],
         "selector": {
             "digest": selector_image_digest,
             "image": SELECTOR_IMAGE,
@@ -994,6 +1013,12 @@ def render_release_identity(
             "peeled_commit": head_sha,
         },
     }
+    if selected["version"] == 2:
+        evidence["repository_id"] = EPOCH.REPOSITORY_ID
+    try:
+        EPOCH.validate_identity(evidence)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError("release identity epoch is foreign") from error
     rendered = json.dumps(
         evidence,
         ensure_ascii=False,
@@ -2321,7 +2346,15 @@ def _validate_identity_asset_metadata(
     bundle: bytes,
     *,
     staged: bool,
+    api_repository: str | None = None,
+    api_repository_id: int | None = None,
 ) -> Mapping[str, object]:
+    evidence = _canonical_release_identity(identity)
+    try:
+        selected = EPOCH.identity(evidence["tag"]["name"])
+        transport = EPOCH.metadata_repository(evidence["tag"]["name"], api_repository, api_repository_id)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError("release identity epoch or transport is foreign") from error
     release_id = release_record.get("id")
     if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
         raise ContractError("GitHub Release ID is invalid")
@@ -2335,8 +2368,8 @@ def _validate_identity_asset_metadata(
         raise ContractError("GitHub Release identity asset set is foreign")
     by_name = {asset["name"]: asset for asset in asset_records}
     expected_names = {
-        RELEASE_IDENTITY_ASSET_NAME,
-        RELEASE_IDENTITY_BUNDLE_ASSET_NAME,
+        selected["asset"],
+        selected["bundle"],
     }
     if set(by_name) != expected_names or len(by_name) != len(asset_records):
         raise ContractError("GitHub Release identity asset set is foreign")
@@ -2355,8 +2388,8 @@ def _validate_identity_asset_metadata(
     }
     staged_download_token: str | None = None
     for name, asset_payload in (
-        (RELEASE_IDENTITY_ASSET_NAME, identity),
-        (RELEASE_IDENTITY_BUNDLE_ASSET_NAME, bundle),
+        (selected["asset"], identity),
+        (selected["bundle"], bundle),
     ):
         asset = by_name[name]
         if not required_asset_fields.issubset(asset):
@@ -2366,17 +2399,17 @@ def _validate_identity_asset_metadata(
             raise ContractError("platform release identity asset ID is invalid")
         asset_digest = "sha256:" + hashlib.sha256(asset_payload).hexdigest()
         expected_api_url = (
-            "https://api.github.com/repos/snaraj/website-infrastructure/"
+            f"https://api.github.com/repos/{transport}/"
             f"releases/assets/{asset_id}"
         )
         final_download_url = (
-            "https://github.com/snaraj/website-infrastructure/releases/download/"
+            f"https://github.com/{transport}/releases/download/"
             f"{release_record.get('tag_name')}/{name}"
         )
         browser_download_url = asset.get("browser_download_url")
         staged_match = (
             re.fullmatch(
-                "https://github\\.com/snaraj/website-infrastructure/"
+                rf"https://github\.com/{re.escape(transport)}/"
                 "releases/download/"
                 rf"(?P<token>untagged-[0-9a-f]{{20}})/{re.escape(name)}",
                 browser_download_url,
@@ -2421,7 +2454,6 @@ def _validate_identity_asset_metadata(
             or download_count < 0
         ):
             raise ContractError("platform release identity download count is invalid")
-    evidence = _canonical_release_identity(identity)
     _sigstore_bundle(bundle, identity)
     return evidence
 
@@ -2433,6 +2465,8 @@ def selector_image_from_release(
     expected_tag_object_sha: str | None = None,
     expected_tree_sha: str | None = None,
     staged: bool = False,
+    api_repository: str | None = None,
+    api_repository_id: int | None = None,
 ) -> str:
     """Validate the identity asset and carry its immutable selector digest."""
     expected_sha = require_sha(expected_sha, "selector predecessor SHA")
@@ -2448,7 +2482,8 @@ def selector_image_from_release(
             expected_tree_sha, "selector predecessor tree SHA"
         )
     evidence = _validate_identity_asset_metadata(
-        release_record, identity, bundle, staged=staged
+        release_record, identity, bundle, staged=staged,
+        api_repository=api_repository, api_repository_id=api_repository_id,
     )
 
     def exact(value: object, fields: set[str], label: str) -> Mapping[str, object]:
@@ -2457,7 +2492,8 @@ def selector_image_from_release(
             raise ContractError(f"{label} fields are incomplete or foreign")
         return record
 
-    if set(evidence) != {
+    selected = EPOCH.identity(expected_tag)
+    if set(evidence) != ({
         "changelog",
         "main_ci",
         "platform_release",
@@ -2469,11 +2505,11 @@ def selector_image_from_release(
         "sites",
         "source",
         "tag",
-    }:
+    } | ({"repository_id"} if selected["version"] == 2 else set())):
         raise ContractError("selector predecessor top-level fields are foreign")
     if (
-        evidence.get("schema") != RELEASE_IDENTITY_SCHEMA
-        or evidence.get("repository") != "snaraj/website-infrastructure"
+        evidence.get("schema") != selected["schema"]
+        or evidence.get("repository") != selected["repository"]
     ):
         raise ContractError("selector predecessor schema or repository is foreign")
     source = exact(
@@ -2694,6 +2730,10 @@ def selector_image_from_release(
             or image.removeprefix(image_prefix) == arm64_digest
         ):
             raise ContractError(f"selector predecessor {slug} identity is foreign")
+    try:
+        EPOCH.validate_identity(evidence)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError("signed release epoch is foreign") from error
     return digest
 
 
@@ -2708,6 +2748,14 @@ def validate_identity_run_records(
     if platform_conclusion not in {"success", "failure"}:
         raise ContractError("platform Release run conclusion is invalid")
     evidence = _canonical_release_identity(identity)
+    try:
+        selected = EPOCH.identity(evidence["tag"]["name"])
+        if (evidence["schema"], evidence["repository"]) != (selected["schema"], selected["repository"]):
+            raise ValueError("run identity epoch is foreign")
+        if selected["version"] == 2:
+            EPOCH.repository(evidence["repository"], evidence.get("repository_id"))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError("run identity epoch is foreign") from error
     source = _object(evidence.get("source"), "release identity source")
     source_sha = require_sha(
         source.get("merge_sha"), "release identity workflow source SHA"
@@ -2735,6 +2783,12 @@ def validate_identity_run_records(
         if receipt_conclusion:
             expected_receipt_fields.add("conclusion")
         repository = _object(actual.get("repository"), f"{key} run repository")
+        # GitHub rewrites historical run metadata on rename. Only the closed
+        # name pair on the original object can transport an old signed receipt.
+        try:
+            EPOCH.run_repository(evidence["tag"]["name"], repository)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractError(f"{key} workflow repository is foreign") from error
         if (
             set(receipt) != expected_receipt_fields
             or receipt.get("event") != event
@@ -2756,8 +2810,6 @@ def validate_identity_run_records(
             or actual.get("path") != workflow
             or actual.get("status") != "completed"
             or actual.get("conclusion") != actual_conclusion
-            or repository.get("full_name")
-            != "snaraj/website-infrastructure"
         ):
             raise ContractError(
                 f"release identity {key} workflow attempt is foreign"
@@ -2856,6 +2908,8 @@ def validate_identity_release_record(
     selector_build_sha: str | None = None,
     tag_object_sha: str | None = None,
     tree_sha: str | None = None,
+    api_repository: str | None = None,
+    api_repository_id: int | None = None,
     staged: bool = False,
 ) -> None:
     if selector_build_sha is None:
@@ -2871,6 +2925,8 @@ def validate_identity_release_record(
         expected_selector_build_sha=selector_build_sha,
         expected_tag_object_sha=tag_object_sha,
         expected_tree_sha=tree_sha,
+        api_repository=api_repository,
+        api_repository_id=api_repository_id,
         staged=staged,
     )
 
@@ -2934,6 +2990,8 @@ def classify_identity_release_state(
     selector_build_sha: str | None = None,
     tag_object_sha: str | None = None,
     tree_sha: str | None = None,
+    api_repository: str | None = None,
+    api_repository_id: int | None = None,
 ) -> str:
     source_sha = require_sha(source_sha, "GitHub Release target SHA")
     if http_status == 404:
@@ -2955,6 +3013,8 @@ def classify_identity_release_state(
         selector_build_sha=selector_build_sha,
         tag_object_sha=tag_object_sha,
         tree_sha=tree_sha,
+        api_repository=api_repository,
+        api_repository_id=api_repository_id,
     )
     return "exact"
 
@@ -3169,6 +3229,12 @@ def _parser() -> argparse.ArgumentParser:
     identity_release_state.add_argument("--selector-build-sha")
     identity_release_state.add_argument("--tag-object-sha")
     identity_release_state.add_argument("--source-tree-sha")
+    for transport_parser in (identity_release_record, staged_identity_record,
+                             selector_image, identity_release_state):
+        transport_parser.add_argument("--api-repository")
+        transport_parser.add_argument("--api-repository-id", type=int)
+    identity.add_argument("--github-repository")
+    identity.add_argument("--github-repository-id", type=int)
     return parser
 
 
@@ -3227,6 +3293,8 @@ def main(argv: list[str] | None = None) -> int:
                     platform_run_attempt=args.platform_run_attempt,
                     selector_image_digest=args.selector_image_digest,
                     selector_build_sha=args.selector_build_sha,
+                    github_repository=args.github_repository,
+                    github_repository_id=args.github_repository_id,
                 ),
                 end="",
             )
@@ -3379,6 +3447,8 @@ def main(argv: list[str] | None = None) -> int:
                 selector_build_sha=args.selector_build_sha,
                 tag_object_sha=args.tag_object_sha,
                 tree_sha=args.source_tree_sha,
+                api_repository=args.api_repository,
+                api_repository_id=args.api_repository_id,
                 staged=args.command == "staged-identity-release-record",
             )
             print("exact")
@@ -3393,6 +3463,8 @@ def main(argv: list[str] | None = None) -> int:
                     expected_selector_build_sha=args.selector_build_sha,
                     expected_tag_object_sha=args.tag_object_sha,
                     expected_tree_sha=args.source_tree_sha,
+                    api_repository=args.api_repository,
+                    api_repository_id=args.api_repository_id,
                 )
             )
         elif args.command == "identity-run-records":
@@ -3424,6 +3496,8 @@ def main(argv: list[str] | None = None) -> int:
                 selector_build_sha=args.selector_build_sha,
                 tag_object_sha=args.tag_object_sha,
                 tree_sha=args.source_tree_sha,
+                api_repository=args.api_repository,
+                api_repository_id=args.api_repository_id,
             )
             print(require_publication_state(state, args.require) if args.require else state)
         else:  # pragma: no cover - argparse owns this path

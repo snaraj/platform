@@ -10,6 +10,15 @@ This folder is where we make “prove it first” real: none of these files is p
 [`ci/validate_selector_rootfs.py`](./ci/validate_selector_rootfs.py) inspects the unextracted final selector filesystem archive and rejects missing, duplicate, wrongly typed, wrongly permissioned, or content-drifted trusted-root entries.
 [`ci/deploy_assurance.py`](./ci/deploy_assurance.py) is the hourly deploy-assurance watchdog (issue #273): it compares every committed site chart-release selection against the latest release published by the repository its own cosign subject names, requires the newest protected-main gate run to have a successful same-SHA Platform release run (with exactly one bounded rerun for a first-attempt failure), and turns any condition into a red run plus one idempotent tracking issue.
 [`promote_releases.py`](./promote_releases.py) closes the loop the watchdog opens (issue #286): it discovers every promotable workload from the annotated `OCIRepository` manifests under `kubernetes/` (identity tuple read from the manifest, acquisition profile selected by the publisher identity, unknown publishers refused), runs the issue-195 acquisition ceremony with every judgment in code — double tag resolution with `docker-content-digest` agreement, config and sole Helm layer hash-verified by digest, `Chart.yaml`/`values.yaml` inspection, the embedded workload pin resolved twice and bound to the exact index digest, one `linux/arm64` child, cosign verification at the chart digest, SLSA v1 provenance at the index digest, the immutable Release asset hashed against GitHub's stated digest and its `source_sha` bound to the annotated tag's commit — regenerates the receipt (byte-exact JSON renderer) and rewrites every other pinned copy of a tag or digest across the tracked tree by counted substitution, split string literals included, then, as the owner's launchd tick, gates, signs, pushes, opens the Draft promotion pull request and arms `requires-review`; on a later tick it earns that pull request's exact-head receipt by five proofs — novelty, identity, confinement, re-derivation, claim audit — and posts it through the reviewer App (issue #309). It never flips Ready: [`ready_check.py`](./ready_check.py) is that rule in code and nowhere else (issue #295), a read-only evaluator that reads one pull request's head, receipts, required checks, labels and base freshness and prints `ELIGIBLE` or every blocker, exiting 0 or 3, writing nothing. `verify` re-derives the committed receipt from the registry and must reproduce it.
+[`ci/platform_release_epoch.py`](./ci/platform_release_epoch.py) closes the
+existing repository's one name transition: it pins the immutable repository
+object and checkpoint, selects v1/v2 assets and publisher subjects by external
+tag, and freezes the legacy selector source/digest. Its `--git-remote` mode
+requires the exact old/new HTTPS or SSH URL to match a fresh original-object
+record from a bounded GitHub CLI GET; the pre-push hook uses this mode before
+the unchanged publication scan. It authorizes no rename or
+live operation; the [transition runbook](../docs/runbooks/platform-repository-transition.md)
+sequences those separately.
 [`ci/platform_release_contract.py`](./ci/platform_release_contract.py) is the
 standard-library-only policy shared by pull-request CI and the success-only
 main publisher: it binds the exact workflow-run identity and final SHA,
@@ -41,7 +50,8 @@ minted, it waits for the derived predecessor's exact annotated tag and exact
 immutable Release, consuming the canonical identity JSON and Sigstore bundle
 after the sole `v0.1.40` zero-asset bridge; only the exact burned
 `v0.1.42` to `v0.1.43` edge admits an absent predecessor Release. It emits only
-a source-bound attestation. Clean
+a source-bound attestation and the verified repository name used to scope the
+settings App token. Clean
 absence retries; foreign, mutable, or partial state fails immediately.
 [`ci/publish-platform-release.sh`](./ci/publish-platform-release.sh) is the
 directly executable, transaction-tested tag/Release implementation used by the

@@ -36,7 +36,10 @@ git -c core.hooksPath=.githooks push --porcelain origin <reviewed-branch>
 ```
 
 The hook accepts exactly one non-delete, fast-forward branch update to the exact
-`snaraj/website-infrastructure` GitHub origin, requires its immutable
+`snaraj/website-infrastructure` or `snaraj/platform` GitHub origin over HTTPS or
+SSH. A bounded GET through the configured GitHub CLI requires the requested
+name and original repository ID to agree; redirects, replacements, foreign
+origins, and unavailable metadata stop the push. It requires the candidate's immutable
 object ID to equal a clean `HEAD`, rejects untracked public candidates and
 shallow history, reruns the exact-index privacy/secret validator, requires the
 pinned Gitleaks release, and scans every commit, tree, blob, path, mode, and

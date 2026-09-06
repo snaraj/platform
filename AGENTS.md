@@ -169,6 +169,11 @@ and dependency-governed Draft capacity is recorded durably in
   by line range — a delivery-lane change may correct what the model
   asserts about reviewed state, never what the custody surface above
   permits or requires.
+- `bootstrap/flux/release-selector/platform-release-identity.v2.schema.json` —
+  DECLARED CROSSING for issue #330 under the owner's 2026-09-05 authorization
+  to rename and split the platform repositories and improve the release system.
+  This adds the v2 source identity schema; it grants no installed-selector
+  mutation, package rotation, or edit to the frozen v1 schema.
 - `cmd/platform-release-selector/**` and `internal/releaseselector/**` —
   PLATFORM (owner authorization 2026-08-28 for issue #242). These are the
   bootstrap-owned credentialless selector and its immutable image inputs.
@@ -186,6 +191,10 @@ and dependency-governed Draft capacity is recorded durably in
 - `.githooks/**` — DELIVERY: the pre-push hook implements delivery-lane
   requirements 2 and 3. Changing what it PERMITS is a security-control
   change and needs an owner decision, not a lane call (issue #83).
+  The owner's 2026-09-05 repository-rename authorization covers issue #330's
+  exact old/new HTTPS and SSH origin set, conditional on fresh proof of the
+  original repository object. Single-ref, ancestry, exact-object, privacy,
+  history and secret-scan requirements remain intact.
 - `kubernetes/flux-system/**` — DELIVERY: the GitOps desired state this
   lane authors, and what the reviewed-state model above pins.
 - `kubernetes/websites/*/release.yaml` — the former DELIVERY grant applied
@@ -386,6 +395,18 @@ Delivery-lane requirements, explicit and numbered:
    in the core security ruleset before this release policy is Ready. A separate
    `Owner-PR-Updates` restriction permits only owner-account PR merges, without
    bypassing the core checks; the controls runbook defines its exact shape.
+
+**Repository rename compatibility (issue #330).** The closed epoch policy in
+`scripts/ci/platform_release_epoch.py` permits one terminal-v1 publication from
+its exact verified checkpoint, then requires v2 under the new repository name
+on the same immutable GitHub object. The annotated ledger remains the tag
+allocator. Historical v1 payloads, signatures, and schema remain frozen; the
+first v2 predecessor must be the exact signed terminal-v1 edge. Source publisher
+identity and legacy selector identity are distinct. Selector build inputs and
+lineage remain frozen; the publisher holds no package-write authority. Follow
+`docs/runbooks/platform-repository-transition.md` for the separate rename,
+settings revalidation, first-v2 publication, and eventual GitOps extraction.
+No source release proves live installation or convergence.
 
 **Promoter feature freeze — DISCHARGED.** The condition was one real promotion
 run and reviewed: PR #287 was cut by hand and merged 2026-09-01, and #303 was
