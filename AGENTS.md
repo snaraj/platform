@@ -169,6 +169,11 @@ and dependency-governed Draft capacity is recorded durably in
   by line range — a delivery-lane change may correct what the model
   asserts about reviewed state, never what the custody surface above
   permits or requires.
+- `bootstrap/flux/release-selector/platform-release-identity.v2.schema.json` —
+  DECLARED CROSSING for issue #330 under the owner's 2026-09-05 authorization
+  to rename and split the platform repositories and improve the release system.
+  This adds the v2 source identity schema; it grants no installed-selector
+  mutation, package rotation, or edit to the frozen v1 schema.
 - `cmd/platform-release-selector/**` and `internal/releaseselector/**` —
   PLATFORM (owner authorization 2026-08-28 for issue #242). These are the
   bootstrap-owned credentialless selector and its immutable image inputs.
@@ -386,6 +391,18 @@ Delivery-lane requirements, explicit and numbered:
    in the core security ruleset before this release policy is Ready. A separate
    `Owner-PR-Updates` restriction permits only owner-account PR merges, without
    bypassing the core checks; the controls runbook defines its exact shape.
+
+**Repository rename compatibility (issue #330).** The closed epoch policy in
+`scripts/ci/platform_release_epoch.py` permits one terminal-v1 publication from
+its exact verified checkpoint, then requires v2 under the new repository name
+on the same immutable GitHub object. The annotated ledger remains the tag
+allocator. Historical v1 payloads, signatures, and schema remain frozen; the
+first v2 predecessor must be the exact signed terminal-v1 edge. Source publisher
+identity and legacy selector identity are distinct. Selector build inputs and
+lineage remain frozen; the publisher holds no package-write authority. Follow
+`docs/runbooks/platform-repository-transition.md` for the separate rename,
+settings revalidation, first-v2 publication, and eventual GitOps extraction.
+No source release proves live installation or convergence.
 
 **Promoter feature freeze — DISCHARGED.** The condition was one real promotion
 run and reviewed: PR #287 was cut by hand and merged 2026-09-01, and #303 was

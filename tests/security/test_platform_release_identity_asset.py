@@ -1021,43 +1021,18 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn(".body | fromjson", workflow)
-        self.assertIn("platform-release-identity.v1.json", workflow)
-        self.assertIn("platform-release-identity.v1.json.sigstore.json", workflow)
-        self.assertNotIn(
-            '--identity "${predecessor_identity}" --release-json "${predecessor}"',
-            workflow,
-        )
-        self.assertIn('--main-runs-json "${legacy_main_runs}"', workflow)
-        self.assertIn('--platform-runs-json "${legacy_platform_runs}"', workflow)
-        self.assertEqual(workflow.count(legacy_edge), 1)
+        self.assertIn('scripts/ci/platform_release_epoch.py "${tag}"', workflow)
         self.assertEqual(workflow.count("actions: read"), 1)
-        self.assertIn("validate_platform_predecessor.py", workflow)
-        self.assertIn("cosign verify-blob", workflow)
-        run_records = workflow.split("fetch_run_records() {", 1)[1].split(
-            "verify_canonical_identity() {", 1
-        )[0]
-        self.assertEqual(
-            run_records.count('--header "Authorization: Bearer ${GH_TOKEN}"'), 2
-        )
-        workflow_lines = workflow.splitlines()
-        api_calls = [
-            index
-            for index, line in enumerate(workflow_lines)
-            if '"${api}/' in line
-        ]
-        self.assertGreater(len(api_calls), 0)
-        for endpoint in api_calls:
-            command = endpoint
-            while command >= 0 and "curl " not in workflow_lines[command]:
-                command -= 1
-            self.assertGreaterEqual(command, 0)
-            self.assertIn(
-                '--header "Authorization: Bearer ${GH_TOKEN}"',
-                "\n".join(workflow_lines[command : endpoint + 1]),
-            )
+        self.assertNotIn("packages:", workflow)
+        self.assertNotIn("docker/", workflow)
+        self.assertIn("cosign verify-blob", publisher)
+        self.assertIn('--certificate-identity "${identity_subject}"', publisher)
+        self.assertIn('"${epoch_contract}" "${tag}"', publisher)
+        self.assertIn('download_identity_pair "${release_json}" "${BASE_TAG}"', publisher)
+        self.assertIn('download_identity_pair "${release_json}" "${TAG}"', publisher)
         self.assertLess(
             workflow.index("Install checksum-verified release tools"),
-            workflow.index("Select the immutable selector image lineage"),
+            workflow.index("Publish or verify exact immutable source release"),
         )
 
 

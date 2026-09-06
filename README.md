@@ -1,4 +1,4 @@
-# website-infrastructure
+# Platform
 
 [![Pull request](https://github.com/snaraj/website-infrastructure/actions/workflows/pull-request.yml/badge.svg)](https://github.com/snaraj/website-infrastructure/actions/workflows/pull-request.yml)
 [![CodeQL](https://github.com/snaraj/website-infrastructure/actions/workflows/codeql.yml/badge.svg)](https://github.com/snaraj/website-infrastructure/actions/workflows/codeql.yml)
@@ -6,189 +6,169 @@
 [![Coverage](docs/badges/coverage.svg)](docs/badges/coverage.json)
 [![Platform release](https://img.shields.io/github/v/release/snaraj/website-infrastructure?sort=semver)](https://github.com/snaraj/website-infrastructure/releases)
 
-Everything needed to run two real websites from one Raspberry Pi 5 at home —
-upstream Kubernetes bootstrapped with kubeadm, GitOps with Flux, and
-Cloudflare's edge in front — with the paranoia turned all the way up and the
-cloud bill pinned at exactly zero.
+A Kubernetes homelab platform for running services on privately operated
+hardware. It brings host and cluster configuration, application delivery,
+network boundaries, and recovery procedures into a reviewable codebase.
 
-Imagine the ergonomics of a managed platform, except the hardware is yours,
-every byte of configuration is reviewable in this repository, and nothing —
-literally nothing — is allowed to cost money or leak where the box lives.
-That's this repo.
+The current platform uses upstream Kubernetes with kubeadm and containerd on
+Raspberry Pi 5 hardware, Flux for GitOps, and Cloudflare for the public edge.
+It is designed for a single owner operating trusted workloads. Public web
+applications are its first workloads; the platform's scope includes the
+infrastructure and operational controls underneath every service.
 
-Once the repository owner's immutable-release and protected-main readiness
-receipt passes, every protected-main merge publishes one immutable patch
-release of this repository's platform source (`vX.Y.Z`). Both an allowed
-one-commit squash and an allowed merge-free multi-commit rebase bind the
-complete final main SHA to one release. That source release is an audit and
-recovery identity only: it never deploys, promotes, or mutates Kubernetes,
-Flux, Cloudflare, DNS, Tunnel state, secrets, or protected custody. Site image
-and chart releases remain owned by the two application repositories.
+## Platform responsibilities
+
+| Area | Responsibility |
+| --- | --- |
+| Host and cluster lifecycle | Reviewed bootstrap, pinned components, host prerequisites, runtime configuration, and recovery procedures |
+| Workload operation | Declarative composition, namespace boundaries, service accounts, resource limits, and reconciliation |
+| Delivery | Signed artifacts, immutable digest selection, receipted promotions, protected changes, and release history |
+| Network and edge | Private administration, constrained workload flows, outbound Tunnel connectors, and policy-checked provider configuration |
+| Assurance | Repository privacy, secret scanning, policy tests, provenance checks, and explicit evidence for operational claims |
+
+## Architecture
 
 ```mermaid
-flowchart LR
-    dev[Reviewed PRs] -->|squash or rebase to main| repo[(This repository)]
-    repo -->|Flux pulls anonymously| k8s[Kubernetes on the Pi 5]
-    sites[Signed site images by digest] --> k8s
-    k8s --> tunnel[Outbound-only Cloudflare Tunnel]
-    tunnel --> edge[Cloudflare edge] --> visitors((Visitors))
-    visitors -.->|no path exists| k8s
+flowchart TB
+    operator[Owner] -->|private SSH administration| host[Host and cluster lifecycle]
+    host --> cluster[Upstream Kubernetes]
+    application[Application repositories] -->|signed images and charts| registry[OCI registry]
+    promotion[Reviewed promotion PR] -->|owner merge| desired[Protected GitOps desired state]
+    desired -->|anonymous read| flux[Flux]
+    registry -->|verify chart identity and digest| flux
+    flux -->|reconcile selected workloads| cluster
+    cluster -->|outbound connections| tunnel[Cloudflare Tunnel]
+    visitors[Public clients] --> edge[Cloudflare edge]
+    edge -->|established Tunnel| tunnel
 ```
 
-> [!IMPORTANT]
-> This repository remains fail-closed wherever reviewed evidence is unresolved:
-> values marked `REPLACE_*`, `UNRESOLVED`, or explicit all-zero release bindings
-> refuse to work. The two website paths are safe-active desired state, but that
-> does not claim the owner-attended bootstrap or live convergence has occurred.
-> The deployment-state table below tells you exactly how far along things are.
+Administration and public application traffic have separate boundaries.
+The administration plane is SSH-only. Public services use outbound Tunnel
+connections and internal ClusterIP services; repository policy rejects public
+origin records, public Kubernetes entry points, and host-network workloads.
+Each exposed application has its own edge and release identity.
 
-## Website catalog
+This is a single-node system. Power, storage, connectivity, and provider
+failures can interrupt service. Recovery depends on reproducible configuration,
+verified artifacts, and tested operational procedures; workload replicas do
+not provide host redundancy.
 
-The sites this platform exists to serve. Each one lives in its own
-repository with independent CI and signed releases, and deploys here by
-immutable digest only.
+## Delivery and change control
 
-| Site | What it is | Source |
-| --- | --- | --- |
-| [naranjo.online](https://naranjo.online) | Samuel's personal corner of the internet — portfolio, professional home, and whatever deserves a permanent URL. | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) |
-| [lidersea.com](https://lidersea.com) | The web home of Lidersea — luxury yacht maintenance, customization, and detailing. | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) |
+Application repositories own their source, images, Helm charts, and signing
+identities. The platform consumes their independently verified releases:
 
-Both are Svelte frontends embedded into single dependency-free Go binaries,
-shipped as distroless multi-arch containers with Cosign-signed images and
-charts. Desired state, live reconciliation, and public traffic are separate
-claims; the deployment-state table below is the honest source of truth.
+1. An application publishes signed OCI artifacts and an immutable release.
+2. Promotion tooling verifies the release, chart, image, provenance, and
+   source bindings, then prepares a Draft PR with the acquisition receipt.
+3. Required CI and the exact-head review checks validate the proposed change.
+4. The owner merges the PR. Flux reads protected `main`, verifies the selected
+   chart, and reconciles its digest-bound workload.
 
-## Designed to expand
+Every protected-main merge also has a **platform source release**. After
+successful main CI, the publisher derives the next patch from the annotated
+tag ledger and signs a canonical identity binding the final source SHA,
+predecessor, and workflow attempts. That immutable source record supports
+audit and recovery. Application reconciliation follows the GitOps change;
+it does not wait for platform source publication.
 
-The architecture is a castle built for growth: more Pis or a homelab
-tier, databases, operators, CRDs, and secrets tooling such as Vault are
-all possible later without changing its shape. None of that exists yet —
-**only the two websites above are production today**, and nothing else is
-promised, deployed, or implied.
+See [application promotion](docs/runbooks/release-promotion.md) and
+[platform source releases](docs/runbooks/platform-source-releases.md) for the
+contracts and failure handling.
 
-Two invariants hold at every stage of that growth: **zero spend on every
-platform**, and **security at the core** — fail-closed guards, and merge
-and mutation authority that stays with the owner alone.
+## Security model
 
-## The rules the machines enforce
+The current threat model is a public configuration repository for a private,
+single-owner homelab. It assumes trusted application workloads and explicit
+owner control of production changes. Adding independent tenants, untrusted
+workloads, or new public interfaces requires a fresh threat-model decision.
 
-These aren't aspirations — validators, required CI, and reviewed runtime controls reject
-violations automatically:
+- **Protected changes.** Only the owner merges PRs. Required checks, signed
+  commits, immutable history, and independent review govern security changes.
+- **Artifact identity.** Deployments select full digests. Chart verification
+  binds to the exact application publisher; provenance and acquisition
+  receipts keep source, chart, and workload identities together.
+- **Limited authority.** Flux reads public Git anonymously and holds no Git
+  write credential. PR workflows are secretless; actions and tools are pinned.
+  Source publication and repository-settings verification use separate jobs
+  with distinct permissions.
+- **Private operational data.** Runtime credentials, host inventory, account
+  identifiers, and access details stay outside Git. Privacy validators and
+  secret scans cover both the working tree and outgoing history.
+- **Closed defaults.** Unknown identities, missing evidence, unresolved
+  sentinels, and unsupported exposure fail validation. Provider configuration
+  is restricted to the explicitly approved zero-spend product set.
 
-- **$0, forever.** Cloudflare stays on exactly two Free-plan zones; registrar
-  renewals are the only authorized charges. Unknown billing behavior means
-  NO-GO; we prefer downtime to surprise invoices.
-- **No way in.** No inbound WAN ports, no public origin IP, no NodePort,
-  LoadBalancer, host network, Ingress controller, or public admin hostname.
-  The only public path is an outbound-only tunnel.
-- **Nothing secret in the open.** Flux reads this public repo anonymously and
-  holds no write credential. The repository carries no secrets at all: runtime
-  Secrets are created on the cluster by an owner ceremony. Commit metadata
-  itself is scanned — a real email address can't even ride along in a
-  trailer.
-- **Only what was reviewed runs.** Signed charts are selected by immutable OCI
-  digest and verified by Flux against each site's protected-main publisher;
-  their workloads remain digest-only.
-- **Heavy media stays out of the control plane.** Video, audio, and large
-  images never enter Git, embeds, OCI images, ConfigMaps, or etcd — they get
-  their own storage story on the platform.
-- **Pre-existing host services are discovered read-only** and left untouched
-  until conflicts are reviewed with a tested recovery path. A
-  privacy-sensitive legacy archive stays an inactive, operator-only concern
-  ([ADR 0013](docs/adr/0013-protected-legacy-archive.md)) — never a
-  co-hosted workload.
+The [threat model](docs/security/threat-model.md),
+[control matrix](docs/security/security-control-matrix.md), and
+[architecture decisions](docs/adr/) describe the controls and their limits.
+Static policy checks prove repository properties; claims about live enforcement
+require current operational evidence.
 
-## What lives where
+## Current workloads and deployment state
+
+| Workload | Application source |
+| --- | --- |
+| [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) |
+| [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) |
+
+Current selections: lidersea.com `0.1.41` and naranjo.online `0.1.76`, captured 2026-09-05 for issues #320 in `docs/assurance/195-chart-acquisition-receipt.json`.
+
+These are the committed chart selections. The acquisition receipt proves their
+artifact bindings; current readiness and public traffic require a separate
+live observation.
+
+| Surface | Repository evidence and operational boundary |
+| --- | --- |
+| Application GitOps | Protected-main source, digest-pinned chart selections, and direct reconcilers with `prune: false` and `deletionPolicy: Orphan` |
+| Host and cluster controls | Bootstrap, validation, and recovery code are versioned; inventory, installed versions, and live validation records remain private |
+| Flux controller RBAC | Narrowed desired-state controls exist; convergence of the installed controllers onto that model requires separate proof |
+| Promotion automation | Implemented with deterministic acquisition and review receipts; installation and process state are operational evidence |
+| Recovery | Procedures and artifact history are available; a current end-to-end recovery claim requires a completed drill |
+| Media and storage activation | Disabled until the separate capacity, recovery, and exposure requirements are satisfied |
+
+## Repository layout and evolution
 
 ```text
-bootstrap/             user-run Pi, Flux, and recovery procedures
-docs/                  architecture, ADRs, security model, audits, runbooks
-infrastructure/        credential-free OpenTofu for Cloudflare
-kubernetes/            desired state for the single environment
-policies/              Conftest static controls
-scripts/               the "prove it first" validator suite
-tests/                 allow/deny fixtures collected by canonical unittest discovery
+bootstrap/          host, cluster, Flux, and recovery entry points
+kubernetes/         GitOps composition and workload desired state
+infrastructure/     provider configuration in OpenTofu
+policies/           static policy and publication controls
+scripts/            delivery, verification, and operational tooling
+tests/              contract tests and allow/deny fixtures
+docs/               architecture, decisions, assurance, and runbooks
 ```
 
-The two sites live in their own repositories
-([naranjo.online](https://github.com/snaraj/naranjo.online),
-[lidersea.com](https://github.com/snaraj/lidersea.com)) with independent CI
-and signed releases; this repository is application-agnostic — it consumes
-their signed images and charts by immutable digest through per-site Flux
-sources, and no site source code exists here.
+The repository is being reorganized into **`platform`** for host and cluster
+lifecycle and installed security controls, and **`platform-k8s-infra`** for
+application GitOps. This preparation preserves the existing repository object
+and signed release history. The physical repository rename and extraction are
+separate steps; application charts remain with their application sources.
+See the [repository identity transition](docs/runbooks/platform-repository-transition.md).
 
-## Working locally
+## Development and review
 
-One-time setup after cloning — point Git at the repository's hooks so the
-pre-push publication gate runs automatically:
-
-```bash
-git config core.hooksPath .githooks
-```
+Start with [AGENTS.md](AGENTS.md) for contribution, review, and authority rules.
+The same contract applies to human and automated contributors.
 
 ```sh
-make check-fast        # validators + the full test suite (Linux and macOS)
-make check             # everything: render, policy, shell, workflow, and guard checks
-make coverage          # measure suite coverage; enforce the floor and badge integrity
-make pre-push-security # rehearse the exact publication gate before pushing
+make check-fast        # repository validators and the full Python test suite
+make check             # pinned policy, render, shell, workflow, and infrastructure checks
+make coverage          # coverage floor, drift, and badge integrity
+make pre-push-security # exact outgoing history and publication checks
 ```
 
-Coverage is measured inside the repository (no external coverage service):
-the committed badge is regenerated and byte-verified against
-[`docs/badges/coverage.json`](docs/badges/coverage.json) by CI, so the badge
-can never claim a number the gate did not measure.
+`check-fast` requires Python and Git. The complete toolchain is pinned in
+[versions.env](versions.env); the
+[local development runbook](docs/runbooks/local-macos-development.md) covers
+setup. Use the repository's `.githooks` pre-push hook when publishing changes.
+Coverage is measured locally and in CI without an external coverage service.
 
-`make check-fast` needs only Python and Git. Tool pins live in
-`versions.env`; macOS notes live in
-[the local development runbook](docs/runbooks/local-macos-development.md).
+For operation, use the [runbooks](docs/runbooks/) and their evidence and
+recovery preconditions. A script's presence is not authorization to run it
+against a live system.
 
-## Start here, depending on who you are
-
-- **Reviewing security?** [Practical security model](docs/security/practical-security-model.md),
-  then the [threat model](docs/security/threat-model.md) and
-  [control matrix](docs/security/security-control-matrix.md).
-- **Understanding the design?** [Architecture overview](docs/architecture/overview.md)
-  and the ADRs — start with [kubeadm-on-Pi](docs/adr/0011-kubeadm-on-pi.md)
-  and [zero-spend Cloudflare](docs/adr/0006-cloudflare-zero-spend.md).
-- **Operating it?** The [runbooks](docs/runbooks/), each with explicit stop
-  points; no script here is permission to touch a live system.
-- **An AI agent?** `AGENTS.md` is the whole contract; audits under
-  [docs/audits](docs/audits/) map the current state honestly.
-
-## Forking this
-
-It's intentionally opinionated for its owner's two domains and identities,
-but the pattern — fail-closed sentinels, digest-only deploys, zero-spend
-guards, validator-enforced privacy — is reusable. Replace each complete
-identity tuple (domain, module, package, image, chart, workflow, signature,
-DNS, tunnel rule, tests) rather than search-and-replacing one label, and
-keep every discovery value sentinel until your own hardware and account
-evidence passes. It's a reference platform, not a one-command installer.
-
-## Deployment state
-
-| Gate | State |
-| --- | --- |
-| Repository and policies | Credential-free scaffold + negative-policy tests implemented; live evidence pending |
-| Pi discovery | Read-only discovery completed; private evidence stays off Git |
-| Independent recovery drill | Not proven; host/network/cluster mutation blocked |
-| Protected legacy archive | Local archive exists; off-device restore proof pending |
-| Media storage profile | Disabled pending storage evidence |
-| Public heavy-media delivery | NO-GO under the current zero-spend Cloudflare boundary |
-| Cloudflare subscription audit | Not run |
-| kubeadm/containerd install | In progress on `deploy/pi-live-readiness` |
-| CNI + kube-proxy decision | Rendered (Calico VXLAN), install pending |
-| Cluster initialization | Historical repository evidence only; no live initialization receipt is claimed here |
-| Flux controller install | Not run. `scripts/install-flux-controllers.sh` is the reviewed owner-run installer; no repository install has been executed, and no live execution or current controller version is claimed here |
-| Flux live-vs-reviewed drift | Open. The live cluster still runs the stock upstream render; the #141 convergence ceremony was retired unexecuted (issue #299), so converging onto the reviewed narrowed RBAC needs a fresh owner decision and a separately reviewed design |
-| `flux-system` egress policy | Committed desired state only; no live application or health is claimed |
-| Flux site desired state | Combined #195/#189 candidate: both manifests are unsuspended at exact signed chart digests behind the protected-main-branch source (owner decoupling ruling 2026-09-01, issue #275; the tag-driven selector path retires per `docs/runbooks/site-sync-branch-flip.md`) and two direct `prune: false`, `deletionPolicy: Orphan` reconcilers. Current selections: lidersea.com `0.1.41` and naranjo.online `0.1.76`, captured 2026-09-05 for issues #320 in `docs/assurance/195-chart-acquisition-receipt.json`; acquisition receipts never assert live convergence, so no health claim of any kind attaches to the committed digests. No live equivalence, readiness, or traffic is claimed |
-| Flux bootstrap (site sync only) | The recovery successor targets exact `v0.1.43` through an owner-attended create-or-exact transaction with suspended staging and containment; burned `v0.1.41` and `v0.1.42` are never selected. It does not reconcile controllers, controller RBAC, admission, or Cloudflare, and no live convergence is claimed here |
-| Tunnel-token ceremony | Not run |
-| Cloudflare plan/apply | Not authorized |
-| Public exposure | Not authorized |
-
-No script in this repository is itself authorization to mutate an external
-system. The narrow site bootstrap requires an exact release, explicit target,
-and owner confirmation; every other mutation runbook retains its stop point,
-and the owner holds every key.
+For reuse elsewhere, review the architecture and replace each complete
+workload, publisher, and provider identity tuple. Retain unresolved values
+until validated against the new environment. This repository is an operational
+reference with explicit constraints, rather than a general-purpose installer.

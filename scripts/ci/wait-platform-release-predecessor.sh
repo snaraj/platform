@@ -8,6 +8,7 @@ set -euo pipefail
 : "${SOURCE_SHA:?SOURCE_SHA is required}"
 : "${GITHUB_API_URL:?GITHUB_API_URL is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+: "${GITHUB_REPOSITORY_ID:?GITHUB_REPOSITORY_ID is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 test -z "${GH_TOKEN-}"
@@ -29,8 +30,9 @@ release_json="${RUNNER_TEMP}/platform-predecessor-release.json"
 identity_json="${RUNNER_TEMP}/platform-predecessor-identity.json"
 bundle_json="${RUNNER_TEMP}/platform-predecessor-identity.sigstore.json"
 notes="${RUNNER_TEMP}/platform-predecessor-notes.md"
-identity_name='platform-release-identity.v1.json'
-bundle_name='platform-release-identity.v1.json.sigstore.json'
+epoch_contract='scripts/ci/platform_release_epoch.py'
+repository_json="${RUNNER_TEMP}/platform-repository.json"
+transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
 tagger_name='github-actions[bot]'
 tagger_email='41898282+github-actions[bot]@users.noreply.github.com'
 have_cached_window=false
@@ -85,7 +87,10 @@ classify_predecessor_tag() {
 classify_predecessor_release() {
   local required="$1" tag="$2" source_sha="$3" status
   local identity_id bundle_id identity_status bundle_status
-  local selector_build_sha tag_object_sha source_tree_sha
+  local selector_build_sha tag_object_sha source_tree_sha policy identity_name bundle_name
+  policy="$(python3 -I -B "${epoch_contract}" "${tag}")"
+  identity_name="$(jq -er '.asset' <<<"${policy}")"
+  bundle_name="$(jq -er '.bundle' <<<"${policy}")"
   local -a record_args=()
   rm -f "${identity_json}" "${bundle_json}"
   status="$(get_json "${api}/releases/tags/${tag}" "${release_json}")"
@@ -104,7 +109,7 @@ classify_predecessor_release() {
   if [ "${status}" != 200 ]; then
     python3 -I -B "${contract}" identity-release-state \
       --http-status "${status}" --require "${required}" \
-      --tag "${tag}" --source-sha "${source_sha}" >/dev/null
+      "${transport_args[@]}" --tag "${tag}" --source-sha "${source_sha}" >/dev/null
     return
   fi
   jq -e --arg identity "${identity_name}" --arg bundle "${bundle_name}" '
@@ -138,7 +143,7 @@ classify_predecessor_release() {
     --source-sha "${source_sha}" \
     --selector-build-sha "${selector_build_sha}" \
     --tag-object-sha "${tag_object_sha}" \
-    --source-tree-sha "${source_tree_sha}" >/dev/null
+    --source-tree-sha "${source_tree_sha}" "${transport_args[@]}" >/dev/null
 }
 
 for _attempt in {1..30}; do
@@ -178,6 +183,11 @@ for _attempt in {1..30}; do
   test "${source_sha}" = "${SOURCE_SHA}"
   test "${base_sha}" != "${SOURCE_SHA}"
   test -n "${base_tag}"
+  test "$(get_json "${api}" "${repository_json}")" = 200
+  python3 -I -B "${epoch_contract}" "${target_tag}" \
+    --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
+    --repository-json "${repository_json}" \
+    --base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${SOURCE_SHA}" >/dev/null
   python3 -I -B "${contract}" release-notes \
     --repository . --head "${base_sha}" --tag "${base_tag}" > "${notes}"
   tagger_date="$(git show -s --format=%cI "${base_sha}")"
@@ -205,6 +215,7 @@ for _attempt in {1..30}; do
   fi
   printf 'attestation=PASS:%s:%s\n' \
     "${GITHUB_REPOSITORY}" "${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+  printf 'repository_name=%s\n' "${GITHUB_REPOSITORY#snaraj/}" >> "${GITHUB_OUTPUT}"
   unset read_token
   exit 0
 done
