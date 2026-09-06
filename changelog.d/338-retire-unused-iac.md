@@ -1,3 +1,3 @@
-Retire unused OpenTofu and Windows credential workflows, permanently blocked
-bootstrap live bodies and their dedicated tests. Remove stale setup narrative
-and duplicate documentation while retaining active release and cluster controls.
+### Changed
+
+- Retire dormant provider and credential workflows, unreachable bootstrap code and their dedicated tests; remove stale documentation and promotion README rewrites while preserving active release and cluster controls.
