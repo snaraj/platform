@@ -99,9 +99,10 @@ class ParallelInventoryTests(unittest.TestCase):
             log.write_text("")
             return process, log.open("wb"), log
 
-        with mock.patch.object(MODULE, "discover", return_value=["fixture"]), mock.patch.object(MODULE, "start_worker", side_effect=start), contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(ValueError):
-                MODULE.run(Path("unused-fixture"), 1)
+        for code, cleanup_error in ((7, None), (0, PermissionError("fixture cleanup denied"))):
+            with self.subTest(code=code), mock.patch.object(MODULE, "discover", return_value=["fixture"]), mock.patch.object(MODULE, "start_worker", side_effect=start), mock.patch.object(MODULE, "wait_worker", return_value=code), mock.patch.object(MODULE, "stop_worker", side_effect=cleanup_error), contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(ValueError):
+                    MODULE.run(Path("unused-fixture"), 1)
 
     def test_invalid_timeout_refuses_before_discovery(self):
         for timeout in (0, -1, 1201):
@@ -167,6 +168,104 @@ class ParallelInventoryTests(unittest.TestCase):
                 pass
             process.wait()
             process.stdout.close()
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_successful_cli_run_cleans_a_child_after_test_worker_exit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipe = root / "child-pipe"
+            os.mkfifo(pipe)
+            reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+            self.fixture(root,
+                " def test_background(self):\n"
+                "  import os, pathlib, subprocess, sys\n"
+                "  root = pathlib.Path(__file__).parent\n"
+                "  (root / 'group').write_text(str(os.getpgrp()))\n"
+                "  with (root / 'child-pipe').open('wb') as output:\n"
+                "   subprocess.Popen([sys.executable, '-B', '-c', \"import time; print('ready', flush=True); time.sleep(30)\"], stdout=output)\n")
+            try:
+                result = self.invoke(root)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('"test_inventory": "PASS"', result.stdout)
+                # No writer may remain after PASS; only an EOF is acceptable.
+                self.assertTrue(select.select([reader], [], [], 2)[0])
+                data = os.read(reader, 1024)
+                if data:
+                    self.assertEqual(data, b"ready\n")
+                    self.assertTrue(select.select([reader], [], [], 2)[0], "child outlived successful runner")
+                    self.assertEqual(os.read(reader, 1024), b"")
+            finally:
+                # Only a still-open fixture pipe authorizes cleanup of its
+                # known group after a deliberately broken runner regression.
+                if not select.select([reader], [], [], 0)[0] and (root / "group").is_file():
+                    try:
+                        os.killpg(int((root / "group").read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                os.close(reader)
+
+    @unittest.skipUnless(os.name == "posix", "supervisor observation requires POSIX")
+    def test_exit_status_is_closed_and_an_early_supervisor_exit_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "exit.json"
+            process = mock.Mock()
+            process.pid = 123
+            with mock.patch.object(MODULE.os, "waitid", return_value=None):
+                for code in (True, "0", None, [], -128, 256):
+                    path.write_text(json.dumps(code))
+                    with self.subTest(code=code), self.assertRaises(ValueError):
+                        MODULE.wait_worker(process, 1, path)
+                path.write_text("0")
+                self.assertEqual(MODULE.wait_worker(process, 1, path), 0)
+            with mock.patch.object(MODULE.os, "waitid", return_value=mock.Mock()):
+                with self.assertRaises(ValueError):
+                    MODULE.wait_worker(process, 1, path)
+
+    @unittest.skipUnless(os.name == "posix", "supervisor observation requires POSIX")
+    def test_expired_wait_never_sleeps_again(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(MODULE.os, "waitid", return_value=None), mock.patch.object(MODULE.time, "monotonic", side_effect=[0, 2]), mock.patch.object(MODULE.time, "sleep", side_effect=AssertionError("slept past deadline")):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    MODULE.wait_worker(mock.Mock(), 1, Path(temporary) / "absent.json")
+
+    @unittest.skipUnless(os.name == "posix", "group cleanup requires POSIX")
+    def test_supervisor_exits_when_parent_control_pipe_closes(self):
+        for completed in (False, True):
+            with self.subTest(completed=completed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.fixture(root, " def test_pass(self): " + ("pass" if completed else "__import__('time').sleep(30)") + "\n")
+                config = dict(start=str(root), ids=["test_sample.Sample.test_pass"], verbosity=0,
+                              result=str(root / "result.json"), exit_status=str(root / "exit.json"))
+                process, output, _ = MODULE.start_worker(config, root, 0, False)
+                try:
+                    if completed:
+                        self.assertEqual(MODULE.wait_worker(process, 5, Path(config["exit_status"])), 0)
+                    process.stdin.close()
+                    try:
+                        code = process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.fail("supervisor ignored parent loss while running tests")
+                    self.assertLess(code, 0)
+                finally:
+                    if process.returncode is None:
+                        MODULE.stop_worker(process)
+                    output.close()
+
+    @unittest.skipUnless(os.name == "posix", "non-reaping observation requires POSIX")
+    def test_unexpected_supervisor_exit_does_not_release_its_pid(self):
+        process = subprocess.Popen([sys.executable, "-B", "-c", "pass"], start_new_session=True)
+        try:
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+            with tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaises(ValueError):
+                    MODULE.wait_worker(process, 1, Path(temporary) / "absent.json")
+            try:
+                observed = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                self.fail("session owner was reaped before group cleanup")
+            self.assertEqual(observed.si_status, 0)
+        finally:
+            process.wait(timeout=5)
 
     @unittest.skipUnless(importlib.util.find_spec("coverage"), "requires the pinned coverage environment")
     def test_coverage_includes_worker_and_test_subprocess_execution(self):
