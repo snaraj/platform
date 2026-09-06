@@ -809,7 +809,11 @@ class RewriteTests(unittest.TestCase):
         self.assertIn(f"digest: {record['manifestDigest']}", source)
         lidersea = (self.root / "kubernetes/websites/lidersea-com/source.yaml").read_bytes()
         self.assertEqual(lidersea, (REPO_ROOT / "kubernetes/websites/lidersea-com/source.yaml").read_bytes())
-        self.assertIn("Current selections: lidersea.com `0.1.41` and naranjo.online `0.1.99`, captured 2026-09-02 for issues #990", (self.root / "README.md").read_text())
+        # The unpromoted site's version is an input snapshot, not a permanent
+        # production version. Read it before the rewrite so this still detects
+        # accidental coupling between the two applications.
+        unchanged_version = self.receipt["records"]["lidersea-com"]["chartTag"]
+        self.assertIn(f"Current selections: lidersea.com `{unchanged_version}` and naranjo.online `0.1.99`, captured 2026-09-02 for issues #990", (self.root / "README.md").read_text())
         fragment = (self.root / "changelog.d/990-promote-naranjo-online-0-1-99.md").read_text()
         self.assertTrue(CONTRACT.FRAGMENT_PATH_RE.match("changelog.d/990-promote-naranjo-online-0-1-99.md"))
         # The tool's fragment must pass the release-transition gate's own
@@ -995,12 +999,15 @@ class TickTests(unittest.TestCase):
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.repo)], check=True, env=self.env)
         # The fake publisher is one patch ahead of whatever the tracked tree
         # commits, so the tree can move without this battery moving.
-        committed = MODULE.load_receipt(REPO_ROOT)["records"]["naranjo-online"]["chartTag"]
+        records = MODULE.load_receipt(self.repo)["records"]
+        committed = records["naranjo-online"]["chartTag"]
         major, minor, patch = committed.split(".")
         self.next = f"{major}.{minor}.{int(patch) + 1}"
         self.fleet = FakeFleet(version=self.next)
         self.fleet.gh[f"repos/{self.fleet.site}/releases/latest"] = {"tag_name": f"v{self.next}"}
-        self.fleet.gh["repos/snaraj/lidersea.com/releases/latest"] = {"tag_name": "v0.1.41"}
+        # Keep the untouched application current in this fixture even after a
+        # real promotion changes the source snapshot copied above.
+        self.fleet.gh["repos/snaraj/lidersea.com/releases/latest"] = {"tag_name": f"v{records['lidersea-com']['chartTag']}"}
         self.fleet.gh["user"] = {"login": MODULE.ASSIGNEE, "id": OWNER_ID, "name": "t"}
         self.fleet.gh[f"users/{MODULE.ASSIGNEE}/ssh_signing_keys"] = [[{"key": "ssh-ed25519 AAAATESTKEY comment"}]]
         self.fleet.gh[f"repos/{MODULE.REPOSITORY}/pulls?state=open&per_page=100"] = [[]]

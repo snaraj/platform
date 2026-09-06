@@ -1,10 +1,10 @@
 # Platform
 
-[![Pull request](https://github.com/snaraj/website-infrastructure/actions/workflows/pull-request.yml/badge.svg)](https://github.com/snaraj/website-infrastructure/actions/workflows/pull-request.yml)
-[![CodeQL](https://github.com/snaraj/website-infrastructure/actions/workflows/codeql.yml/badge.svg)](https://github.com/snaraj/website-infrastructure/actions/workflows/codeql.yml)
-[![Scheduled security](https://github.com/snaraj/website-infrastructure/actions/workflows/scheduled-security.yml/badge.svg)](https://github.com/snaraj/website-infrastructure/actions/workflows/scheduled-security.yml)
+[![Pull request](https://github.com/snaraj/platform/actions/workflows/pull-request.yml/badge.svg)](https://github.com/snaraj/platform/actions/workflows/pull-request.yml)
+[![CodeQL](https://github.com/snaraj/platform/actions/workflows/codeql.yml/badge.svg)](https://github.com/snaraj/platform/actions/workflows/codeql.yml)
+[![Scheduled security](https://github.com/snaraj/platform/actions/workflows/scheduled-security.yml/badge.svg)](https://github.com/snaraj/platform/actions/workflows/scheduled-security.yml)
 [![Coverage](docs/badges/coverage.svg)](docs/badges/coverage.json)
-[![Platform release](https://img.shields.io/github/v/release/snaraj/website-infrastructure?sort=semver)](https://github.com/snaraj/website-infrastructure/releases)
+[![Platform release](https://img.shields.io/github/v/release/snaraj/platform?sort=semver)](https://github.com/snaraj/platform/releases)
 
 A Kubernetes homelab platform for running services on privately operated
 hardware. It brings host and cluster configuration, application delivery,
@@ -139,11 +139,11 @@ tests/              contract tests and allow/deny fixtures
 docs/               architecture, decisions, assurance, and runbooks
 ```
 
-The repository is being reorganized into **`platform`** for host and cluster
-lifecycle and installed security controls, and **`platform-k8s-infra`** for
-application GitOps. This preparation preserves the existing repository object
-and signed release history. The physical repository rename and extraction are
-separate steps; application charts remain with their application sources.
+This repository is now **`platform`**, preserving the original repository
+object and signed release history. It owns host and cluster lifecycle and
+installed security controls. Application GitOps is being prepared for a separate
+**`platform-k8s-infra`** repository; that extraction and production source move
+remain pending. Application charts remain with their application sources.
 See the [repository identity transition](docs/runbooks/platform-repository-transition.md).
 
 ## Development and review
