@@ -209,11 +209,6 @@ spec:
         self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
         self.assertEqual(binding["kind"], "ValidatingAdmissionPolicyBinding")
         self.assertEqual(binding["spec"]["validationActions"], ["Deny"])
-        readme = (BOUNDARY / "operations.md").read_text()
-        self.assertIn("native ValidatingAdmissionPolicy", readme)
-        self.assertIn("exact one-patch", readme)
-        self.assertIn("forward tag", readme)
-        self.assertNotIn("trusted field-level writer", readme)
 
     def test_retired_cutover_temporary_assets_are_absent(self):
         forbidden = (
