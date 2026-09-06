@@ -21,9 +21,6 @@ TRANSITION_FILES = (
     "kubernetes/websites/lidersea-com/release.yaml",
     "kubernetes/platform/cloudflare-public/release/release.yaml",
     "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
-) + tuple(
-    path.as_posix()
-    for path in sorted(TRANSITION.CLOUDFLARE_TERRAFORM_REVIEW_FILES)
 )
 
 

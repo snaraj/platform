@@ -83,7 +83,6 @@ MAIN_CI_REQUIRED_STEPS = (
     "Scan current tree for secrets",
     "Render and validate Helm and Kubernetes",
     "Prove render determinism and validate the assurance ledger",
-    "Validate OpenTofu without credentials",
     "Scan dependencies and full-tree secrets",
     "Scan IaC and configuration",
 )

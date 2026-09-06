@@ -34,12 +34,8 @@ from validate_release_state import (
     load_simple_mapping_file,
 )
 from validate_release_transition import (
-    CLOUDFLARE_LOCK_FILES,
-    CLOUDFLARE_TERRAFORM_REVIEW_FILES,
-    CLOUDFLARE_TERRAFORM_SOURCE_FILES,
     STATE as TRANSITION_RELEASE_STATE,
     classify as classify_release_transition,
-    cloudflare_phase_contract_errors,
     contains_secret_document,
 )
 from validate_signature_policy import (
@@ -141,14 +137,6 @@ OPAQUE_ARTIFACT_MAGIC_PREFIXES = (
     b"-----BEGIN AGE ENCRYPTED FILE-----", b"age-encryption.org/v1",
     b"-----BEGIN PGP MESSAGE-----", b"U2FsdGVkX1",
 )
-ALLOWED_CLOUDFLARE_RESOURCES = {
-    "cloudflare_dns_record",
-    "cloudflare_zero_trust_gateway_policy",
-    "cloudflare_zero_trust_tunnel_cloudflared",
-    "cloudflare_zero_trust_tunnel_cloudflared_config",
-    "cloudflare_zero_trust_tunnel_cloudflared_route",
-    "cloudflare_zone_setting",
-}
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_IMAGE = re.compile(r"^[^\s]+@sha256:[0-9a-f]{64}$")
 # One closed tuple drives every site-specific release check so adding a site
@@ -2384,79 +2372,6 @@ def check_kubernetes(root):
     return errors
 
 
-def check_cloudflare(root):
-    errors = []
-    base = root / "infrastructure" / "cloudflare"
-    if not base.exists():
-        return ["Cloudflare OpenTofu directory missing"]
-    errors.extend(cloudflare_phase_contract_errors(root))
-    visible_paths, visibility_errors = _git_visible_cloudflare_paths(root)
-    errors.extend(visibility_errors)
-    expected_sources = {
-        path.as_posix() for path in CLOUDFLARE_TERRAFORM_SOURCE_FILES
-    }
-    expected_phase_files = {
-        path.as_posix() for path in CLOUDFLARE_TERRAFORM_REVIEW_FILES
-    }
-    visible_phase_files = {
-        relative_path
-        for relative_path in visible_paths
-        if relative_path.startswith("infrastructure/cloudflare/phases/")
-    }
-    for missing in sorted(expected_phase_files - visible_phase_files):
-        errors.append("required Cloudflare phase file is not Git-visible: " + missing)
-    for unexpected in sorted(visible_phase_files - expected_phase_files):
-        errors.append("unexpected Git-visible Cloudflare phase file: " + unexpected)
-    visible_sources = {
-        relative_path
-        for relative_path in visible_paths
-        if relative_path.endswith(".tf")
-    }
-    for missing in sorted(expected_sources - visible_sources):
-        errors.append("required Cloudflare Terraform source is not Git-visible: " + missing)
-    for unexpected in sorted(visible_sources - expected_sources):
-        errors.append("unexpected Git-visible Cloudflare Terraform source: " + unexpected)
-    for relative_path in sorted(visible_paths):
-        name = Path(relative_path).name
-        if name.endswith(".tf.json"):
-            errors.append("Git-visible Terraform JSON configuration is forbidden: " + relative_path)
-        if name.endswith(".tfvars") or name.endswith(".tfvars.json"):
-            errors.append("Git-visible Terraform variable input is forbidden: " + relative_path)
-
-    for relative_path in sorted(visible_sources):
-        path = root / relative_path
-        if path.is_symlink() or not path.is_file():
-            errors.append("Cloudflare Terraform source is missing or symbolic: " + relative_path)
-            continue
-        text = read(path)
-        for match in re.finditer(r'(?m)^\s*data\s+"(cloudflare_[^"]+)"', text):
-            errors.append("Cloudflare data source is forbidden in {}: {}".format(
-                relative(path, root), match.group(1)
-            ))
-        for match in re.finditer(r'(?m)^\s*resource\s+"([^"]+)"', text):
-            resource_type = match.group(1)
-            if resource_type not in ALLOWED_CLOUDFLARE_RESOURCES:
-                errors.append("Cloudflare resource outside allowlist in {}: {}".format(
-                    relative(path, root), resource_type
-                ))
-    return errors
-
-
-def _git_visible_cloudflare_paths(root):
-    """Return tracked plus unignored Cloudflare files; ignored local inputs stay local."""
-
-    visible, errors = _git_visible_paths(root)
-    if errors:
-        return set(), [
-            error.replace("repository inventory", "Cloudflare source inventory")
-            for error in errors
-        ]
-    return {
-        entry for entry in visible
-        if entry.startswith("infrastructure/cloudflare/")
-    }, []
-
-
 def chart_source_contract_errors(root):
     """Bind each site's published chart source to its closed identity tuple.
 
@@ -2665,7 +2580,7 @@ def check_release(root):
         errors.append("versions.env still contains UNRESOLVED pins")
     required_generated = [
         "kubernetes/flux-system/controllers/gotk-components.yaml",
-    ] + [path.as_posix() for path in sorted(CLOUDFLARE_LOCK_FILES)]
+    ]
     for name in required_generated:
         if not (root / name).is_file():
             errors.append("required reviewed/generated file missing: " + name)
@@ -2720,42 +2635,7 @@ def check_release(root):
     return errors
 
 
-def cloudflare_visible_configuration_errors(root):
-    """Return Git-visible Terraform inventory/input failures as activation signals."""
-
-    base = root / "infrastructure" / "cloudflare"
-    if not base.exists():
-        return []
-    visible_paths, errors = _git_visible_cloudflare_paths(root)
-    errors.extend(cloudflare_phase_contract_errors(root))
-    expected_sources = {
-        path.as_posix() for path in CLOUDFLARE_TERRAFORM_SOURCE_FILES
-    }
-    visible_sources = {
-        path for path in visible_paths if path.endswith(".tf")
-    }
-    if visible_sources != expected_sources:
-        errors.append("Cloudflare Terraform source inventory is outside the closed contract")
-    expected_phase_files = {
-        path.as_posix() for path in CLOUDFLARE_TERRAFORM_REVIEW_FILES
-    }
-    visible_phase_files = {
-        path for path in visible_paths
-        if path.startswith("infrastructure/cloudflare/phases/")
-    }
-    if visible_phase_files != expected_phase_files:
-        errors.append("Cloudflare phase file inventory is outside the closed contract")
-    for relative_path in visible_paths:
-        name = Path(relative_path).name
-        if name.endswith(".tf.json") or name.endswith(".tfvars") or name.endswith(".tfvars.json"):
-            errors.append("Cloudflare Terraform auto-loaded input is Git-visible")
-            break
-    return errors
-
-
 def activation_requested(root):
-    if cloudflare_visible_configuration_errors(root):
-        return True
     for name, contract in RELEASE_CONTRACTS.items():
         release_path = root / str(contract["release"])
         if release_path.is_file():
@@ -2938,7 +2818,6 @@ CHECKS = {
     "secrets": check_secrets,
     "workflows": check_workflows,
     "kubernetes": check_kubernetes,
-    "cloudflare": check_cloudflare,
     "activation": check_activation,
     "release": check_release,
 }

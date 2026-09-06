@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 # Install the reviewed Flux controllers, and nothing else.
 #
-# Why this exists as its own entry point: bootstrap/flux/bootstrap.sh owns the
-# secret-bearing and sync-applying ceremonies and stays code-blocked until the
-# reviewed-blob launcher exists. The controllers-only install needs none of
-# that machinery — no age identity, no Secret, and no Flux custom resource —
-# but every live mode necessarily reads the protected client credential in its
-# explicit kubeconfig. It was authorized as a separate,
-# inert-by-construction step. Encoding that step here, with its guardrails
-# executable and reviewable, is strictly better than performing it as an ad-hoc
-# command outside the repository.
+# Controller installation is separate from Git source and application sync.
+# Live modes bind a protected kubeconfig and exact target; the create-only
+# transaction refuses an existing installation and preserves rollback custody.
 #
 # Three properties this script owns, each of which a runbook sentence alone
 # could not deliver:

@@ -35,9 +35,10 @@ modest UI assets remain subject to the existing audit and launch gates.
 
 ## Enforcement
 
-OpenTofu resource allowlisting, plan policy, read-only subscription audits,
-least-privilege tokens without Billing Write or Registrar Write, and explicit
-plan-hash approval are primary controls. The separate audit token may have
+Owner-approved product boundaries, read-only subscription audits and
+least-privilege tokens without Billing Write or Registrar Write are primary
+controls. Provider changes require a current scope decision, before/after
+observations and a verified rollback. The separate audit token may have
 Billing Read. Budget alerts are delayed secondary detection and never authorize
 or stop spend. Failure means downtime, never paid fallback.
 

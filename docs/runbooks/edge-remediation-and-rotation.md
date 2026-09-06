@@ -1,4 +1,4 @@
-# Edge remediation, Tunnel rotation, and account audit — Draft / unverified
+# Edge remediation, Tunnel rotation, and account audit
 
 Three owner-run ceremonies for the public edge, written to the same evidence
 standard as a pull-request body: every step names what is observed, what would
@@ -23,8 +23,7 @@ cite it, do not restate it. `docs/runbooks/tunnel-token-rotation.md` governs the
 superseded shared public Tunnel and the host-level administrative connector, and
 its Cloudflare rotation semantics are the source this runbook builds on.
 `docs/runbooks/secret-rotation.md` holds the general secret ceremony.
-`docs/runbooks/cloudflare-token-receipt.md` holds the token-receipt schema and
-its blockers. `docs/runbooks/unexpected-cloudflare-billing.md` is the zero-spend
+`docs/runbooks/unexpected-cloudflare-billing.md` is the zero-spend
 incident path.
 
 Two commands appear throughout:
@@ -39,31 +38,10 @@ Two commands appear throughout:
 
 ## Ceremony A — the two-toggle edge remediation
 
-> **Read this before A.0.** Both settings this ceremony toggles now have
-> committed state owners in the two site-owned OpenTofu roots —
-> `infrastructure/cloudflare/phases/site-naranjo-online/main.tf` and
-> `infrastructure/cloudflare/phases/site-lidersea-com/main.tf`. Each root
-> orders Minimum TLS Version before Always Use HTTPS and requires the provider
-> to read the value back, and
-> `infrastructure/cloudflare/policy/cloudflare-plan.rego` admits only the
-> measured `off` → `on` and `1.0` → `1.2` transitions on exactly those two
-> addresses, with every other resource in the plan a no-op. A dashboard toggle
-> is therefore a **break-glass** action under safety invariant 9: it takes
-> custody away from that state, so it must be recorded and reconciled back into
-> the roots immediately, and the next plan re-read before anything else runs.
->
-> The reviewed saved-plan ceremony that would replace this section — together
-> with the fixed legacy-capable acceptance client that proves TLS 1.0/1.1
-> rejection against the same edge — is **deferred to a tracked follow-up
-> issue** and is not in this tree. Until it lands, this section is the only
-> written procedure, and it is a break-glass one. Do not read the presence of
-> committed OpenTofu owners as authorization to apply them: no live Cloudflare
-> transaction is authorized by this repository.
-
-Two zone settings are below their target state on both zones: plaintext HTTP is
-served instead of redirected, and the minimum TLS version is 1.0. Everything
-else in the target state is already met, so this ceremony changes exactly two
-settings per zone and nothing else.
+Use this procedure when current evidence shows an HTTP redirect or minimum
+TLS configuration gap. Record the actual prestate for the selected zone and
+its rollback before any owner-approved change. Existing provider resources
+retain their identities; this procedure does not authorize their replacement.
 
 ### A.0 Preconditions
 
@@ -82,33 +60,18 @@ settings per zone and nothing else.
    loop-safety conclusion does not lean on it.
 4. Nobody is mid-rotation on either Tunnel. Ceremonies A and B never overlap.
 
-### A.1 Pre-toggle probe — expect gaps, and record them
+### A.1 Record the current edge state
 
 ```sh
 scripts/edge-probe.sh --rounds 2 --round-gap 20 | tee edge-probe-before.txt
 ```
 
-Expected at the 2026-08-12 attestation, and reproduced by this script:
-`GAP` on `http-redirect-root`, `http-redirect-path-query`, `tls10-refused` and
-`tls11-refused` for **both** zones — eight gaps — and `PASS` on everything else,
-including `zero-rtt-off`, `hsts-exact`, `tls13-accepted`, `readyz`,
-`www-absent`, `site-identity` and `sites-distinct`.
-
-Read four things before continuing:
-
-- the `RESULT` line: `gap=8 skip=0 error=0 divergent=0`. A `skip` means the
-  local TLS client could not be proven able to speak a protocol, so that item
-  says nothing about the edge; fix the client before trusting the ceremony.
-  A `divergent` means two rounds disagreed; re-run before changing anything.
-  (`inapplicable` is different and harmless — it counts items outside the
-  selected scope, such as cross-zone distinctness in a single-zone run.)
-- the capability preflight block: all four protocols must read `capable`.
-- the `dnssec` rows: `naranjo.online` signed and validating, `lidersea.com`
-  unsigned. `lidersea.com` unsigned is the recorded expectation, not a defect.
-- the `hsts-over-cleartext` record rows. `present` means the running build
-  still predates the https-gated HSTS change. It is a deployed-state signal
-  only; browsers ignore HSTS received over cleartext, so it is neither a
-  control nor a blocker for this ceremony.
+Read the result, individual gaps and client capability checks. A skipped
+protocol check is not proof that the edge rejects that protocol. Divergent
+rounds require investigation before mutation. Compare DNSSEC and site identity
+against the approved per-site expectations; do not infer current state from a
+previous capture. Change only the settings whose current observations justify
+remediation.
 
 Keep `edge-probe-before.txt` outside the repository. It contains no credential
 and no private identifier, but it is a point-in-time observation, not a
@@ -143,9 +106,9 @@ ceremony: stop, do not toggle the second zone, and read the table. Never wave
 a nonzero exit through because "it is only one zone".
 
 Safety invariant 9 applies: these are dashboard mutations, therefore break-glass
-by definition. Record the exact settings changed, and reconcile them into the
-Cloudflare OpenTofu roots immediately afterwards so the next plan does not
-propose reverting them.
+by definition. Record the exact settings changed and their observed results in private
+operational evidence. Reconcile the documented operating contract and recheck
+the affected public edge before closing the change.
 
 ### A.3 Post-toggle probe — enforce
 
@@ -240,7 +203,7 @@ Therefore **an old token is never a rollback credential**, and a rotation that
 skips the force-disconnect leaves an attacker's connector running.
 
 Never place a Tunnel token or the API bearer used for rotation in a command
-line, shell history, Git, chat, a log, OpenTofu state, or an unprotected plan.
+line, shell history, Git, chat, logs or an unprotected operational artifact.
 Use a protected file or a process-local environment variable, keep shell tracing
 off, and clear it immediately afterwards.
 
@@ -377,8 +340,8 @@ is finished. The script prints that warning itself, at the top of every raw run.
 
 Revoke the token as soon as the run is reviewed, and confirm the revocation
 using a *different* credential — a token that reports itself revoked is not
-evidence. Record the non-secret revocation facts per
-`docs/runbooks/cloudflare-token-receipt.md`. A token left alive after the
+evidence. Record the non-secret revocation time and independent confirmation in private
+operational evidence. A token left alive after the
 ceremony is the single most likely way this audit turns into an incident.
 
 ---

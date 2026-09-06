@@ -23,7 +23,7 @@ infrastructure and operational controls underneath every service.
 | Host and cluster lifecycle | Reviewed bootstrap, pinned components, host prerequisites, runtime configuration, and recovery procedures |
 | Workload operation | Declarative composition, namespace boundaries, service accounts, resource limits, and reconciliation |
 | Delivery | Signed artifacts, immutable digest selection, receipted promotions, protected changes, and release history |
-| Network and edge | Private administration, constrained workload flows, outbound Tunnel connectors, and policy-checked provider configuration |
+| Network and edge | Private administration, constrained workload flows, outbound Tunnel connectors, and audited provider configuration |
 | Assurance | Repository privacy, secret scanning, policy tests, provenance checks, and explicit evidence for operational claims |
 
 ## Architecture
@@ -105,46 +105,37 @@ The [threat model](docs/security/threat-model.md),
 Static policy checks prove repository properties; claims about live enforcement
 require current operational evidence.
 
-## Current workloads and deployment state
+## Workloads
 
 | Workload | Application source |
 | --- | --- |
 | [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) |
 | [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) |
 
-Current selections: lidersea.com `0.1.41` and naranjo.online `0.1.76`, captured 2026-09-05 for issues #320 in `docs/assurance/195-chart-acquisition-receipt.json`.
+Selected chart digests and their acquisition evidence live in the application
+composition. Application repositories own each workload's image, chart and
+signed release history.
 
-These are the committed chart selections. The acquisition receipt proves their
-artifact bindings; current readiness and public traffic require a separate
-live observation.
-
-| Surface | Repository evidence and operational boundary |
-| --- | --- |
-| Application GitOps | Protected-main source, digest-pinned chart selections, and direct reconcilers with `prune: false` and `deletionPolicy: Orphan` |
-| Host and cluster controls | Bootstrap, validation, and recovery code are versioned; inventory, installed versions, and live validation records remain private |
-| Flux controller RBAC | Narrowed desired-state controls exist; convergence of the installed controllers onto that model requires separate proof |
-| Promotion automation | Implemented with deterministic acquisition and review receipts; installation and process state are operational evidence |
-| Recovery | Procedures and artifact history are available; a current end-to-end recovery claim requires a completed drill |
-| Media and storage activation | Disabled until the separate capacity, recovery, and exposure requirements are satisfied |
-
-## Repository layout and evolution
+## Repository layout
 
 ```text
 bootstrap/          host, cluster, Flux, and recovery entry points
 kubernetes/         GitOps composition and workload desired state
-infrastructure/     provider configuration in OpenTofu
 policies/           static policy and publication controls
 scripts/            delivery, verification, and operational tooling
 tests/              contract tests and allow/deny fixtures
 docs/               architecture, decisions, assurance, and runbooks
 ```
 
-This repository is now **`platform`**, preserving the original repository
-object and signed release history. It owns host and cluster lifecycle and
-installed security controls. Application GitOps is being prepared for a separate
-**`platform-k8s-infra`** repository; that extraction and production source move
-remain pending. Application charts remain with their application sources.
-See the [repository identity transition](docs/runbooks/platform-repository-transition.md).
+| Repository | Responsibility |
+| --- | --- |
+| [platform](https://github.com/snaraj/platform) | Host and cluster lifecycle, security controls, namespaces, controller authority, Git sources and recovery |
+| [platform-k8s-infra](https://github.com/snaraj/platform-k8s-infra) | Application composition, default-deny policies and verified chart selections |
+| Application repositories | Application code, images, Helm charts and signed releases |
+
+The source configured in platform determines which composition the cluster
+consumes. Source changes follow the [transition runbook](docs/runbooks/platform-repository-transition.md),
+with current convergence and rollback evidence.
 
 ## Development and review
 
@@ -153,7 +144,7 @@ The same contract applies to human and automated contributors.
 
 ```sh
 make check-fast        # repository validators and the full Python test suite
-make check             # pinned policy, render, shell, workflow, and infrastructure checks
+make check             # pinned policy, render, shell and workflow checks
 make coverage          # coverage floor, drift, and badge integrity
 make pre-push-security # exact outgoing history and publication checks
 ```

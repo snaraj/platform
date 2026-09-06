@@ -22,9 +22,6 @@ ACTIVATION_FIXTURE_FILES = (
     "kubernetes/websites/lidersea-com/release.yaml",
     "kubernetes/platform/cloudflare-public/release/release.yaml",
     "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
-) + tuple(
-    path.as_posix()
-    for path in sorted(MODULE.CLOUDFLARE_TERRAFORM_REVIEW_FILES)
 )
 def synthetic_api_encryption_configuration(secret):
     return (
@@ -1179,66 +1176,6 @@ class RepositoryPolicyTests(unittest.TestCase):
             errors = MODULE.check_workflows(root)
             self.assertTrue(any("full SHA" in error for error in errors))
 
-    def test_rejects_cloudflare_data_sources(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            target = root / "infrastructure" / "cloudflare"
-            target.mkdir(parents=True)
-            (target / "data.tf").write_text(
-                'data "cloudflare_zones" "all" {}\n', encoding="utf-8"
-            )
-            errors = MODULE.check_cloudflare(root)
-            self.assertTrue(any("data source is forbidden" in error for error in errors))
-
-    def test_cloudflare_phase_contract_rejects_guard_bypass(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            shutil.copytree(
-                REPO_ROOT / "infrastructure" / "cloudflare",
-                root / "infrastructure" / "cloudflare",
-            )
-            variables_file = root / (
-                "infrastructure/cloudflare/phases/admin-tunnel/variables.tf"
-            )
-            variables_file.write_text(
-                variables_file.read_text(encoding="utf-8").replace(
-                    "  default     = false\n",
-                    "  default     = true\n",
-                ),
-                encoding="utf-8",
-            )
-            errors = MODULE.check_cloudflare(root)
-            self.assertTrue(any("phase contract" in error for error in errors))
-
-    def test_git_visible_terraform_inputs_and_json_configuration_are_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            shutil.copytree(
-                REPO_ROOT / "infrastructure" / "cloudflare",
-                root / "infrastructure" / "cloudflare",
-            )
-            base = root / "infrastructure" / "cloudflare"
-            (base / "terraform.tfvars").write_text(
-                "enable_cloudflare_resources = true\n", encoding="utf-8"
-            )
-            (base / "forced.auto.tfvars.json").write_text(
-                '{"enable_cloudflare_resources":true}\n', encoding="utf-8"
-            )
-            (base / "override.tf.json").write_text("{}\n", encoding="utf-8")
-            errors = MODULE.check_cloudflare(root)
-            self.assertTrue(any("variable input is forbidden" in error for error in errors))
-            self.assertTrue(any("JSON configuration is forbidden" in error for error in errors))
-
-    def test_ignored_local_terraform_inputs_are_excluded_by_git_visibility(self):
-        expected = {
-            path.as_posix() for path in MODULE.CLOUDFLARE_TERRAFORM_REVIEW_FILES
-        }
-        with mock.patch.object(
-            MODULE,
-            "_git_visible_cloudflare_paths",
-            return_value=(expected, []),
-        ):
-            self.assertEqual(MODULE.cloudflare_visible_configuration_errors(REPO_ROOT), [])
 
     def test_active_capacity_requires_exact_aggregate_quota_inventory(self):
         """Per-object policy cannot silently accept an absent site budget."""
@@ -1439,21 +1376,6 @@ class RepositoryPolicyTests(unittest.TestCase):
             with mock.patch.object(MODULE, "check_release", return_value=[error]):
                 self.assertEqual(MODULE.check_activation(root), [error])
 
-    def test_cloudflare_phase_guard_true_fails_the_integrated_activation_gate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            copy_activation_fixture(root)
-            replace_once(
-                root,
-                "infrastructure/cloudflare/phases/admin-tunnel/variables.tf",
-                "  default     = false\n",
-                "  default     = true\n",
-            )
-            self.assertTrue(MODULE.activation_requested(root))
-            self.assertEqual(
-                MODULE.check_activation(root),
-                ["release transition state is unavailable or unsafe"],
-            )
 
     def test_transition_filters_the_mandated_flux_control_plane_sentinel(self):
         """The one error this validator simultaneously requires and refuses.

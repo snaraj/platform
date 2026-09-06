@@ -7,14 +7,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSIONS_FILE = REPO_ROOT / "versions.env"
-CLOUDFLARE_PHASES = (
-    "admin-api",
-    "admin-policies",
-    "admin-route",
-    "admin-tunnel",
-    "site-lidersea-com",
-    "site-naranjo-online",
-)
 
 
 def version_values():
@@ -102,42 +94,6 @@ class DependencyVersionContractTests(unittest.TestCase):
         )
         self.assertIn("FROM " + self.versions["WEBSITE_RUNTIME"], selector)
 
-    def test_cloudflare_manifest_and_lock_match_versions_registry(self):
-        """Every isolated phase must keep manifest and lock pins atomic."""
-
-        phases = REPO_ROOT / "infrastructure" / "cloudflare" / "phases"
-        tofu = self.versions["OPENTOFU_VERSION"].lstrip("v")
-        provider = self.versions["CLOUDFLARE_PROVIDER_VERSION"]
-
-        self.assertEqual(
-            tuple(path.name for path in sorted(phases.iterdir()) if path.is_dir()),
-            CLOUDFLARE_PHASES,
-        )
-        for phase in CLOUDFLARE_PHASES:
-            with self.subTest(phase=phase):
-                root = phases / phase
-                manifest = (root / "versions.tf").read_text(encoding="utf-8")
-                lock = (root / ".terraform.lock.hcl").read_text(encoding="utf-8")
-                self.assertRegex(
-                    manifest,
-                    r'(?m)^\s*required_version\s*=\s*"= {}"$'.format(
-                        re.escape(tofu)
-                    ),
-                )
-                self.assertRegex(
-                    manifest,
-                    r'(?m)^\s*version\s*=\s*"{}"$'.format(re.escape(provider)),
-                )
-                self.assertRegex(
-                    lock,
-                    r'(?m)^\s*version\s*=\s*"{}"$'.format(re.escape(provider)),
-                )
-                self.assertRegex(
-                    lock,
-                    r'(?m)^\s*constraints\s*=\s*"{}"$'.format(
-                        re.escape(provider)
-                    ),
-                )
 
 if __name__ == "__main__":
     unittest.main()

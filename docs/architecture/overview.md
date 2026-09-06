@@ -78,8 +78,9 @@ resources.
 
 Flux anonymously reads `main` and applies it through explicit reconciliation
 ServiceAccounts; the repository carries no Secret and Flux decrypts nothing.
-Public GHCR images are pulled by digest. Cloudflare configuration is manual
-OpenTofu with deny-by-default policy and plan-hash approval.
+Public GHCR images are pulled by digest. Provider changes are owner-operated,
+limited to the approved product and identity boundaries, and checked with
+read-only account audits and public-edge validation.
 
 ## Failure posture
 

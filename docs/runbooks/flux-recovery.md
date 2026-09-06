@@ -1,33 +1,22 @@
-# Flux recovery — Draft / unverified
+# Flux recovery
 
-Current status is `NO-GO`. Every live/secret-aware command named below is
-code-blocked before protected-file access because the separately installed
-reviewed-blob launcher does not exist. The raw-etcd canary also lacks a reviewed
-installed-`etcdctl` executable digest pin. These steps are the future recovery
-acceptance contract only; do not bypass a guard with ad-hoc `sudo`, a manual
-copy, or environment changes.
+1. Confirm recovery access, node and API health, stacked etcd, CoreDNS, audit and
+   encryption evidence before changing Flux. Keep observations and private
+   target bindings outside Git. A configured encryption flag alone does not
+   prove encrypted storage.
+2. Compare controller images, effective RBAC, policy and current readiness with
+   the exact reviewed manifests. For an absent installation, use the bound
+   [controller installation procedure](flux-install.md). Its create-only apply
+   refuses an existing installation; recover existing controllers through a
+   separately reviewed in-place procedure.
+3. Verify source, kustomize and helm controller readiness, narrow service-account
+   authority, disabled cross-namespace references and disabled remote bases.
+4. Restore anonymous Git sources and application sync only through a separately
+   reviewed platform procedure. Preserve exact source identity, verified artifact
+   digests, explicit tenant ServiceAccounts and `prune: false`. Retired Flux
+   bootstrap live modes and the legacy tag selector are not recovery paths.
+5. Prefer a reviewed Git revert for bad desired state. Before resuming a
+   suspended release, render and policy-check the exact revision and verify its
+   signatures and digests. Confirm current revisions and health afterward.
 
-1. Keep public routing disabled. Confirm the Kubernetes API, stacked etcd,
-   CoreDNS, node readiness, Secret encryption, audit, and namespaces before
-   touching Flux. A configured encryption-provider flag is insufficient: run
-   the gated disposable raw-etcd canary and require the encrypted-storage prefix,
-   plaintext absence, exact cleanup, and metadata-only audit evidence.
-2. Compare installed controller images to the reviewed generated manifest and
-   immutable digests. Use the protected Linux AMD64 tool/kubeconfig ceremony and
-   `bootstrap/flux/bootstrap.sh --apply-controllers` at an exact reviewed `main`
-   commit if controllers are absent/corrupt; do not invoke bare kubectl against
-   a mutable default context.
-3. Wait for source, kustomize, and helm controllers. Confirm cross-namespace
-   references and remote bases remain disabled.
-4. Never enable or invoke the retired `bootstrap/flux/bootstrap.sh --apply-sync`
-   body. Restore site sync only through the release-bound
-   `bootstrap/flux/release-selector/bootstrap.sh` transaction: prove the
-   GitRepository is credentialless and selects one exact immutable tag, its
-   consumer inventory is closed, and both tenant Kustomizations use their
-   explicit ServiceAccounts with `prune: false`.
-5. Inspect Flux events/status. Prefer a Git revert for bad desired state; do not
-   patch Flux-owned resources as ordinary recovery.
-6. Before re-enabling a suspended release, render/policy-check the exact revision
-   and verify signatures/digests.
-
-Never print Secret YAML or create Git credentials to make recovery easier.
+Never print Secret YAML or introduce Git credentials to make recovery easier.

@@ -607,13 +607,13 @@ class MutationTests(unittest.TestCase):
     def test_a_mode_only_mutation_is_a_request_changes(self):
         # PR #312 round 1, finding 2: same bytes, different tree entry.
         def mutate(root):
-            (root / "README.md").chmod(0o755)
+            (root / MODULE.RECEIPT_JSON).chmod(0o755)
 
         self.fixture.cut(mutate)
         verdict, receipt = self.fixture.prove()
         self.assertEqual(verdict, "REQUEST-CHANGES")
         self.assertIn("Re-derivation failed", receipt)
-        self.assertIn("README.md", receipt)
+        self.assertIn(MODULE.RECEIPT_JSON.as_posix(), receipt)
 
     def test_a_false_body_claim_is_a_request_changes(self):
         # Finding 1 (2026-09-04): the receipt used to CLAIM a body audit it
@@ -1170,10 +1170,6 @@ class ContractTextTests(unittest.TestCase):
         self.assertIn("all five proofs hold", source)
         self.assertNotIn("all four proofs hold", source)
         self.assertNotIn("runs\n        # every proof", source)
-        index = (REPO_ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
-        self.assertNotIn("arms both review lanes", index)
-        self.assertIn("arms `requires-review`", index)
-        self.assertIn("five proofs", index)
         self.assertIn("A promotion pull request's receipt is EARNED, not requested", text)
         self.assertIn("the security lane reviews every change to\n  the promoter's CODE", text)
         # The promoter's paragraph and the tool must name the same label set.

@@ -97,7 +97,6 @@ RECEIPT_SCHEMA = "dev.snaraj.chart-acquisition-receipt/v2"
 RECEIPT_JSON = Path("docs/assurance/195-chart-acquisition-receipt.json")
 RECEIPT_MD = Path("docs/assurance/195-chart-acquisition-receipt.md")
 MANIFEST_ROOT = Path("kubernetes")
-README = Path("README.md")
 FRAGMENTS = Path("changelog.d")
 VERSIONS_ENV = Path("versions.env")
 ANNOTATION = "platform.snaraj.dev/chart-release"
@@ -168,10 +167,6 @@ CAPTURE_HEADER_RE = re.compile(
 INSPECTION_RE = re.compile(
     r"^- ([a-z0-9-]+) `(Chart\.yaml|values\.yaml)`: `(sha256:[0-9a-f]{64})`$",
     re.MULTILINE,
-)
-README_ROW_RE = re.compile(
-    r"Current selections: (.+?), captured (\d{4}-\d{2}-\d{2}) for issues? "
-    r"(#\d+(?:/#\d+)*) in `docs/assurance/195-chart-acquisition-receipt\.json`"
 )
 LAUNCHD_LABEL = "dev.snaraj.release-promoter"
 # The tick is a READ-ONLY poll until it has something to do: a status read per
@@ -1450,24 +1445,6 @@ def rewrite_tree(root: Path, selections: dict, old_receipt: dict, new_receipt: d
     return changed
 
 
-def rewrite_readme(root: Path, selections: dict, receipt: dict, issues: str) -> bool:
-    text = (root / README).read_text(encoding="utf-8")
-    matches = README_ROW_RE.findall(text)
-    if len(matches) != 1:
-        raise Refusal("README carries no single machine-maintained current-selection sentence")
-    current = " and ".join(
-        f"{selection.domain} `{receipt['records'][slug]['chartTag']}`"
-        for slug, selection in selections.items()
-    )
-    replacement = (
-        f"Current selections: {current}, captured {receipt['capturedDate']} for issues {issues} "
-        "in `docs/assurance/195-chart-acquisition-receipt.json`"
-    )
-    rewritten = README_ROW_RE.sub(lambda _: replacement, text, count=1)
-    (root / README).write_text(rewritten, encoding="utf-8")
-    return rewritten != text
-
-
 def fragment_path(issue: int, targets: dict) -> Path:
     slug = "promote-" + "-".join(f"{s}-{v.replace('.', '-')}" for s, v in sorted(targets.items()))
     if FRAGMENT_SLUG_RE.fullmatch(slug) is None:
@@ -1517,8 +1494,6 @@ def apply_promotion(root: Path, selections: dict, acquired: dict, issue: int, is
     fragment = fragment_path(issue, targets)
     if (root / fragment).exists():
         raise Refusal(f"{fragment} already exists; fragments are immutable")
-    if len(README_ROW_RE.findall((root / README).read_text(encoding="utf-8"))) != 1:
-        raise Refusal("README carries no single machine-maintained current-selection sentence")
     changed = rewrite_tree(root, selections, old_receipt, new_receipt, old_inspection, new_inspection, run)
     (root / RECEIPT_JSON).write_text(render_receipt_json(new_receipt), encoding="utf-8")
     context = {"issues": issues, "advanced": set(acquired), "previous": previous}
@@ -1526,8 +1501,6 @@ def apply_promotion(root: Path, selections: dict, acquired: dict, issue: int, is
         render_receipt_markdown(new_receipt, selections, new_inspection, context), encoding="utf-8"
     )
     changed += [RECEIPT_JSON.as_posix(), RECEIPT_MD.as_posix()]
-    if rewrite_readme(root, selections, new_receipt, issues):
-        changed.append(README.as_posix())
     (root / fragment).write_text(render_fragment(selections, targets, issues), encoding="utf-8")
     changed.append(fragment.as_posix())
     return changed
@@ -2339,8 +2312,8 @@ def approve_receipt(head: str, base: str, surface: list, statements: list, captu
             "Mutation and claim audit: the re-derivation and the re-composition ARE"
             " both. A body or message stating any other version, digest, source or"
             " accounting is a byte mismatch in proof 4; and one mutated byte anywhere"
-            " in the surface — a digest, a receipt field, the changelog fragment, the"
-            " README sentence — changes an object id and turns this verdict into"
+            " in the surface — a digest, a receipt field or the changelog fragment —"
+            " changes an object id and turns this verdict into"
             " REQUEST-CHANGES. Findings: none.",
             "No finding — checked the changed-path set, every re-rendered entry, the"
             " head commit's signature and identity, the keyless signer identity, the immutable Release binding, the"

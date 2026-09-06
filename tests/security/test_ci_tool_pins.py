@@ -44,7 +44,6 @@ class CiToolPinTests(unittest.TestCase):
             "KUBECONFORM_VERSION",
             "CONFTEST_VERSION",
             "KUSTOMIZE_VERSION",
-            "OPENTOFU_VERSION",
             "HELM_VERSION",
             "ORAS_VERSION",
             "COSIGN_VERSION",
@@ -58,7 +57,7 @@ class CiToolPinTests(unittest.TestCase):
         """No archive or standalone executable may be installed before hashing."""
 
         hashes = re.findall(r"(?m)^\s*'([0-9a-f]{64})'\s*\\?$", self.installer)
-        self.assertGreaterEqual(len(hashes), 11)
+        self.assertGreaterEqual(len(hashes), 10)
         self.assertEqual(len(hashes), len(set(hashes)))
         self.assertIn("sha256sum --check --status", self.installer)
         self.assertLess(

@@ -243,8 +243,6 @@ jobs:
           python3 -B scripts/validate_attack_surface_manifest.py docs/assurance/attack-surface-manifest.json
           python3 -B scripts/validate_ingress_guard.py repo
           python3 -B scripts/validate_admin_ingress_contract.py EXAMPLE bootstrap/pi/ingress-guard/admin-ingress.env.example
-      - name: Validate OpenTofu without credentials
-        run: ./scripts/validate-cloudflare-iac.sh
       - name: Scan dependencies and full-tree secrets
         run: trivy fs --exit-code 1 --ignore-unfixed --scanners vuln,secret --severity HIGH,CRITICAL .
       - name: Scan IaC and configuration
