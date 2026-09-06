@@ -1,8 +1,10 @@
 # Release-selector compatibility
 
-This directory retains the schemas, policy and bootstrap artifacts used to verify and recover historical tag-selected sources. Current application delivery follows protected Git through the existing application reconcilers. Historical artifact verification retains its exact signed identities and version rules.
+This directory retains schemas and artifacts for historical release verification.
+Application delivery follows protected Git through the existing reconcilers.
+Historical signatures and version rules remain part of the immutable ledger.
 
-Use the [operation and recovery procedures](operations.md) for preconditions,
-commands, verification and failure handling. Live operations require explicit
-owner authorization and current evidence; source checks alone do not establish
-the state of a running host or cluster.
+The legacy selector is not an application recovery path. Keep its execution and
+write authority disabled during [Flux recovery](../../../docs/runbooks/flux-recovery.md).
+Retained bootstrap source is historical implementation, not an instruction to
+run it or restore selector authority.
