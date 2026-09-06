@@ -85,7 +85,7 @@ class DependencyVersionContractTests(unittest.TestCase):
             "Selector build inputs unchanged; skipping duplicate container build.",
             pull_request,
         )
-        self.assertEqual(pull_request.count("-m unittest discover"), 1)
+        self.assertEqual(pull_request.count("-m coverage run scripts/ci/run_python_tests.py --coverage"), 1)
         self.assertNotIn("docker build", codeql)
         selector = (
             REPO_ROOT / "cmd" / "platform-release-selector" / "Dockerfile"

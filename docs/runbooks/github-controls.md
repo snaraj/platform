@@ -287,8 +287,18 @@ Never combine the jobs,
 export either read token as a job output, or pass any read credential to the
 publication transaction.
 
-Before Ready, produce a separate untracked provisioning receipt with the closed
-schema enforced by `app-provisioning-receipt`. It must combine owner-authenticated
+Before Ready for initial Release App setup or a change to the App, installation,
+environment, credential binding, or selected repository scope, produce a fresh
+untracked provisioning receipt with the closed schema enforced by
+`app-provisioning-receipt`. Repeat it immediately before the one-time recovery
+ceremony described below. Routine PRs that change none of these provisioning
+surfaces do not repeat this setup ceremony; they still require the fresh
+protected-main settings receipt before Ready and every release still requires
+its own run/attempt/source-bound immutable-setting attestation. A historical
+provisioning receipt or successful runtime probe does not establish the current
+installation's complete permissions, events, or repository scope.
+
+The provisioning receipt must combine owner-authenticated
 GETs for the environment, selected-main policy, variable name, and secret name
 with App-authenticated GETs for installation account, selected repository
 inventory, permissions, events, suspension, identity equality, and a successful
