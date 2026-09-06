@@ -209,7 +209,7 @@ spec:
         self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
         self.assertEqual(binding["kind"], "ValidatingAdmissionPolicyBinding")
         self.assertEqual(binding["spec"]["validationActions"], ["Deny"])
-        readme = (BOUNDARY / "README.md").read_text()
+        readme = (BOUNDARY / "operations.md").read_text()
         self.assertIn("native ValidatingAdmissionPolicy", readme)
         self.assertIn("exact one-patch", readme)
         self.assertIn("forward tag", readme)

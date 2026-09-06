@@ -43,7 +43,7 @@ the owner. In order:
 8. Direct `kubectl apply` is limited to documented bootstrap or recovery. Once
    Flux owns a resource, normal changes flow through a reviewed Git commit.
 9. Dashboard mutations are break-glass only and must be recorded and reconciled
-   into OpenTofu immediately afterward.
+   into the reviewed operating contract and private evidence immediately afterward.
 10. Every new public route, API, database, authentication system, persistent
     volume, or cross-namespace flow requires a threat-model update.
 11. Production website code lives in the standalone site repositories
@@ -92,7 +92,7 @@ the owner. In order:
   makes it automatic), and leave any ambiguous operational value unstaged.
 - `make check-fast` needs only Python and Git; the full `make check` also
   needs the pinned gitleaks/shellcheck/actionlint/helm/kubeconform/conftest
-  and OpenTofu toolchain from `versions.env`, and `make coverage` needs the
+  toolchain from `versions.env`, and `make coverage` needs the
   one hash-pinned `coverage` wheel from
   `scripts/ci/requirements-coverage.txt`.
 - Do not install tools, authenticate, plan, apply, deploy, commit, push, or
@@ -157,18 +157,12 @@ and dependency-governed Draft capacity is recorded durably in
   the row above, this one is exact and not shorthand for any other path under
   `.github/**`.
 
-- `bootstrap/flux/**` — DELIVERY for its reviewed-state model, README, and
-  docs. `bootstrap.sh` embeds the inventory and desired-state assertions
-  covering the delivery-owned `kubernetes/flux-system/**` manifests, and
-  that model is the mechanism that proves the cluster matches them. Its
-  live-apply custody surface stays PLATFORM-owned and stays blocked: the
-  `--apply-controllers` / `--apply-sync` / `--verify` stop, the sibling
-  entry point `verify.sh` in its entirety — blocked by the same
-  reviewed-blob stop — the trusted reviewed-blob launcher requirement, and the
-  credential-custody preconditions. The split is by responsibility, not
-  by line range — a delivery-lane change may correct what the model
-  asserts about reviewed state, never what the custody surface above
-  permits or requires.
+- `bootstrap/flux/**` — DELIVERY for offline controller generation and docs.
+  Under the owner's issue #338 cleanup authorization, the permanently blocked
+  bootstrap live bodies are removed. The active create-only installer remains
+  `scripts/install-flux-controllers.sh`; existing-controller recovery and source
+  restoration require separately reviewed platform procedures. Generation,
+  review or a merged source change grants no live-cluster mutation authority.
 - `bootstrap/flux/release-selector/platform-release-identity.v2.schema.json` —
   DECLARED CROSSING for issue #330 under the owner's 2026-09-05 authorization
   to rename and split the platform repositories and improve the release system.
@@ -423,6 +417,27 @@ merge; it is not repeated locally by the promoter. This exception applies only
 to generated promotions, whose exact surface and receipt are independently
 re-derived. Changes to the promoter, validators, workflows or this contract
 retain the full author gate and independent security review.
+
+**Retired provider implementation (issue #338).** The owner authorized removal
+of unused OpenTofu roots, dedicated validators/tests, tool pins and CI steps.
+This is a scoped exception to preserving obsolete checks and measured source,
+not a waiver of the coverage floor or any active Kubernetes, artifact,
+publication, secret, ingress or provider-authority boundary. The versions.env
+crossing removes only the retired tool/provider pins. Bootstrap README and
+procedure changes, permanently blocked Flux live bodies and host-token installer
+retirement are authorized across the lane boundary. Their dedicated unreachable
+tests and redundant README wording/catalog tests are removed; live installer,
+RBAC, generation and credential-custody controls remain enforced. Promotions
+write artifact selections and acquisition receipts without maintaining a README
+status snapshot; exact re-derivation, signatures and changed-path confinement
+remain required.
+The obsolete connector plan annotation is removed with its exact validation
+contract; all runtime specifications and frozen signed artifact identities
+remain unchanged. The dormant Windows credential workspace and its dedicated
+tests are removed with the provider workflow.
+READMEs describe enduring purpose and routine use. Setup, recovery commands and
+source-transition procedures belong in runbooks or adjacent procedure files;
+prelaunch status and one-time project history do not belong in READMEs.
 
 ## Adversarial review protocol
 
@@ -932,7 +947,7 @@ is the consolidated command view:
 
     make check-fast          # Python + Git only: validators + full unittest battery
     make check               # adds gitleaks/shellcheck/actionlint/helm/
-                             #   kubeconform/conftest/OpenTofu (versions.env pins)
+                             #   kubeconform/conftest (versions.env pins)
     make coverage            # floor + drift + byte-exact badge (hash-pinned wheel)
     make pre-push-security   # rehearses the origin/main..HEAD publication gate
     git config core.hooksPath .githooks   # makes the real gate automatic on push
@@ -985,7 +1000,7 @@ is the consolidated command view:
   the release-transition mode the release-state policy selects, render
   determinism, the assurance-ledger / no-security-toggles /
   attack-surface-manifest / ingress-guard validators, Conftest hostile-policy
-  tests, and credential-free OpenTofu validation — plus a separate
+  tests — plus a separate
   `dependency-review` job (pull requests only; fails on high severity). Main
   pushes run the same repository/infrastructure battery plus the exact
   base-to-final-SHA one-fragment release transition; manual dispatch runs the battery but
@@ -1004,8 +1019,8 @@ is the consolidated command view:
   battery IS the guard: `test_actions_zero_spend_exposure.py` pins the
   workflows' exposure (secretless PRs, read-only default permissions,
   GitHub-hosted runners, pinned actions), and
-  `test_cloudflare_zero_spend_allowlist.py` pins the committed product
-  allowlist (safety invariant 4). The coverage gate is self-hosted so
+  the owner-operated provider audit and ADR 0006 govern the approved product
+  boundary (safety invariant 4). The coverage gate is self-hosted so
   no external processor ever receives repository content or
   measurements.
 - **Pinning rules.** Every action at a full commit SHA with a version

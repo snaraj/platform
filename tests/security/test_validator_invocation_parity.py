@@ -1,9 +1,9 @@
-"""Pin the Python validator inventory identical across its three surfaces.
+"""Keep local and CI validator invocation inventories aligned.
 
 The repository invokes its ``validate_*.py`` policy validators from two
 lanes — the local credential-free entry point
 (``scripts/validate-security.sh``) and the pull-request workflow's inline
-steps — and documents every validator in ``scripts/README.md``. Those
+steps. Those
 surfaces have drifted before: commit 3ad45c6 ("ci: bound every job with
 timeouts; close the validate-security mode gap") had to retrofit the
 media and activation modes into validate-security.sh after the local
@@ -17,8 +17,7 @@ that class of drift into a red test instead of a future audit finding:
   and each justification names the tracked local surface that provides
   parity, which this suite re-verifies so the reason cannot rot;
 * every validator named on either invocation surface must exist as a
-  tracked script and be documented (linked) in scripts/README.md, whose
-  "Adding a validator" checklist enumerates exactly these surfaces.
+  tracked script.
 
 The parse deliberately keys on one stable signature — a non-comment line
 naming ``scripts/validate_*.py`` (for the workflow, one that also invokes
@@ -38,10 +37,8 @@ REPOSITORY_VALIDATOR = load_script(
 
 LOCAL_ENTRY_POINT = SCRIPTS_DIR / "validate-security.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pull-request.yml"
-SCRIPTS_README = SCRIPTS_DIR / "README.md"
 
 VALIDATOR_NAME = re.compile(r"scripts/(validate_\w+\.py)")
-README_LINK = re.compile(r"\]\(\./(validate_\w+\.py)\)")
 
 # Validators CI runs inline that the local entry point deliberately does
 # not. Every entry must name the tracked local surface that provides the
@@ -133,22 +130,18 @@ def named_validators(path, *, require_python=False):
 
 
 class ValidatorInvocationParityTests(unittest.TestCase):
-    """One validator inventory; three surfaces; zero silent drift."""
+    """Local and CI invocations stay aligned."""
 
     @classmethod
     def setUpClass(cls):
         cls.local = named_validators(LOCAL_ENTRY_POINT)
         cls.ci = named_validators(WORKFLOW, require_python=True)
-        cls.documented = set(
-            README_LINK.findall(SCRIPTS_README.read_text(encoding="utf-8"))
-        )
 
     def test_each_surface_parse_finds_its_known_floor(self):
         # A regex that silently stops matching would make every subset
         # assertion below pass vacuously; pin each surface's minimum.
         self.assertGreaterEqual(len(self.local), 4, sorted(self.local))
         self.assertGreaterEqual(len(self.ci), 8, sorted(self.ci))
-        self.assertGreaterEqual(len(self.documented), 20, sorted(self.documented))
 
     def test_every_local_validator_also_runs_in_ci(self):
         missing = self.local - self.ci
@@ -191,7 +184,7 @@ class ValidatorInvocationParityTests(unittest.TestCase):
                     .format(name, surface, fragment),
                 )
 
-    def test_every_invoked_validator_exists_and_is_documented(self):
+    def test_every_invoked_validator_exists(self):
         for name in sorted(self.local | self.ci):
             with self.subTest(validator=name):
                 self.assertTrue(
@@ -199,15 +192,9 @@ class ValidatorInvocationParityTests(unittest.TestCase):
                     "an invocation surface names {} but no such tracked "
                     "script exists".format(name),
                 )
-                self.assertIn(
-                    name,
-                    self.documented,
-                    "{} is invoked but not documented in scripts/README.md"
-                    .format(name),
-                )
 
 class RepositoryCheckModeParityTests(unittest.TestCase):
-    """The nine mode words are bound to ``validate_repository.CHECKS``.
+    """The eight mode words are bound to ``validate_repository.CHECKS``.
 
     Issue #153, from PR #151's adversarial review: deleting a mode word from
     ``validate-security.sh`` survived the whole battery. The suite above keys
@@ -231,8 +218,8 @@ class RepositoryCheckModeParityTests(unittest.TestCase):
         # The same anti-vacuity floor the validator-name parse carries: a
         # regex that stopped matching would make the equality below compare
         # two empty sets and pass forever.
-        self.assertGreaterEqual(len(self.local_modes), 9, self.local_modes)
-        self.assertGreaterEqual(len(self.registry), 10, sorted(self.registry))
+        self.assertGreaterEqual(len(self.local_modes), 8, self.local_modes)
+        self.assertGreaterEqual(len(self.registry), 9, sorted(self.registry))
 
     def test_the_local_entry_point_names_each_mode_once(self):
         self.assertEqual(

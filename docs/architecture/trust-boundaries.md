@@ -13,9 +13,7 @@
 | Flux source controller | Anonymous HTTPS Git fetch | Git write, deploy keys, cluster-wide tenant mutation |
 | Tenant reconciler | Named namespace resources | Other namespaces and cluster-scoped privilege |
 | Admin laptop | TCP 22 after identity/device policy — SSH-only, PLAT-DEC-001; `kubectl` runs on the Pi | Kubernetes API 6443, etcd 2379/2380, kubelet 10250 (host-ingress guard), other Pi traffic, WARP-off remote access |
-| Operator-wrapping identity | Encrypt/decrypt protected local recovery and state archives | Pi/cluster runtime, Git/CI, Cloudflare API authority by itself |
 | Git publishing identity | Reviewed workstation commit/push through protected `main` workflow | Pi/Flux/CI storage, Cloudflare or cluster deployment authority |
-| Local OpenTofu operator | One reviewed phase with one JIT token and protected state | Other phases, billing/Registrar write, subscriptions, Git/cluster authority, unknown products |
 
 Namespaces `cloudflare-public`, `naranjo-online`, and `lidersea-com` are separate
 policy and quota boundaries. Kubernetes namespace is not the only control:

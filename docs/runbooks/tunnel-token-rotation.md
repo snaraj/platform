@@ -1,44 +1,17 @@
-# Tunnel token rotation — Draft / unverified
+# Tunnel token rotation
 
-For the host-level `pi-admin` token, stage the new `eyJ...` value only in a
-protected owner-only file only after the reviewed-blob launcher blocker is
-resolved. Both modes of `bootstrap/pi/cloudflared/install-host-token.sh` and the
-runtime redaction canary are currently code-blocked before bearer access. The
-future procedure binds validation to the independently reviewed 40-hex `main`
-commit and checkout-owner UID, and invokes absolute `/bin/bash` through a
-minimal `/usr/bin/env -i` environment.
-The file must be canonical standard Base64 (including `+`, `/`, and required
-padding), not a guessed URL-safe-only shape. The installer parses the token's
-closed `{a,s,t}` payload without disclosure and requires independently prepared
-SHA-256 digests of the reviewed account ID and `pi-admin` Tunnel UUID, so a
-well-formed token for the wrong Tunnel is rejected. It snapshots its own source,
-executes the validator blob from that exact commit, rejects Git replacement/
-configuration injection, disables core dumps, and emits no token field.
+Host-token installation is retired from this repository. Credential changes
+require a separately reviewed owner procedure using trusted staged code and
+private inputs. The retained runtime redaction canary remains blocked pending
+its trusted launcher; it must not be used as evidence that a rotation succeeded.
+Never bypass that boundary with mutable checkout code, ad-hoc `sudo` or manual
+copying. The standalone token validator checks canonical Base64 and the exact
+account/Tunnel binding without printing fields.
 
-The token installer intentionally refuses both `--check` and `--apply` before
-reading the token path. Running a mutable checkout script and letting it attest
-itself is not a valid root of trust. A separately reviewed root-owned reviewed-blob
-launcher/extraction transaction is required before host-token deployment or
-rotation can proceed; it must copy exact commit blobs into root-private custody
-with trusted absolute tools before `/bin/bash` executes them. Do not substitute
-a manual copy, ad-hoc `sudo`, or a local permissions exception. The old bearer
-remains never rollback authority. Starting/restarting the unit is a separate
-checkpoint;
-afterward require `verify-host-token-redaction.sh` before displaying any logs.
-The canary requires the same reviewed-main source binding, opens the installed
-token into an unlinked root-private descriptor, binds one stable systemd
-invocation, proves the executable is the
-pinned `/usr/local/bin/cloudflared`, requires its exact `--token-file` argv,
-compares the installed file with that invocation's active `LoadCredential`
-snapshot, and only then scans argv, environment, and the complete unit journal.
-It therefore fails safely if a new token was installed but the service still
-runs with the old credential.
-The persistent root-only token is not encrypted at rest, so loss or offline
-theft of the Pi triggers immediate force-disconnect and rotation.
-
-Both public paths are also `NO-GO` until the same class of separately installed
-reviewed-blob launcher exists. Public token rotation instructions below are a
-future acceptance contract only; do not bypass the guards.
+Host tokens use restricted systemd credential custody but are not encrypted at
+rest. Device theft or root compromise requires force-disconnect and rotation.
+Preserve independent physical/LAN recovery and prove the new service invocation
+uses the new credential before considering a rotation complete.
 
 `pi-admin` and each public site hold separate Tunnel tokens. Never rotate more
 than one in a single change. A remotely managed Tunnel token is a bearer
@@ -57,7 +30,7 @@ connection, and accepts downtime while trusted connectors receive the new
 token. Physical or trusted-LAN recovery is the admin-path fallback.
 
 Never place either Tunnel token or the API bearer used for rotation in a command
-line, shell history, Git, chat, logs, OpenTofu state, or an unprotected plan.
+line, shell history, Git, chat, logs, an unprotected operational artifact.
 Use a protected file or process-local environment, disable shell tracing, and
 clear it immediately afterward.
 
@@ -104,10 +77,10 @@ revocation evidence, and never restore the compromised token.
 1. Preserve physical/LAN recovery and at least two working sessions. Have the
    owner rotate only `pi-admin` and capture the new token in a protected file
    without printing it.
-2. Stop: current `--apply` is closed. Implement and independently review the
-   root-owned reviewed-blob launcher/extraction transaction described above;
-   otherwise do not replace the credential or restart `pi-admin`.
-3. After that missing control is implemented, atomically replace only the
+2. No repository host-token installation path exists. Specify and independently
+   review a new owner transaction that atomically replaces and verifies the
+   credential; otherwise do not replace it or restart `pi-admin`.
+3. Through that reviewed transaction, atomically replace only the
    root-owned systemd credential, restart `pi-admin`, require the exact-main
    active-credential equality/redaction canary, and run WARP-on, WARP-off,
    unauthorized identity/device, and control-plane-stopped tests. Public
@@ -122,10 +95,10 @@ revocation evidence, and never restore the compromised token.
 1. Retain physical/LAN recovery, rotate only `pi-admin`, and immediately
    force-disconnect all of its existing connections using the same protected
    dashboard/API procedure. Accept loss of remote administration during repair.
-2. The current apply path is closed until the root-owned reviewed-blob launcher
-   is implemented. If compromise occurs before then, stop the unit and use
-   physical/LAN recovery; do not bypass that control to regain remote access.
-3. Once that transaction exists, atomically install the new root-owned
+2. No repository host-token installation path exists. Stop the unit and use
+   physical/LAN recovery until a new credential-replacement and verification
+   transaction has been independently reviewed; do not bypass this boundary.
+3. Through that reviewed transaction, atomically install the new root-owned
    credential, restart `pi-admin`, and run every WARP and
    control-plane-stopped test before relying on it.
 4. Revoke the short-lived API token, remove protected copies of the compromised

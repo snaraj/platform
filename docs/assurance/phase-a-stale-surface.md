@@ -38,7 +38,6 @@ detections are preserved in:
 | PLAT-STALE-001 | Platform-scoped Kind harness successor (the two-site harness retired with the extraction) | missing capability | Phase C/E design; successor consumes the standalone evidence validators |
 | PLAT-STALE-002 | `docs/audits/2026-08-10-github-ux.md` and `-repo-split-coupling.md` describe pre-split CI truthfully but read as current to a casual reader | historical doc | headers already date them; no rewrite (audit law); index note lands with the audit-index follow-up |
 | PLAT-STALE-003 | Site-source guidance in `skills/build-website-infrastructure` references machinery now living in the site repos | scoped doc | scope note added in the dead-weight PR; full pointer-rewrite deferred until the skill's next substantive revision |
-| PLAT-STALE-004 | Provider-currency signal for the seven OpenTofu roots is manual after the Dependabot terraform removal | accepted residual | PD3 documents the reason; revisit if Dependabot ships OpenTofu lockfile support |
 | PLAT-STALE-005 | Tests asserting shell text where behavior tests are possible (`function_body` adjacency pattern in the release-gate contract suite) | test smell | acceptable while the shell is a thin static gate; successor gate must ship behavior tests first (Phase B property) |
 
 ## Method

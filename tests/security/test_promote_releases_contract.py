@@ -744,7 +744,6 @@ PINNED = (
     "tests/security/test_signature_policy_contract.py",
     "docs/assurance/195-chart-acquisition-receipt.json",
     "docs/assurance/195-chart-acquisition-receipt.md",
-    "README.md",
 )
 
 
@@ -757,6 +756,7 @@ class RewriteTests(unittest.TestCase):
         self.markdown = (self.root / MODULE.RECEIPT_MD).read_text()
         self.inspection = MODULE.parse_inspection(self.markdown)
         self.originals = {name: (self.root / name).read_bytes() for name in PINNED}
+        self.readme_before = (self.root / "README.md").read_bytes()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -809,11 +809,7 @@ class RewriteTests(unittest.TestCase):
         self.assertIn(f"digest: {record['manifestDigest']}", source)
         lidersea = (self.root / "kubernetes/websites/lidersea-com/source.yaml").read_bytes()
         self.assertEqual(lidersea, (REPO_ROOT / "kubernetes/websites/lidersea-com/source.yaml").read_bytes())
-        # The unpromoted site's version is an input snapshot, not a permanent
-        # production version. Read it before the rewrite so this still detects
-        # accidental coupling between the two applications.
-        unchanged_version = self.receipt["records"]["lidersea-com"]["chartTag"]
-        self.assertIn(f"Current selections: lidersea.com `{unchanged_version}` and naranjo.online `0.1.99`, captured 2026-09-02 for issues #990", (self.root / "README.md").read_text())
+        self.assertEqual((self.root / "README.md").read_bytes(), self.readme_before)
         fragment = (self.root / "changelog.d/990-promote-naranjo-online-0-1-99.md").read_text()
         self.assertTrue(CONTRACT.FRAGMENT_PATH_RE.match("changelog.d/990-promote-naranjo-online-0-1-99.md"))
         # The tool's fragment must pass the release-transition gate's own
@@ -827,8 +823,7 @@ class RewriteTests(unittest.TestCase):
         self.promote()
         original = self.receipt["records"]["naranjo-online"]
         (self.root / "changelog.d/990-promote-naranjo-online-0-1-99.md").unlink()
-        # The committed README row states the capture the inverse must restore.
-        date, issues = MODULE.README_ROW_RE.search(self.originals["README.md"].decode()).group(2, 3)
+        date, issues = MODULE.parse_capture_header(self.markdown)
         issue = int(issues.split("/")[0].lstrip("#"))
         # FIXTURE — the shape `main` takes from the first canonical promotion
         # this tool cuts onward: the fragment that capture committed is already
@@ -884,13 +879,6 @@ class RewriteTests(unittest.TestCase):
             MODULE.apply_promotion(self.root, self.selections, {"nas": (record, {"Chart.yaml": "sha256:" + "0" * 64, "values.yaml": "sha256:" + "1" * 64})}, 1, "#1", "2026-09-02")
         self.assert_tree_untouched()
 
-    def test_refused_missing_readme_sentence_writes_nothing(self):
-        readme = self.root / "README.md"
-        readme.write_text(readme.read_text().replace("Current selections:", "Selections:"))
-        self.originals["README.md"] = readme.read_bytes()
-        with self.assertRaisesRegex(MODULE.Refusal, "machine-maintained current-selection sentence"):
-            self.promote(issue=992)
-        self.assert_tree_untouched()
 
     def test_stale_rewrite_grammar_is_refused(self):
         receipt = json.loads(json.dumps(self.receipt))

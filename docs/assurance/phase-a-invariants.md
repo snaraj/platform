@@ -14,7 +14,7 @@ the platform contract; S3 = drift that misleads operators.
 
 | ID | Invariant | Checker | Evidence | Sev | Remediation |
 | --- | --- | --- | --- | --- | --- |
-| PLAT-COST-001 | No Cloudflare resource outside two Free-plan zones; no metered feature in IaC | `scripts/validate_repository.py cloudflare` + `policies/conftest` cloudflare fixtures + `scripts/validate-cloudflare-iac.sh` (credential-free init/validate of every phase root) | CI PASS | S1 | Fable lane |
+| PLAT-COST-001 | Cloudflare products remain within the reviewed zero-spend allowlist | `scripts/cloudflare-account-audit.sh`; ADR 0006 | Fresh owner-run read-only audit; credential-free CI cannot prove provider state | S1 | owner |
 | PLAT-COST-002 | No paid GitHub feature: public repos, free runners, GHCR public pulls | repo settings are owner-controlled; CI asserts nothing pulls with credentials (`persist-credentials: false` and SHA pins enforced by `scripts/validate_repository.py` `check_workflows`) | CI PASS | S1 | owner |
 | PLAT-COST-003 | Registrar renewals are the only authorized charges; unknown billing = NO-GO | documented law (`README.md`, `docs/runbooks/public-launch.md`); no executable probe can exist without credentials — GAP accepted, owner audits billing UI | owner attestation | S1 | owner |
 

@@ -30,10 +30,8 @@ no admission plugin executes here. Three things are modelled rather than
 observed and are named as such at their definitions: the verb set a Flux apply
 issues (``APPLY_VERBS``), the kinds each Helm chart renders (``SITE_CHART_KINDS``
 for charts that live in the site repositories), and the kind-to-resource mapping
-(``KIND_RESOURCES``). The live half is
-``bootstrap/flux/bootstrap.sh --verify``; the custody-bound denial oracle and
-disposable real-API-server matrix that once accompanied it belonged to the
-convergence ceremony the owner retired (issue #299).
+(``KIND_RESOURCES``). Live authorization and health require separately captured
+operational evidence.
 
 This module is support code: unittest discovery only collects ``test_*.py``, and
 the coverage gate measures ``scripts/`` alone, so nothing here enters any
@@ -505,10 +503,8 @@ class Authorizer:
         ``system:serviceaccount:<ns>:<name>``, or through a ``Group`` —
         ``system:serviceaccounts`` (every account in the cluster),
         ``system:serviceaccounts:<ns>`` (every account in one namespace), or
-        ``system:authenticated``. The live-state verifier in
-        ``bootstrap/flux/bootstrap.sh`` refuses group-shaped bindings that reach
-        a protected account for exactly this reason; without this the model was
-        strictly weaker than the verifier it claims to mirror.
+        ``system:authenticated``. Ignoring group-shaped bindings would falsely
+        deny permissions granted to a protected account through a group.
         """
 
         namespace, name = tuple(subject)

@@ -9,7 +9,7 @@ source "${repo_root}/versions.env"
 
 # Required tools cover the repository's always-on static policy checks. Optional
 # tools unlock lifecycle-specific checks such as cluster, secret, or image work.
-required=(git python3 curl jq shellcheck gitleaks kustomize kubeconform conftest tofu)
+required=(git python3 curl jq shellcheck gitleaks kustomize kubeconform conftest)
 optional=(kubectl flux age cosign trivy actionlint docker)
 missing=0
 

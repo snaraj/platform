@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 PYTHON ?= python3
 .DEFAULT_GOAL := help
 
-.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-cloudflare check-shell check-determinism check-ingress-guard coverage coverage-refresh
+.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-shell check-determinism check-ingress-guard coverage coverage-refresh
 
 help:
 	@printf '%s\n' \
@@ -16,13 +16,12 @@ help:
 	  'check-shell      Shellcheck every tracked shell entry point' \
 	  'check-workflows  Actionlint the GitHub Actions workflows' \
 	  'check-kubernetes Render/schema/policy-test Kubernetes desired state' \
-	  'check-cloudflare Validate OpenTofu formatting and plan fixtures' \
 	  'check-determinism Prove two renders of the selected mode are identical' \
 	  'check-ingress-guard Verify the SSH-only admin-ingress guard artifacts' \
 	  'coverage         Measure suite coverage and enforce floor/drift/badge' \
 	  'coverage-refresh Re-measure and rewrite the committed coverage ledger/badge'
 
-check: check-fast check-gitleaks check-shell check-workflows check-kubernetes check-cloudflare check-ingress-guard
+check: check-fast check-gitleaks check-shell check-workflows check-kubernetes check-ingress-guard
 
 # Bytecode caches from a plain run would poison the later pre-push gate's
 # ambient-artifact check; a macOS TMPDIR under the /var symlink trips the
@@ -55,9 +54,6 @@ check-kubernetes:
 	  esac; \
 	  ./scripts/render-kubernetes.sh "--$${release_mode}"
 	@./scripts/validate-security.sh
-
-check-cloudflare:
-	@./scripts/validate-cloudflare-iac.sh
 
 check-determinism:
 	@./scripts/ci/verify-render-determinism.sh

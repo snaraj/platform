@@ -90,9 +90,9 @@ is expected. Wildcard routes remain forbidden either way.
 ADR 0007's shared `pi-websites` Tunnel and ADR 0008's original three-rule
 shared ingress no longer describe the platform. The delivery lane reconciles
 Git to this decision (issues #59, #61, #62): architecture documents, the
-Cloudflare OpenTofu roots, plan policy, fixtures, audits, and runbooks.
-Reconciliation adopts the live objects by import only — live Tunnels and DNS
-records are never deleted or recreated to match stale IaC. The Kubernetes
+Cloudflare configuration audits, Kubernetes policy fixtures and runbooks.
+Existing live Tunnels and DNS records retain their identities; a repository
+cleanup never authorizes deleting or recreating them. The Kubernetes
 desired state (one `cloudflare-public` connector chart and one
 `pi-websites-tunnel-token` Secret) still models the superseded shared shape;
 reconciling it into two per-site connector Deployments and Secrets belongs

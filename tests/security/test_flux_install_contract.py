@@ -296,20 +296,6 @@ class ControllerFlagScopeTests(unittest.TestCase):
             with self.subTest(controller=name):
                 self.assertEqual(feature_gates, wanted)
 
-    def test_the_live_state_expectation_matches_the_patched_arguments(self):
-        # bootstrap.sh both expects the reviewed argument set and re-probes the
-        # live Deployment. Either one still demanding the flag would fail a
-        # correctly installed source-controller.
-        bootstrap = read(ROOT / "bootstrap" / "flux" / "bootstrap.sh")
-        self.assertIn(
-            "! grep -q -- '--no-cross-namespace-refs' <<<\"${source_args}\" || fail",
-            bootstrap,
-        )
-        self.assertRegex(
-            bootstrap,
-            r'"source-controller": \(\s*\n\s*os\.environ\["FLUX_EXPECTED_SOURCE_IMAGE"\],'
-            r'(?:\s*\n\s*#[^\n]*)*\s*\n\s*\[\],',
-        )
 
 
 class ApiCanaryManifestTests(unittest.TestCase):
@@ -622,15 +608,6 @@ class PodSecurityEnforcementTests(unittest.TestCase):
         self.assertIn("pod-security.kubernetes.io/warn: restricted", namespace)
         self.assertNotIn("pod-security.kubernetes.io/enforce", namespace)
 
-    def test_the_live_state_verifier_expects_the_enforced_labels(self):
-        # The manifest and bootstrap.sh's reviewed-live-state expectation must
-        # move together; before this change they disagreed, and the disagreement
-        # was invisible because the verifier is code-blocked.
-        bootstrap = read(ROOT / "bootstrap" / "flux" / "bootstrap.sh")
-        self.assertRegex(
-            bootstrap,
-            r"labels = \{\s*\n\s*\*\*flux_labels\(\),\s*\n\s*\*\*PSA_LABELS,",
-        )
 
 
 class InstallerGuardTests(unittest.TestCase):

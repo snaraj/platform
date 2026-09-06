@@ -119,7 +119,7 @@ def cloudflare_release_text(
         "  namespace: cloudflare-public\n"
         "  annotations:\n"
         "    platform.snaraj.dev/readiness: "
-        "suspended-until-tunnel-token-ceremony-and-cloudflare-plan\n"
+        "suspended-until-tunnel-token-ceremony\n"
         "spec:\n"
         "  suspend: {suspended}\n"
         "  interval: 10m0s\n"

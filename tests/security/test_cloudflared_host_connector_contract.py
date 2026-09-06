@@ -26,7 +26,6 @@ TOKEN_CANARY = CLOUDFLARED_DIR / "verify-host-token-redaction.sh"
 TOKEN_VALIDATOR = ROOT / "scripts" / "validate_cloudflared_tunnel_token.py"
 TOKEN_VALIDATOR_MODULE = load_script("validate_cloudflared_tunnel_token.py")
 UNIT = CLOUDFLARED_DIR / "pi-admin.service"
-README = CLOUDFLARED_DIR / "README.md"
 BASH = "/bin/bash" if Path("/bin/bash").is_file() else shutil.which("bash")
 BASH_REQUIRED = "Bash is required to execute the connector installer"
 
@@ -224,70 +223,14 @@ class PiAdminUnitTests(unittest.TestCase):
 class PiAdminTokenCustodyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.installer = TOKEN_INSTALLER.read_text(encoding="utf-8")
         cls.canary = TOKEN_CANARY.read_text(encoding="utf-8")
 
-    def test_latent_token_check_uses_the_exact_reviewed_validator_without_mutation(self):
-        for fragment in (
-            "CLOUDFLARED_TOKEN_WORKSPACE",
-            "EXPECTED_CLOUDFLARE_ACCOUNT_ID_SHA256",
-            "EXPECTED_CLOUDFLARE_TUNNEL_ID_SHA256",
-            "validate_cloudflared_tunnel_token.py",
-            "EXPECTED_REPOSITORY_HEAD",
-            "EXPECTED_REPOSITORY_OWNER_UID",
-            "refs/heads/main",
-            '"${git_binary}" --no-replace-objects',
-            "GIT_CONFIG_NOSYSTEM=1",
-            '"${git_dir}/info/grafts"',
-            '"${git_dir}/objects/info/alternates"',
-            "refs/replace",
-            "hash-object --no-filters",
-            "cat-file blob",
-            "self_blob=",
-            "validator_worktree=",
-            'cmp -s -- "${validator_worktree}" "${token_validator}"',
-            'env -i PATH=/usr/bin:/bin',
-            '"${python3_binary}" -I -B "${token_validator}"',
-            "no host state changed",
-        ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, self.installer)
 
-    def test_mutable_checkout_token_paths_are_explicitly_closed_before_secret_access(self):
-        release_guard = "BLOCKED pi-admin token validation and installation require the trusted reviewed-blob launcher"
-        self.assertIn("readonly REVIEWED_BLOB_LAUNCHER_AVAILABLE=no", self.installer)
-        self.assertLess(
-            self.installer.index(release_guard),
-            self.installer.index("PATH=/usr/sbin:/usr/bin:/sbin:/bin"),
-        )
-        self.assertLess(
-            self.installer.index(release_guard),
-            self.installer.index("CLOUDFLARED_TUNNEL_TOKEN_FILE"),
-        )
-        guard = '[[ "${mode}" == --check ]] || die'
-        self.assertIn(guard, self.installer)
-        self.assertLess(
-            self.installer.index(guard),
-            self.installer.index("CLOUDFLARED_TUNNEL_TOKEN_FILE"),
-        )
-        self.assertIn("root-owned immutable launcher", self.installer)
-        for forbidden in (
-            "destination=/etc/cloudflared",
-            "install -o root",
-            "flock -n",
-            "mv -fT",
-            'ln -- "${candidate}"',
-            "systemctl start",
-            "systemctl restart",
-        ):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, self.installer)
 
     @unittest.skipUnless(BASH, "Bash is required")
     def test_all_bearer_reading_modes_fail_before_credentials_are_required(self):
         expected_installer = (
-            "BLOCKED pi-admin token validation and installation require the trusted "
-            "reviewed-blob launcher; no token was read and no host change was attempted.\n"
+            "BLOCKED host-token installer is retired; no token was read and no host change was attempted.\n"
         )
         expected_canary = (
             "BLOCKED pi-admin runtime token verification requires the trusted "
@@ -312,7 +255,7 @@ class PiAdminTokenCustodyTests(unittest.TestCase):
                 self.assertEqual(result.stderr, expected)
 
     def test_secret_readers_reject_runtime_injection_and_disable_coredumps(self):
-        for text in (self.installer, self.canary):
+        for text in (self.canary,):
             with self.subTest(source=text[:40]):
                 self.assertTrue(text.startswith("#!/bin/bash\n"))
                 self.assertIn("readonly REVIEWED_BLOB_LAUNCHER_AVAILABLE=no", text)

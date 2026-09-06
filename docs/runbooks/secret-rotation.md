@@ -28,8 +28,7 @@ public Tunnel token has its own procedure in
 ## Compromise
 
 Rotate every credential the compromised principal could reach, revoke the old
-ones, and review access logs. Compromise of the operator-wrapping identity has a
-different blast radius: replace it, re-encrypt every retained archive to the new
-operator recipient, and rotate/revoke every still-valid bearer credential found
-in those archives. OpenTofu state and private inventory cannot be revoked; treat
-their disclosure as permanent and reassess all correlated controls.
+ones and review access logs. If a recovery key is exposed, replace it and
+re-encrypt retained backups under the reviewed recovery procedure. Rotate any
+still-valid credentials exposed with those backups. Private inventory cannot
+be revoked; treat its disclosure as permanent and reassess correlated controls.

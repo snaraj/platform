@@ -1,174 +1,22 @@
-"""Offline contracts for the closed Flux bootstrap live-state verifier."""
+"""Offline Flux generation and retired live-entry-point contracts."""
 
-from __future__ import annotations
-
-import base64
-import copy
-import hashlib
-import json
 import os
 import re
+import sys
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from .support import required_tool
+from .support import REPO_ROOT as ROOT, required_tool
 
-
-ROOT = Path(__file__).resolve().parents[2]
-BOOTSTRAP = ROOT / "bootstrap" / "flux" / "bootstrap.sh"
+BOOTSTRAP = ROOT / "bootstrap/flux/bootstrap.sh"
 BASH = shutil.which("bash")
-BASH_REQUIRED = "Bash is required for startup-environment rejection"
-if BASH is None and os.name == "nt":
-    candidate = Path(os.environ.get("ProgramFiles", "")) / "Git" / "bin" / "bash.exe"
-    if candidate.is_file():
-        BASH = str(candidate)
+BASH_REQUIRED = "Bash is required for generation checks"
 
 
-def embedded_python(label: str) -> str:
-    text = BOOTSTRAP.read_text(encoding="utf-8")
-    match = re.search(
-        rf"<<'{re.escape(label)}'.*?\n(?P<body>.*?)\n{re.escape(label)}(?:\n|$)",
-        text,
-        re.DOTALL,
-    )
-    if match is None:
-        raise AssertionError(f"missing embedded program {label}")
-    return match.group("body")
-
-
-class FluxLiveStateStaticContractTests(unittest.TestCase):
-    def test_bootstrap_closes_shell_git_target_and_remote_identity(self):
-        text = BOOTSTRAP.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("#!/bin/bash\n"))
-        for fragment in (
-            "BASH_ENV|ENV|BASH_FUNC_*|LD_*",
-            "ulimit -S -c 0",
-            "ulimit -H -c 0",
-            '"${git_binary}" --no-replace-objects',
-            "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null",
-            '[[ ! -e "${repo_root}/.git/info/grafts" ]]',
-            "for-each-ref --format='%(refname)' refs/replace",
-            "critical_inventory='100755 bootstrap/flux/bootstrap.sh",
-            'git_repo cat-file blob "${EXPECTED_REPOSITORY_HEAD}:${critical_path}"',
-            'cmp -s -- "${critical_worktree_copy}" "${critical_blob_copy}"',
-            "EXPECTED_KUBERNETES_CA_SHA256",
-            "EXPECTED_KUBE_SYSTEM_NAMESPACE_UID_SHA256",
-            'sha256sum -- "${kube_system_uid}"',
-            "verify_remote_main || fail",
-            'rb"([0-9a-f]{40})\\trefs/heads/main\\n"',
-        ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, text)
-        self.assertLess(text.index("BASH_ENV|ENV|BASH_FUNC_*|LD_*"), text.index("uname -s"))
-        self.assertLess(text.index("ulimit -H -c 0"), text.index("uname -s"))
-        self.assertEqual(text.count("ls-remote"), 1)
-
-    def test_apply_and_verify_paths_gate_on_reviewed_live_state(self):
-        text = BOOTSTRAP.read_text(encoding="utf-8")
-        for fragment in (
-            "--apply-sync || \"${mode}\" == --verify",
-            "KUBECTL_EXTERNAL_DIFF='/usr/bin/diff -u -N'",
-            "--field-manager=kubectl-client-side-apply",
-            'capture_live_json "${live_deployments}" -n flux-system get deployments',
-            'capture_live_json "${live_service_accounts}" get serviceaccounts --all-namespaces',
-            'capture_live_json "${live_role_bindings}" get rolebindings --all-namespaces',
-            'capture_live_json "${live_cluster_role_bindings}" get clusterrolebindings',
-            'capture_live_json "${live_git_repository}" -n flux-system get \\\n      gitrepositories',
-            'capture_live_json "${live_kustomization}" -n flux-system get \\\n      kustomizations',
-            "PY_FLUX_LIVE_STATE",
-            "verify_reviewed_live_state controllers || fail",
-            "verify_reviewed_live_state full || fail",
-        ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, text)
-        self.assertNotRegex(text, r"(?m)^\s*kubectl\s")
-        self.assertNotIn("cat \"${live_", text)
-
-    def test_ca_program_binds_embedded_der_hash_without_disclosure(self):
-        program = embedded_python("PY_KUBERNETES_CA")
-        certificate_der = b"offline-test-ca-der"
-        certificate_text = base64.b64encode(certificate_der).decode("ascii")
-        pem = (
-            "-----BEGIN CERTIFICATE-----\n"
-            + certificate_text
-            + "\n-----END CERTIFICATE-----\n"
-        ).encode("ascii")
-        document = {
-            "clusters": [
-                {
-                    "cluster": {
-                        "certificate-authority-data": base64.b64encode(pem).decode("ascii")
-                    }
-                }
-            ]
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "kubeconfig.json"
-            path.write_text(json.dumps(document), encoding="utf-8")
-            environment = {
-                **os.environ,
-                "KUBECONFIG_SNAPSHOT_FILE": str(path),
-                "EXPECTED_KUBERNETES_CA_SHA256": hashlib.sha256(certificate_der).hexdigest(),
-            }
-            accepted = subprocess.run(
-                [sys.executable, "-I", "-c", program],
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            environment["EXPECTED_KUBERNETES_CA_SHA256"] = "0" * 64
-            rejected = subprocess.run(
-                [sys.executable, "-I", "-c", program],
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(rejected.returncode, 0)
-            self.assertEqual(rejected.stdout + rejected.stderr, "")
-            self.assertNotIn(certificate_text, rejected.stdout + rejected.stderr)
-
-    def test_remote_main_parser_accepts_only_the_exact_reviewed_ref(self):
-        program = embedded_python("PY_REMOTE_MAIN")
-        reviewed = "a" * 40
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "remote-main.ref"
-            environment = {
-                **os.environ,
-                "REMOTE_MAIN_RESULT": str(path),
-                "EXPECTED_REPOSITORY_HEAD": reviewed,
-            }
-            path.write_bytes(f"{reviewed}\trefs/heads/main\n".encode("ascii"))
-            accepted = subprocess.run(
-                [sys.executable, "-I", "-c", program],
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            for invalid in (
-                f"{'b' * 40}\trefs/heads/main\n",
-                f"{reviewed}\trefs/heads/other\n",
-                f"{reviewed}\trefs/heads/main\n{reviewed}\trefs/tags/main\n",
-            ):
-                path.write_bytes(invalid.encode("ascii"))
-                rejected = subprocess.run(
-                    [sys.executable, "-I", "-c", program],
-                    env=environment,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertNotEqual(rejected.returncode, 0)
-                self.assertEqual(rejected.stdout + rejected.stderr, "")
-
+class FluxGenerationContractTests(unittest.TestCase):
     @unittest.skipUnless(BASH, "Bash is required for startup-environment rejection")
     def test_bash_startup_environment_fails_before_target_or_generation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -188,472 +36,58 @@ class FluxLiveStateStaticContractTests(unittest.TestCase):
             self.assertEqual(result.stderr, "FAIL Flux operation made no cluster mutation.\n")
 
 
-class FluxLiveStateAdversarialTests(unittest.TestCase):
-    maxDiff = None
-
-    @classmethod
-    def setUpClass(cls):
-        cls.program = embedded_python("PY_FLUX_LIVE_STATE")
-        definitions = cls.program.rsplit("\ntry:\n    main()", 1)[0]
-        cls.base_environment = {
-            "FLUX_EXPECTED_VERSION": "v2.9.3",
-            "FLUX_EXPECTED_SOURCE_IMAGE": "ghcr.io/fluxcd/source-controller:v1.9.3@sha256:" + "1" * 64,
-            "FLUX_EXPECTED_KUSTOMIZE_IMAGE": "ghcr.io/fluxcd/kustomize-controller:v1.9.4@sha256:" + "2" * 64,
-            "FLUX_EXPECTED_HELM_IMAGE": "ghcr.io/fluxcd/helm-controller:v1.6.3@sha256:" + "3" * 64,
-        }
-        saved = os.environ.copy()
-        os.environ.update(cls.base_environment)
-        try:
-            cls.contract = {}
-            exec(compile(definitions, "<flux-live-contract>", "exec"), cls.contract)
-            cls.fixture = cls.build_fixture()
-        finally:
-            os.environ.clear()
-            os.environ.update(saved)
-
-    @classmethod
-    def metadata(
-        cls,
-        name,
-        namespace,
-        labels,
-        annotations=None,
-        deployment=False,
-        flux_finalizer=False,
-    ):
-        actual_annotations = {
-            cls.contract["LAST_APPLIED"]: json.dumps(
-                {"kind": "Fixture", "metadata": {"name": name}}, separators=(",", ":")
-            )
-        }
-        actual_annotations.update(annotations or {})
-        if deployment:
-            actual_annotations["deployment.kubernetes.io/revision"] = "1"
-        value = {
-            "name": name,
-            "uid": "00000000-0000-0000-0000-000000000000",
-            "resourceVersion": "1",
-            "creationTimestamp": "2026-08-09T00:00:00Z",
-            "labels": labels,
-            "annotations": actual_annotations,
-        }
-        if namespace is not None:
-            value["namespace"] = namespace
-        if flux_finalizer:
-            value["finalizers"] = [cls.contract["FLUX_FINALIZER"]]
-        return value
-
-    @staticmethod
-    def list_document(items):
-        return {"apiVersion": "v1", "kind": "List", "items": items}
-
-    @classmethod
-    def build_fixture(cls):
-        c = cls.contract
-        deployments = []
-        deployment_contract = {
-            "source-controller": (
-                cls.base_environment["FLUX_EXPECTED_SOURCE_IMAGE"],
-                [],
-                True,
-                10,
-            ),
-            "kustomize-controller": (
-                cls.base_environment["FLUX_EXPECTED_KUSTOMIZE_IMAGE"],
-                [
-                    "--no-cross-namespace-refs=true",
-                    "--no-remote-bases=true",
-                    "--default-service-account=default",
-                    "--feature-gates=DisableConfigWatchers=true",
-                ],
-                False,
-                60,
-            ),
-            "helm-controller": (
-                cls.base_environment["FLUX_EXPECTED_HELM_IMAGE"],
-                [
-                    "--no-cross-namespace-refs=true",
-                    "--default-service-account=default",
-                    "--feature-gates=DisableConfigWatchers=true",
-                ],
-                False,
-                600,
-            ),
-        }
-        for name, (image, args, source, grace) in deployment_contract.items():
-            template_metadata = {
-                "annotations": {"prometheus.io/port": "8080", "prometheus.io/scrape": "true"},
-                "labels": {"app": name, **c["flux_labels"](name)},
-            }
-            spec = {
-                "replicas": 1,
-                "selector": {"matchLabels": {"app": name}},
-                "template": {
-                    "metadata": template_metadata,
-                    "spec": c["expected_pod"](name, image, args, source, grace),
-                },
-            }
-            if source:
-                spec["strategy"] = {"type": "Recreate"}
-            deployments.append(
-                {
-                    "apiVersion": "apps/v1",
-                    "kind": "Deployment",
-                    "metadata": cls.metadata(
-                        name,
-                        "flux-system",
-                        c["flux_labels"](name, True),
-                        deployment=True,
-                    ),
-                    "spec": spec,
-                }
-            )
-
-        service_accounts = [
-            {
-                "apiVersion": "v1",
-                "kind": "ServiceAccount",
-                "metadata": cls.metadata(name, namespace, c["flux_labels"](name)),
-            }
-            for namespace, name in sorted(c["CONTROLLER_SERVICE_ACCOUNTS"])
-        ]
-        for namespace, name in sorted(c["ACCESS_SERVICE_ACCOUNTS"]):
-            service_accounts.append(
-                {
-                    "apiVersion": "v1",
-                    "kind": "ServiceAccount",
-                    "metadata": cls.metadata(name, namespace, {}),
-                    "automountServiceAccountToken": False,
-                }
-            )
-
-        roles = []
-        for key, rules in c["access_role_rules"]().items():
-            namespace, name = key
-            roles.append(
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "Role",
-                    "metadata": cls.metadata(name, namespace, {}),
-                    "rules": rules,
-                }
-            )
-        cluster_roles = []
-        for name, rules in c["cluster_role_rules"]().items():
-            cluster_roles.append(
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "ClusterRole",
-                    "metadata": cls.metadata(name, None, c["expected_cluster_role_labels"](name)),
-                    "rules": rules,
-                }
-            )
-        role_bindings = []
-        for key, expected in c["expected_bindings"]().items():
-            namespace, name = key
-            role_bindings.append(
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "RoleBinding",
-                    "metadata": cls.metadata(name, namespace, {}),
-                    "roleRef": expected[0],
-                    "subjects": expected[1],
-                }
-            )
-        cluster_bindings = []
-        for name, expected in c["expected_cluster_bindings"]().items():
-            cluster_bindings.append(
-                {
-                    "apiVersion": "rbac.authorization.k8s.io/v1",
-                    "kind": "ClusterRoleBinding",
-                    # Per name, not one label set for all: the generated export
-                    # labels its own objects with the Flux instance and version,
-                    # and the per-controller split's ClusterRoleBindings
-                    # (issue #98) are authored here and carry none — pinning a
-                    # Flux version label onto authorization this repository
-                    # derived itself would make a Flux bump rewrite it.
-                    "metadata": cls.metadata(
-                        name, None, c["expected_cluster_binding_labels"](name)
-                    ),
-                    "roleRef": expected[0],
-                    "subjects": expected[1],
-                }
-            )
-
-        namespaces = []
-        for name in ("flux-system", "cloudflare-public", "naranjo-online", "lidersea-com"):
-            if name == "flux-system":
-                # The reviewed controller overlay adds enforce/audit Pod
-                # Security to the namespace the generated export only warns
-                # about, so the reviewed live namespace carries both sets.
-                labels = {
-                    **c["flux_labels"](),
-                    **c["PSA_LABELS"],
-                    "kubernetes.io/metadata.name": name,
-                }
-                annotations = {}
-            else:
-                labels = {**c["PSA_LABELS"], "kubernetes.io/metadata.name": name}
-                annotations = {"kustomize.toolkit.fluxcd.io/prune": "disabled"}
-            namespaces.append(
-                {
-                    "apiVersion": "v1",
-                    "kind": "Namespace",
-                    "metadata": cls.metadata(name, None, labels, annotations),
-                    "spec": {"finalizers": ["kubernetes"]},
-                }
-            )
-
-        selector_annotations = {
-            "release-selector.platform.snaraj.dev/schema": "legacy-bootstrap/v1",
-            "release-selector.platform.snaraj.dev/release-id": "0",
-            "release-selector.platform.snaraj.dev/release-tag": "v0.1.27",
-            "release-selector.platform.snaraj.dev/release-target-sha": "0" * 40,
-            "release-selector.platform.snaraj.dev/tag-object-sha": "0" * 40,
-            "release-selector.platform.snaraj.dev/main-ci": "0/0",
-            "release-selector.platform.snaraj.dev/platform-release": "0/0",
-            "release-selector.platform.snaraj.dev/selector-image-digest": (
-                "not-applicable-before-v0.1.28"
-            ),
-            "release-selector.platform.snaraj.dev/identity-sha256": "sha256:" + "0" * 64,
-        }
-        git_repository = {
-            "apiVersion": "source.toolkit.fluxcd.io/v1",
-            "kind": "GitRepository",
-            "metadata": cls.metadata(
-                "flux-system", "flux-system", {}, selector_annotations,
-                flux_finalizer=True,
-            ),
-            "spec": {
-                "ignore": "/*\n!/kubernetes/\n/kubernetes/*\n!/kubernetes/websites/\n"
-                "/kubernetes/websites/*\n!/kubernetes/websites/naranjo-online/\n"
-                "!/kubernetes/websites/naranjo-online/**\n"
-                "!/kubernetes/websites/lidersea-com/\n"
-                "!/kubernetes/websites/lidersea-com/**\n",
-                "interval": "1m0s",
-                "ref": {"tag": "v0.1.27"},
-                "sparseCheckout": [
-                    "kubernetes/websites/naranjo-online",
-                    "kubernetes/websites/lidersea-com",
-                ],
-                "timeout": "60s",
-                "url": "https://github.com/snaraj/website-infrastructure.git",
-            },
-        }
-        kustomizations = []
-        for site in ("naranjo-online", "lidersea-com"):
-            kustomizations.append({
-                "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
-                "kind": "Kustomization",
-                "metadata": cls.metadata(
-                    site + "-reconciler", "flux-system", {}, flux_finalizer=True
-                ),
-                "spec": {
-                    "deletionPolicy": "Orphan",
-                    "interval": "10m0s",
-                    "path": "./kubernetes/websites/" + site,
-                    "prune": False,
-                    "retryInterval": "1m0s",
-                    "serviceAccountName": site + "-reconciler",
-                    "sourceRef": {"kind": "GitRepository", "name": "flux-system"},
-                    "suspend": False,
-                    "timeout": "5m0s",
-                    "wait": True,
-                },
-            })
-        return {
-            "deployments": cls.list_document(deployments),
-            "service_accounts": cls.list_document(service_accounts),
-            "roles": cls.list_document(roles),
-            "role_bindings": cls.list_document(role_bindings),
-            "cluster_roles": cls.list_document(cluster_roles),
-            "cluster_role_bindings": cls.list_document(cluster_bindings),
-            "namespaces": cls.list_document(namespaces),
-            "git_repository": cls.list_document([git_repository]),
-            "kustomization": cls.list_document(kustomizations),
-        }
-
-    def run_fixture(self, fixture, *, scope="full"):
-        with tempfile.TemporaryDirectory() as directory:
-            environment = {**os.environ, **self.base_environment, "FLUX_LIVE_SCOPE": scope}
-            variable_names = {
-                "deployments": "FLUX_LIVE_DEPLOYMENTS",
-                "service_accounts": "FLUX_LIVE_SERVICE_ACCOUNTS",
-                "roles": "FLUX_LIVE_ROLES",
-                "role_bindings": "FLUX_LIVE_ROLE_BINDINGS",
-                "cluster_roles": "FLUX_LIVE_CLUSTER_ROLES",
-                "cluster_role_bindings": "FLUX_LIVE_CLUSTER_ROLE_BINDINGS",
-                "namespaces": "FLUX_LIVE_NAMESPACES",
-                "git_repository": "FLUX_LIVE_GIT_REPOSITORY",
-                "kustomization": "FLUX_LIVE_KUSTOMIZATION",
-            }
-            for key, variable in variable_names.items():
-                path = Path(directory) / f"{key}.json"
-                path.write_text(json.dumps(fixture[key]), encoding="utf-8")
-                environment[variable] = str(path)
-            return subprocess.run(
-                [sys.executable, "-I", "-c", self.program],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=environment,
-                timeout=10,
-            )
-
-    def test_exact_reviewed_fixture_is_accepted(self):
-        result = self.run_fixture(copy.deepcopy(self.fixture))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout + result.stderr, "")
-
-    def test_controller_checkpoint_accepts_pristine_namespace_default_account(self):
-        fixture = copy.deepcopy(self.fixture)
-        fixture["namespaces"]["items"] = [
-            item
-            for item in fixture["namespaces"]["items"]
-            if item["metadata"]["name"] == "flux-system"
-        ]
-        default_account = next(
-            item
-            for item in fixture["service_accounts"]["items"]
-            if item["metadata"].get("namespace") == "flux-system"
-            and item["metadata"]["name"] == "default"
-        )
-        default_account.pop("automountServiceAccountToken")
-        default_account["metadata"]["annotations"].pop(self.contract["LAST_APPLIED"])
-        result = self.run_fixture(fixture, scope="controllers")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_sidecars_args_images_proxy_and_secret_refs_are_rejected(self):
-        mutations = []
-        sidecar = copy.deepcopy(self.fixture)
-        sidecar["deployments"]["items"][0]["spec"]["template"]["spec"]["containers"].append(
-            {"name": "sidecar", "image": "example.invalid/sidecar:latest"}
-        )
-        mutations.append(sidecar)
-        extra_arg = copy.deepcopy(self.fixture)
-        extra_arg["deployments"]["items"][0]["spec"]["template"]["spec"]["containers"][0]["args"].append("--unsafe=true")
-        mutations.append(extra_arg)
-        image_drift = copy.deepcopy(self.fixture)
-        image_drift["deployments"]["items"][0]["spec"]["template"]["spec"]["containers"][0]["image"] += "-drift"
-        mutations.append(image_drift)
-        proxy_env = copy.deepcopy(self.fixture)
-        proxy_env["deployments"]["items"][0]["spec"]["template"]["spec"]["containers"][0]["env"].append(
-            {"name": "HTTPS_PROXY", "value": "http://proxy.invalid"}
-        )
-        mutations.append(proxy_env)
-        secret_env = copy.deepcopy(self.fixture)
-        secret_env["deployments"]["items"][0]["spec"]["template"]["spec"]["containers"][0]["env"].append(
-            {"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "unexpected", "key": "token"}}}
-        )
-        mutations.append(secret_env)
-        for controller in ("kustomize-controller", "helm-controller"):
-            for replacement in (
-                None,
-                "--feature-gates=DisableConfigWatchers=false",
-                "--feature-gates=DisableConfigWatchers=true,ExternalArtifact=true",
-            ):
-                feature_drift = copy.deepcopy(self.fixture)
-                deployment = next(
-                    item for item in feature_drift["deployments"]["items"]
-                    if item["metadata"]["name"] == controller
+    @unittest.skipUnless(BASH, "Bash is required")
+    def test_retired_live_modes_fail_without_private_inputs(self):
+        for script, mode in ((BOOTSTRAP, "--apply-controllers"),
+                             (BOOTSTRAP, "--apply-sync"),
+                             (BOOTSTRAP, "--verify"),
+                             (ROOT / "bootstrap/flux/verify.sh", "--verify")):
+            with self.subTest(script=script.name, mode=mode):
+                result = subprocess.run(
+                    [required_tool(BASH, BASH_REQUIRED), str(script), mode],
+                    env={"PATH": "/usr/bin:/bin"}, capture_output=True,
+                    text=True, timeout=10, check=False,
                 )
-                args = deployment["spec"]["template"]["spec"]["containers"][0]["args"]
-                index = args.index("--feature-gates=DisableConfigWatchers=true")
-                if replacement is None:
-                    args.pop(index)
-                else:
-                    args[index] = replacement
-                mutations.append(feature_drift)
-        for fixture in mutations:
-            with self.subTest(mutation=len(mutations)):
-                self.assertNotEqual(self.run_fixture(fixture).returncode, 0)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "BLOCKED Flux live modes are retired; no protected file was read and no cluster request was attempted.\n")
 
-    def test_source_path_service_account_and_selector_metadata_drift_are_rejected(self):
-        mutations = []
-        git_secret = copy.deepcopy(self.fixture)
-        git_secret["git_repository"]["items"][0]["spec"]["secretRef"] = {
-            "name": "git-credentials"
-        }
-        mutations.append(git_secret)
-        git_url = copy.deepcopy(self.fixture)
-        git_url["git_repository"]["items"][0]["spec"]["url"] = (
-            "https://example.invalid/other.git"
-        )
-        mutations.append(git_url)
-        path = copy.deepcopy(self.fixture)
-        path["kustomization"]["items"][0]["spec"]["path"] = "./kubernetes/other"
-        mutations.append(path)
-        source_ref = copy.deepcopy(self.fixture)
-        source_ref["kustomization"]["items"][0]["spec"]["sourceRef"]["name"] = "other"
-        mutations.append(source_ref)
-        service_account = copy.deepcopy(self.fixture)
-        service_account["kustomization"]["items"][0]["spec"]["serviceAccountName"] = "default"
-        mutations.append(service_account)
-        pruning = copy.deepcopy(self.fixture)
-        pruning["kustomization"]["items"][0]["spec"]["prune"] = True
-        mutations.append(pruning)
-        aggregate = copy.deepcopy(self.fixture)
-        aggregate["kustomization"]["items"].append(
-            copy.deepcopy(aggregate["kustomization"]["items"][0])
-        )
-        aggregate["kustomization"]["items"][-1]["metadata"]["name"] = "flux-system"
-        aggregate["kustomization"]["items"][-1]["spec"]["path"] = "./kubernetes"
-        mutations.append(aggregate)
-        metadata = copy.deepcopy(self.fixture)
-        metadata["git_repository"]["items"][0]["metadata"]["annotations"][
-            "admission.example.invalid/mutated"
-        ] = "true"
-        mutations.append(metadata)
-        for fixture in mutations:
-            self.assertNotEqual(self.run_fixture(fixture).returncode, 0)
+    def test_generation_checks_private_binary_copy_before_execution(self):
+        source = BOOTSTRAP.read_text(encoding="utf-8")
+        copy = source.index('copy_stable_file "${flux_source}" "${flux}" || fail')
+        checksum = source.index('[[ "$(sha256sum -- "${flux}"')
+        execute = source.index('"${flux}" version --client')
+        self.assertLess(copy, checksum)
+        self.assertLess(checksum, execute)
+        self.assertIn('--components=source-controller,kustomize-controller,helm-controller', source)
+        self.assertIn('--network-policy=true --export', source)
+        self.assertIn('if text.count(old) != 1:', source)
+        self.assertEqual(source.count('sha256sum -- "${flux}"'), 2)
 
-    def test_service_account_binding_and_namespace_security_drift_are_rejected(self):
-        mutations = []
-        account = copy.deepcopy(self.fixture)
-        target = next(
-            item
-            for item in account["service_accounts"]["items"]
-            if item["metadata"].get("namespace") == "flux-system"
-            and item["metadata"]["name"] == "naranjo-online-reconciler"
-        )
-        target["automountServiceAccountToken"] = True
-        mutations.append(account)
-        image_pull = copy.deepcopy(self.fixture)
-        target = next(
-            item
-            for item in image_pull["service_accounts"]["items"]
-            if item["metadata"].get("namespace") == "flux-system"
-            and item["metadata"]["name"] == "naranjo-online-reconciler"
-        )
-        target["imagePullSecrets"] = [{"name": "unexpected"}]
-        mutations.append(image_pull)
-        binding = copy.deepcopy(self.fixture)
-        binding["cluster_role_bindings"]["items"].append(
-            {
-                "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRoleBinding",
-                "metadata": self.metadata("unexpected", None, {}),
-                "roleRef": {
-                    "apiGroup": "rbac.authorization.k8s.io",
-                    "kind": "ClusterRole",
-                    "name": "cluster-admin",
-                },
-                "subjects": [
-                    self.contract["sa_subject"](
-                        "flux-system", "naranjo-online-reconciler"
+    def test_generation_replaces_all_three_images_and_rejects_incomplete_export(self):
+        source = BOOTSTRAP.read_text(encoding="utf-8")
+        program = re.search(r"<<'PY'.*?\n(.*?)\nPY\n", source, re.S).group(1)
+        originals = ("ghcr.io/fluxcd/source-controller:v1.9.3",
+                     "ghcr.io/fluxcd/kustomize-controller:v1.9.4",
+                     "ghcr.io/fluxcd/helm-controller:v1.6.3")
+        keys = ("SOURCE_IMAGE", "KUSTOMIZE_IMAGE", "HELM_IMAGE")
+        pins = {key: image + "@sha256:" + str(i) * 64
+                for i, (key, image) in enumerate(zip(keys, originals), 1)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "components.yaml"
+            for images in (originals, originals[:-1], originals + originals[:1]):
+                with self.subTest(image_count=len(images)):
+                    before = "\n".join("image: " + image for image in images) + "\n"
+                    path.write_text(before, encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-c", program],
+                        env={**pins, "COMPONENTS_PATH": str(path)},
+                        capture_output=True, check=False, timeout=10,
                     )
-                ],
-            }
-        )
-        mutations.append(binding)
-        namespace = copy.deepcopy(self.fixture)
-        namespace["namespaces"]["items"][1]["metadata"]["labels"][
-            "pod-security.kubernetes.io/enforce"
-        ] = "privileged"
-        mutations.append(namespace)
-        for fixture in mutations:
-            self.assertNotEqual(self.run_fixture(fixture).returncode, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+                    if images == originals:
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(path.read_text(), "\n".join(
+                            "image: " + pins[key] for key in keys) + "\n")
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(path.read_text(), before)

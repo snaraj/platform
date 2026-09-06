@@ -124,10 +124,6 @@ install_archive_binary \
   '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d' \
   'kustomize' 'kustomize' 'kustomize'
 install_archive_binary \
-  'https://github.com/opentofu/opentofu/releases/download/v1.12.5/tofu_1.12.5_linux_amd64.tar.gz' \
-  'a6894d45ae7a17ce83189cce8fe04b5a65f68cefceb62455b5a6a89fa53ab38f' \
-  'tofu' 'tofu' 'tofu'
-install_archive_binary \
   'https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz' \
   'e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c' \
   'linux-amd64/helm' 'helm' 'helm'

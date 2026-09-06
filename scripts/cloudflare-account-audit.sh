@@ -10,12 +10,6 @@
 # script reads exactly those facts through authenticated GET requests and
 # nothing else.
 #
-# WHAT IT IS NOT. It is not the phased apply gate: scripts/cloudflare-audit.sh
-# is the pre-apply/post-apply ceremony reader bound to the plan gate, and it
-# stays authoritative for that flow. This is the steady-state acceptance audit
-# for the two per-site Tunnel target state, and it never writes, plans, or
-# applies anything.
-#
 # CREDENTIAL HANDLING. The token is read from CF_API_TOKEN in the environment
 # only. It is never accepted as an argument, never echoed, never written to a
 # file, never placed in a URL, and never passed through argv: it reaches curl

@@ -79,7 +79,7 @@ RELEASE_CONTRACTS = {
         "parent_name": None,
         "namespace": "cloudflare-public",
         "repository": None,
-        "readiness": "suspended-until-tunnel-token-ceremony-and-cloudflare-plan",
+        "readiness": "suspended-until-tunnel-token-ceremony",
         # The connector release is suspended and carries no published release
         # identity, so nothing about a site promotion changes how often it is
         # reconciled; it keeps the ten minutes it has always had.

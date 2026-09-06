@@ -4,7 +4,7 @@ metadata:
   name: cloudflare-public
   namespace: cloudflare-public
   annotations:
-    platform.snaraj.dev/readiness: suspended-until-tunnel-token-ceremony-and-cloudflare-plan
+    platform.snaraj.dev/readiness: suspended-until-tunnel-token-ceremony
 spec:
   suspend: true
   interval: 10m0s

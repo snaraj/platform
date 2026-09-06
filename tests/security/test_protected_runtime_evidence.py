@@ -22,7 +22,6 @@ EXAMPLE = ROOT / "bootstrap" / "pi" / "protected-legacy-runtime-evidence.example
 GITIGNORE = ROOT / ".gitignore"
 ADR = ROOT / "docs" / "adr" / "0013-protected-legacy-archive.md"
 RUNBOOK = ROOT / "docs" / "runbooks" / "protected-legacy-archive.md"
-SCRIPTS_README = ROOT / "scripts" / "README.md"
 MODULE = load_script("validate_protected_runtime_evidence.py")
 
 NOW = 1786250000
