@@ -284,6 +284,7 @@ Not landed, and each needs the named actor:
 | Real chart digest in `kubernetes/websites/obsidian/source.yaml` | promoter or coordinator | snaraj/obsync v0.1.0 Release |
 | Receipt-contract closure for a third identity tuple | delivery lane, security tier | the same v0.1.0 Release |
 | `deploymentReady: true` and resuming the release | delivery lane | every row above |
+| Live-evidence vocabulary for a staged workload (section 6) | owner, then delivery lane | a ruling on what a staged workload owes a live capture |
 
 ## 5. The receipt closure, and why it is not on this branch
 
@@ -313,6 +314,20 @@ closure first". Nothing invents a record.
   an artifact whose repository publishes nothing. It clears the moment v0.1.0
   is published, and the alternative — hiding the workload from the watchdog —
   is exactly the silent drift issue #273 exists to prevent.
+- **Two live-evidence validators still describe a two-workload cluster.**
+  `scripts/validate_flux_release_evidence.py` gained this workload's
+  Kustomization, because that object exists live the moment the entry merges.
+  It deliberately did NOT gain the OCIRepository, HelmRelease or HelmChart
+  inventories: those require a `SourceVerified` source and a Ready release with
+  a deployed history, which a placeholder digest and a suspended release can
+  never produce. The contract has no vocabulary for "reconciled but staged",
+  and inventing one inside a live-evidence check is an owner decision.
+  `scripts/validate_runtime_inventory_evidence.py` has the same shape and is
+  untouched: its Namespace, Deployment and Service inventories still name two
+  workloads. Neither is on the `make check` path and neither is failing, but
+  both will describe the cluster incorrectly at the next live capture — the
+  Namespace list from the moment the owner applies `namespaces.yaml`, the rest
+  only once this workload actually deploys.
 - **The Pod-volume policy does not admit a claim.** The platform's
   workload-volume control admits only `emptyDir`, `configMap`, `secret`,
   `projected` and `downwardAPI`, so the obsync Pod's two claim volumes would be
