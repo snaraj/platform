@@ -911,13 +911,31 @@ def chart_members(layer: bytes, names: tuple) -> dict:
     return found
 
 
+# The one publisher whose ARTIFACT FAMILY is not its workload slug. The two
+# sites are named for their domains all the way down — namespace, chart, image
+# and slug are one word — so the `release-publisher` profile derives the chart
+# and image repositories from the slug and is right every time. `obsidian` is
+# the namespace the owner gave the obsync workload on 2026-09-07; its chart and
+# image are `obsync`. Deriving them from the slug there would look for
+# `ghcr.io/snaraj/obsidian`, a repository that does not exist, and a promoter
+# that GUESSED past that would be guessing about which bytes it verifies.
+OBSYNC_SUBJECT = (
+    "https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml"
+    "@refs/heads/main"
+)
+
+
 def profile_for(subject: str) -> str:
     """Select the acquisition profile from the publisher identity.
 
-    A subject this file has no profile for is refused: the promoter never
-    guesses how an unknown publisher should be verified.
+    Exact identities are matched BEFORE the general pattern, so a publisher
+    with its own profile can never fall through to the derive-from-slug one. A
+    subject this file has no profile for is refused: the promoter never guesses
+    how an unknown publisher should be verified.
     """
 
+    if subject == OBSYNC_SUBJECT:
+        return "obsync-release-publisher"
     if re.fullmatch(
         r"https://github\.com/snaraj/[^/]+/\.github/workflows/release-publisher\.yml@refs/heads/main",
         subject,
@@ -979,17 +997,28 @@ def bind_release_manifest(asset: dict, expected: dict, label: str) -> None:
 
 
 def acquire_release_publisher(
-    selection: Selection, version: str, registry: Registry, github: GitHub, cosign: Cosign
+    selection: Selection,
+    version: str,
+    registry: Registry,
+    github: GitHub,
+    cosign: Cosign,
+    artifact: str = "",
 ) -> tuple:
     """The ``release-publisher`` profile. Returns ``(record, inspection)``.
 
     ``record`` is one receipt-v2 record; ``inspection`` holds the exact-layer
     hashes of ``Chart.yaml`` and ``values.yaml`` the Markdown view states.
+
+    ``artifact`` is the name the publisher gives the chart and the image. It
+    defaults to the workload slug, which is what every site publisher does; a
+    profile whose workload is named differently from its artifacts passes the
+    artifact name explicitly rather than letting this function guess.
     """
 
     slug, chart_repo, subject = selection.slug, selection.chart_repository, selection.subject
-    # The site publisher contract names the workload image after the chart.
-    image_repo = f"{REGISTRY_HOST}/snaraj/{slug}"
+    artifact = artifact or slug
+    # The publisher contract names the workload image after the chart.
+    image_repo = f"{REGISTRY_HOST}/snaraj/{artifact}"
     tag = f"v{version}"
 
     manifest_digest, manifest_bytes = resolve_twice(registry, chart_repo, version, OCI_MANIFEST)
@@ -1006,16 +1035,16 @@ def acquire_release_publisher(
 
     config_bytes = registry.blob(chart_repo, config["digest"])
     config_document = json.loads(config_bytes)
-    expected_chart = {"appVersion": version, "name": slug, "version": version}
+    expected_chart = {"appVersion": version, "name": artifact, "version": version}
     if {key: config_document.get(key) for key in expected_chart} != expected_chart:
         raise Refusal(f"{chart_repo}:{version}: Helm config identity is not {expected_chart}")
 
     layer_bytes = registry.blob(chart_repo, layer["digest"])
     if layer.get("size") != len(layer_bytes):
         raise Refusal(f"{chart_repo}:{version}: layer size disagrees with its bytes")
-    members = chart_members(layer_bytes, (f"{slug}/Chart.yaml", f"{slug}/values.yaml"))
-    chart_yaml = members[f"{slug}/Chart.yaml"]
-    values_yaml = members[f"{slug}/values.yaml"]
+    members = chart_members(layer_bytes, (f"{artifact}/Chart.yaml", f"{artifact}/values.yaml"))
+    chart_yaml = members[f"{artifact}/Chart.yaml"]
+    values_yaml = members[f"{artifact}/values.yaml"]
     if chart_identity(chart_yaml.decode("utf-8")) != expected_chart:
         raise Refusal(f"{chart_repo}:{version}: Chart.yaml identity is not {expected_chart}")
     pin = image_pin(values_yaml.decode("utf-8"))
@@ -1104,7 +1133,32 @@ def acquire_release_publisher(
     return record, inspection
 
 
-PROFILES = {"release-publisher": acquire_release_publisher}
+def acquire_obsync_publisher(
+    selection: Selection, version: str, registry: Registry, github: GitHub, cosign: Cosign
+) -> tuple:
+    """The ``obsync-release-publisher`` profile (issue #348).
+
+    Byte for byte the same ceremony as ``release-publisher`` — the same
+    resolve-twice registry reads, the same Helm config and Chart.yaml identity
+    comparison, the same embedded image pin, the same cosign chart and
+    provenance verification, the same immutable Release, annotated tag and
+    protected-main ancestry proofs. One thing differs and it is stated rather
+    than derived: the chart and image are named `obsync` while the workload is
+    named `obsidian`. Nothing here is relaxed by that — the artifact name is
+    still an exact literal this file states, so a chart named anything else,
+    including one named after the namespace, is refused exactly as a
+    mismatched digest is.
+    """
+
+    return acquire_release_publisher(
+        selection, version, registry, github, cosign, artifact="obsync"
+    )
+
+
+PROFILES = {
+    "release-publisher": acquire_release_publisher,
+    "obsync-release-publisher": acquire_obsync_publisher,
+}
 
 
 def acquire(selection: Selection, version: str, registry, github, cosign) -> tuple:

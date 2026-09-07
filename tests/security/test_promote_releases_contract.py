@@ -266,15 +266,65 @@ class DiscoveryTests(unittest.TestCase):
     def test_committed_selections_are_discovered_from_the_manifests(self):
         selections = MODULE.discover_selections(REPO_ROOT)
         receipt = MODULE.load_receipt(REPO_ROOT)
-        self.assertEqual(set(selections), set(receipt["records"]))
+        # Every receipted workload must still be discoverable: a record whose
+        # selection vanished would leave the receipt asserting bytes nothing
+        # selects.
+        self.assertLessEqual(set(receipt["records"]), set(selections))
         for slug, selection in selections.items():
+            self.assertEqual(selection.source_repository, "snaraj/" + selection.domain)
+            # Every selection must resolve to a profile, receipted or not: an
+            # unverifiable publisher is refused at discovery time, never at
+            # acquisition time on a tick nobody is watching.
+            self.assertIn(MODULE.profile_for(selection.subject), MODULE.PROFILES)
+            if slug not in receipt["records"]:
+                continue
             record = receipt["records"][slug]
             self.assertEqual(selection.version, record["chartTag"])
             self.assertEqual(selection.digest, record["manifestDigest"])
             self.assertEqual(selection.chart_repository, record["chartRepository"])
             self.assertEqual(selection.subject, record["signer"]["subject"])
-            self.assertEqual(selection.source_repository, "snaraj/" + selection.domain)
-            self.assertEqual(MODULE.profile_for(selection.subject), "release-publisher")
+
+    def test_a_selection_the_receipt_does_not_bind_is_refused_not_promoted(self):
+        """The onboarding state issue #348 introduced, proven rather than assumed.
+
+        A workload may be committed into the reconciliation graph before its
+        publisher has cut a release: `obsidian` carries the all-zero placeholder
+        digest today. The promoter must REFUSE to write a promotion for such a
+        workload — loudly, naming the missing closure — rather than inventing a
+        receipt record for it, because the receipt contract in
+        scripts/ci/platform_release_contract.py is what binds the signed
+        platform release identity to the exact bytes each workload deploys.
+        """
+
+        selections = MODULE.discover_selections(REPO_ROOT)
+        receipt = MODULE.load_receipt(REPO_ROOT)
+        unbound = sorted(set(selections) - set(receipt["records"]))
+        if not unbound:
+            self.skipTest("every committed selection is currently receipted")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs/assurance").mkdir(parents=True)
+            (root / MODULE.VERSIONS_ENV).write_text(
+                (REPO_ROOT / MODULE.VERSIONS_ENV).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            for name in (MODULE.RECEIPT_JSON, MODULE.RECEIPT_MD):
+                (root / name).write_text(
+                    (REPO_ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            slug = unbound[0]
+            with self.assertRaisesRegex(
+                MODULE.Refusal, "receipt contract does not yet bind this workload"
+            ):
+                MODULE.apply_promotion(
+                    root,
+                    selections,
+                    {slug: ({"chartTag": "0.1.0"}, {})},
+                    348,
+                    "#348",
+                    "2026-09-07",
+                    run=lambda *args, **kwargs: None,
+                )
 
     def test_unannotated_documents_are_ignored_and_ambiguous_ones_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

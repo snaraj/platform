@@ -53,6 +53,25 @@ rewrite. The receipt contract in `scripts/ci/platform_release_contract.py`
 still binds exactly the two site identities; extending that closure is a
 separate reviewed change per workload.
 
+`obsync-release-publisher` is the worked example of that extension (issue #348)
+and of the one thing an added profile is FOR. The site profile derives the chart
+and image repositories from the workload slug, which is right every time a
+workload and its artifacts share a name. `obsidian` is the namespace the owner
+gave the obsync workload; its chart and image are `obsync`. Deriving them from
+the slug would look for a repository that does not exist, so the profile states
+the artifact name as an exact literal instead — a chart named anything else,
+the namespace name included, is refused exactly as a mismatched digest is.
+Every other step of the ceremony is the same code.
+
+A workload may also be committed before its publisher has cut a release. Its
+selection then carries the all-zero placeholder digest and
+`scripts/validate_signature_policy.py` lists it as PENDING, which REQUIRES that
+sentinel and refuses any real digest for it. The promoter discovers such a
+selection and refuses to promote it — "the receipt contract does not yet bind
+this workload; extend the identity closure first" — rather than inventing a
+receipt record. Resolving it is the reviewed change that moves the slug out of
+the pending set and records the acquisition pair the ceremony proved.
+
 ## Install (once per workstation)
 
 The tool works in its own clone so the coordination checkout stays clean.
