@@ -1,0 +1,117 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: obsidian
+  namespace: obsidian
+  labels:
+    app.kubernetes.io/managed-by: fluxcd
+  annotations:
+    platform.snaraj.dev/readiness: suspended-until-obsync-chart-release
+spec:
+  # Suspended, on the same fail-closed pattern the connector release uses
+  # (`suspended-until-tunnel-token-ceremony`). The OCIRepository beside this
+  # file carries the all-zero placeholder digest, so there is nothing for
+  # helm-controller to install and an unsuspended release would only
+  # produce a permanent reconciliation error. Resuming it is part of the
+  # same reviewed change that replaces the placeholder digest.
+  suspend: true
+  # The same one-minute ceiling the two sites carry (issue #309): a poll of
+  # already-verified state, no webhook receiver, no inbound path, no new object.
+  interval: 1m0s
+  # helm-controller retains five release revisions as namespace Secrets when
+  # this field is unset, and `storage.Create` prunes to maxHistory-1 BEFORE
+  # writing the new revision, so any retention at or above the namespace Secret
+  # budget wedges the release permanently (issue #198). Two keeps steady-state
+  # history inside the budget while preserving one rollback target for the
+  # `strategy: rollback` remediation below.
+  maxHistory: 2
+  releaseName: obsidian
+  serviceAccountName: helm-reconciler
+  driftDetection:
+    mode: enabled
+  # The chart artifact comes from the signature-verified OCIRepository beside
+  # this file. While that object carries the all-zero placeholder digest,
+  # source-controller produces no artifact and this release installs nothing —
+  # the fail-closed state this onboarding deliberately commits. chartRef
+  # carries no namespace, so helm-controller (started with
+  # --no-cross-namespace-refs=true) can only ever resolve it inside this
+  # workload's own namespace.
+  chartRef:
+    kind: OCIRepository
+    name: obsidian-chart
+  install:
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 0
+      strategy: rollback
+  # Unlike the two site charts, the obsync chart is a deployment-provider
+  # BINDING POINT: it ships no hostname, no edge posture, no storage class and
+  # no Secret name of its own, and its values schema is closed
+  # (`additionalProperties: false`) and refuses a half-specified deployment.
+  # Everything below is therefore a value the PLATFORM must state, and the set
+  # is exact — `scripts/validate_release_state.py` and
+  # `policies/release-conftest/deployment-readiness.rego` pin it key for key.
+  # What is NOT here is what matters: no image repository, tag or digest. The
+  # signed chart remains the sole workload image-identity carrier (ADR 0016).
+  values:
+    # The reviewed activation gate. It stays false until the namespace, the two
+    # PersistentVolumes and the server-key Secret all exist on the cluster and
+    # the chart selection above names a real digest; flipping it is a separate
+    # reviewed change, not a side effect of this onboarding.
+    deploymentReady: false
+    # Require the edge's connecting-address and request-id headers on every
+    # request and refuse requests that lack them. Correct only because the sole
+    # ingress path is the Tunnel connector pinned below (ADR 0008: no Ingress,
+    # no NodePort, no LoadBalancer).
+    edge:
+      mode: cloudflare
+    # The reciprocal half of the connector's egress leg. The peer namespace is
+    # shared by every connector and they publish the same app label, so the
+    # instance is what names ONE connector; omitting it would render a policy
+    # that reads narrow and behaves wide.
+    ingress:
+      peerAppName: cloudflare-public
+      peerInstance: obsidian-tunnel
+      peerNamespace: cloudflare-public
+    # Shown on the pairing and install pages. It is never derived from a
+    # request header, so the hostname the edge publishes has to be stated.
+    publicUrl: https://obsidian.naranjo.online
+    # The envelope this namespace's ResourceQuota is derived from
+    # (docs/audits/2026-09-07-obsidian-capacity-evidence.md). Stated here rather
+    # than left to the chart default so the quota and the Pod it pays for are
+    # one reviewable pair inside this repository. `2000m` rather than `2`:
+    # identical to Kubernetes, and it keeps this manifest inside the closed
+    # unquoted-scalar grammar `scripts/validate_release_state.py` parses,
+    # rather than widening that parser to admit quoting.
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 64Mi
+    # A Secret reference, never a literal: the repository carries no secrets
+    # and this one is created by an owner ceremony on the cluster (safety
+    # invariants 1 and 7).
+    serverKeySecret:
+      key: OBSYNC_SERVER_KEY
+      name: obsidian-server-key
+    # docs/storage.md in snaraj/obsync is the contract. `size` is what the
+    # claim requests AND what the server is told through OBSYNC_*_CAPACITY —
+    # the standard library exposes no statvfs, so free space is capacity minus
+    # tracked usage, and the claim guarantee is the only number that cannot
+    # overstate what the pod may write. `capacity` records what the operator
+    # provisioned on the volume the claim binds to, so a 250Gi -> 500Gi growth
+    # is one values edit stating both facts.
+    storage:
+      blobs:
+        capacity: 250Gi
+        className: local-pie-ssd
+        size: 250Gi
+      journal:
+        capacity: 4Gi
+        className: local-pie-ssd
+        size: 4Gi

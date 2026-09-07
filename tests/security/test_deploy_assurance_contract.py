@@ -321,7 +321,9 @@ class SiteSelectionParsingTests(unittest.TestCase):
             source.parent.name: assurance.parse_site_selection(source.read_text())
             for source in sorted(SITES.glob("*/source.yaml"))
         }
-        self.assertEqual(sorted(parsed), ["lidersea-com", "naranjo-online"])
+        self.assertEqual(
+            sorted(parsed), ["lidersea-com", "naranjo-online", "obsidian"]
+        )
         for site, selection in parsed.items():
             self.assertIsNotNone(selection, site)
             committed, repository = selection
@@ -329,6 +331,10 @@ class SiteSelectionParsingTests(unittest.TestCase):
             self.assertRegex(repository, r"^snaraj/[a-z.]+$", site)
         self.assertEqual(parsed["naranjo-online"][1], "snaraj/naranjo.online")
         self.assertEqual(parsed["lidersea-com"][1], "snaraj/lidersea.com")
+        # The watchdog derives the repository of record from the cosign subject
+        # rather than from the directory name, which is what makes it right for
+        # a workload whose namespace and publishing repository differ.
+        self.assertEqual(parsed["obsidian"][1], "snaraj/obsync")
 
     def test_selection_without_annotation_or_subject_is_unparseable(self):
         source = (SITES / "naranjo-online" / "source.yaml").read_text()

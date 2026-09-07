@@ -177,6 +177,11 @@ DECLARED_SLACK = (
         ("lidersea-com",), "", ("configmaps",),
         model.HELM_APPLY_VERBS, HELM_CONFIGMAP_BASELINE,
     ),
+    SlackRow(
+        Subject("obsidian", "helm-reconciler"),
+        ("obsidian",), "", ("configmaps",),
+        model.HELM_APPLY_VERBS, HELM_CONFIGMAP_BASELINE,
+    ),
 )
 
 DECLARED_SLACK_REQUESTS = _slack_requests(DECLARED_SLACK)
@@ -214,6 +219,23 @@ GENERAL_FORBIDDEN_REQUESTS = (
     (Subject("flux-system", "naranjo-online-reconciler"), "create", SOURCE_GROUP,
      "ocirepositories", "lidersea-com", None,
      "a site reconciler must not hold authority over the sibling site's path"),
+    # The same crossings aimed at and from the third tuple (issue #348),
+    # written out rather than assumed to follow from the two site rows above.
+    # `obsidian` joined a topology that had carried exactly two workloads
+    # everywhere, and a namespace that inherits a grant by accident is exactly
+    # what a two-row table cannot show.
+    (Subject("obsidian", "helm-reconciler"), "get", "", "secrets", "naranjo-online",
+     None, "no workload identity tuple couples to another's"),
+    (Subject("naranjo-online", "helm-reconciler"), "get", "", "secrets", "obsidian",
+     None, "no workload identity tuple couples to another's"),
+    (Subject("flux-system", "obsidian-reconciler"), "create", SOURCE_GROUP,
+     "ocirepositories", "naranjo-online", None,
+     "a workload reconciler must not hold authority over another workload's path"),
+    (Subject("flux-system", "naranjo-online-reconciler"), "create", HELM_GROUP,
+     "helmreleases", "obsidian", None,
+     "a workload reconciler must not hold authority over another workload's path"),
+    (SOURCE_CONTROLLER, "get", "", "secrets", "obsidian", None,
+     "every source in this repository is anonymous"),
 )
 
 ISSUE_98_CROSS_CONTROLLER_REQUESTS = (
@@ -319,21 +341,30 @@ SITE_KUSTOMIZATIONS = {
         "./kubernetes/websites/lidersea-com",
         "lidersea-com-reconciler",
     ),
+    "obsidian-reconciler": (
+        "./kubernetes/websites/obsidian",
+        "obsidian-reconciler",
+    ),
 }
+
+# Every namespace that owns a direct reconciliation root under
+# kubernetes/websites. Written out here rather than imported from the validator
+# under test: an inventory read from the thing it checks agrees with itself
+# whatever the tree says.
+DIRECT_WORKLOAD_NAMESPACES = ("naranjo-online", "lidersea-com", "obsidian")
 
 EXPECTED_ACCESS_IDENTITIES = {
     ("ServiceAccount", "flux-system", "default"),
     ("ServiceAccount", "cloudflare-public", "default"),
-    ("ServiceAccount", "naranjo-online", "default"),
-    ("ServiceAccount", "lidersea-com", "default"),
     ("Role", "flux-system", "flux-controller-runtime"),
     ("RoleBinding", "flux-system", "flux-controller-runtime"),
     ("Role", "flux-system", "flux-controller-impersonation"),
     ("RoleBinding", "flux-system", "flux-controller-impersonation"),
 }
-for _site in ("naranjo-online", "lidersea-com"):
+for _site in DIRECT_WORKLOAD_NAMESPACES:
     EXPECTED_ACCESS_IDENTITIES.update(
         {
+            ("ServiceAccount", _site, "default"),
             ("Role", _site, "flux-controller-impersonation"),
             ("RoleBinding", _site, "flux-controller-impersonation"),
             ("ServiceAccount", "flux-system", _site + "-reconciler"),
@@ -363,16 +394,16 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
     def test_derivation_covers_every_reconciled_object(self):
         # A derivation that found nothing would pass every sufficiency test
         # below without proving anything, so the enumeration itself is pinned:
-        # two site Kustomizations, two HelmReleases, and every object they apply.
+        # one Kustomization and one HelmRelease per reconciled workload, and
+        # every object they apply.
         owners = {requirement.owner for requirement in self.requirements}
         self.assertEqual(
             owners,
             {
-                ("Kustomization", "naranjo-online-reconciler"),
-                ("Kustomization", "lidersea-com-reconciler"),
-                ("HelmRelease", "naranjo-online"),
-                ("HelmRelease", "lidersea-com"),
-            },
+                ("Kustomization", name + "-reconciler")
+                for name in DIRECT_WORKLOAD_NAMESPACES
+            }
+            | {("HelmRelease", name) for name in DIRECT_WORKLOAD_NAMESPACES},
         )
         applied = {
             (requirement.group, requirement.resource) for requirement in self.requirements
@@ -390,8 +421,8 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
         ):
             with self.subTest(resource=expected):
                 self.assertIn(expected, applied)
-        self.assertEqual(len(self.requirements), 119)
-        self.assertEqual(len(self.controller_requirements), 205)
+        self.assertEqual(len(self.requirements), 182)
+        self.assertEqual(len(self.controller_requirements), 237)
         # All three controllers must appear. source-controller reconciles every
         # source object under its own identity; a derivation that never named it
         # left that whole authority unproven.
@@ -415,7 +446,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
             if document.get("kind") == "Kustomization"
         ]
         self.assertEqual(len(repositories), 1)
-        self.assertEqual(len(kustomizations), 2)
+        self.assertEqual(len(kustomizations), len(DIRECT_WORKLOAD_NAMESPACES))
         repository = repositories[0]
         self.assertEqual(
             (
@@ -433,10 +464,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
         )
         self.assertEqual(
             repository["spec"]["sparseCheckout"],
-            [
-                "kubernetes/websites/naranjo-online",
-                "kubernetes/websites/lidersea-com",
-            ],
+            ["kubernetes/websites/" + name for name in DIRECT_WORKLOAD_NAMESPACES],
         )
 
         actual = {}
@@ -486,7 +514,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
             for document in access
         }
         self.assertEqual(identities, EXPECTED_ACCESS_IDENTITIES)
-        self.assertEqual(len(access), 24)
+        self.assertEqual(len(access), 33)
         self.assertEqual(
             {
                 identity
@@ -540,7 +568,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
         ]
         # Two Kustomizations plus two HelmReleases; the accounts they name are
         # the entire surface through which anything is applied.
-        self.assertEqual(len(impersonations), 4)
+        self.assertEqual(len(impersonations), 6)
         for requirement in impersonations:
             with self.subTest(account=requirement.name, namespace=requirement.namespace):
                 self.assertTrue(
@@ -582,11 +610,10 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
         self.assertEqual(
             owners,
             {
-                ("Kustomization", "naranjo-online-reconciler"),
-                ("Kustomization", "lidersea-com-reconciler"),
-                ("HelmRelease", "naranjo-online"),
-                ("HelmRelease", "lidersea-com"),
-            },
+                ("Kustomization", name + "-reconciler")
+                for name in DIRECT_WORKLOAD_NAMESPACES
+            }
+            | {("HelmRelease", name) for name in DIRECT_WORKLOAD_NAMESPACES},
         )
         for requirement in reads:
             with self.subTest(
@@ -616,7 +643,8 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
 
     def test_source_controller_can_reconcile_every_source_it_owns(self):
         sources = model.flux_custom_resources(ROOT).sources
-        self.assertEqual(len(sources), 3)
+        # One chart source per workload, plus the flux-system GitRepository.
+        self.assertEqual(len(sources), len(DIRECT_WORKLOAD_NAMESPACES) + 1)
         for source in sources:
             group, resource, _ = model.KIND_RESOURCES[source["kind"]]
             namespace = source["metadata"].get("namespace", "flux-system")
@@ -819,7 +847,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
     def test_helm_release_readiness_readback_is_tenant_local_and_read_only(self):
         """Issue #186: Helm install and upgrade waits need the full read chain."""
 
-        tenants = ("naranjo-online", "lidersea-com")
+        tenants = DIRECT_WORKLOAD_NAMESPACES
         for namespace in tenants:
             subject = Subject(namespace, "helm-reconciler")
             for group, resource in model.READ_BACK_RESOURCES:
@@ -854,27 +882,50 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
                             )
                         )
 
-    def test_naranjo_claim_lifecycle_is_local_without_backing_storage_authority(self):
-        """Issue #211: one exact site may manage claims, never their backing."""
+    def test_claim_lifecycle_is_namespace_local_without_backing_storage_authority(self):
+        """Issues #211 and #348: exactly the claim-owning namespaces, never their backing.
 
-        naranjo = Subject("naranjo-online", "helm-reconciler")
+        Two namespaces hold claim lifecycle now, and the interesting direction
+        is the one a second holder introduces: naranjo-online's grant must not
+        reach obsidian's claims and obsidian's must not reach naranjo-online's.
+        Neither may touch the PersistentVolume, StorageClass, node or
+        provisioner behind any of them — provisioning stays operator-owned.
+        """
+
+        claim_namespaces = ("naranjo-online", "obsidian")
+        unentitled = ("lidersea-com", "cloudflare-public")
         lifecycle = ("get", "list", "watch", "create", "update", "patch", "delete")
-        for verb in lifecycle:
-            with self.subTest(subject="naranjo", verb=verb):
-                self.assertTrue(
-                    self.authorizer.allows(
-                        naranjo, verb, "", "persistentvolumeclaims", "naranjo-online"
-                    )
-                )
-            for foreign in (None, "lidersea-com", "cloudflare-public", "flux-system"):
-                with self.subTest(subject="naranjo", verb=verb, foreign=foreign):
-                    self.assertFalse(
+        for namespace in claim_namespaces:
+            subject = Subject(namespace, "helm-reconciler")
+            foreigners = (
+                None,
+                "flux-system",
+                *unentitled,
+                *(set(claim_namespaces) - {namespace}),
+            )
+            for verb in lifecycle:
+                with self.subTest(subject=namespace, verb=verb):
+                    self.assertTrue(
                         self.authorizer.allows(
-                            naranjo, verb, "", "persistentvolumeclaims", foreign
+                            subject, verb, "", "persistentvolumeclaims", namespace
                         )
                     )
+                for foreign in foreigners:
+                    with self.subTest(subject=namespace, verb=verb, foreign=foreign):
+                        self.assertFalse(
+                            self.authorizer.allows(
+                                subject, verb, "", "persistentvolumeclaims", foreign
+                            )
+                        )
+            with self.subTest(subject=namespace, verb="deletecollection"):
+                self.assertFalse(
+                    self.authorizer.allows(
+                        subject, "deletecollection", "", "persistentvolumeclaims",
+                        namespace,
+                    )
+                )
 
-        for namespace in ("lidersea-com", "cloudflare-public"):
+        for namespace in unentitled:
             subject = Subject(namespace, "helm-reconciler")
             for verb in lifecycle:
                 with self.subTest(subject=namespace, verb=verb):
@@ -884,11 +935,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
                         )
                     )
 
-        self.assertFalse(
-            self.authorizer.allows(
-                naranjo, "deletecollection", "", "persistentvolumeclaims", "naranjo-online"
-            )
-        )
+        naranjo = Subject("naranjo-online", "helm-reconciler")
         for group, resource in (
             ("", "persistentvolumes"),
             ("", "nodes"),
@@ -920,7 +967,7 @@ class FluxRbacSufficiencyTests(unittest.TestCase):
         # `gitrepositories` after their sources became OCIRepositories, so the
         # first unsuspend would have been denied on the object the same commit
         # declared.
-        for site in ("naranjo-online", "lidersea-com"):
+        for site in DIRECT_WORKLOAD_NAMESPACES:
             documents = model.load_documents(
                 ROOT / "kubernetes" / "websites" / site / "source.yaml"
             )
@@ -977,7 +1024,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         # Pin the derived direct-site topology exactly. A floor would let a
         # deleted site grant hide inside arbitrary headroom and would let an
         # unrelated authority increase pass unnoticed.
-        self.assertEqual(len(self.granted), 306)
+        self.assertEqual(len(self.granted), 378)
         self.assertEqual(
             {str(subject) for subject in self.subjects} & {
                 "system:serviceaccount:flux-system:source-controller",
@@ -992,7 +1039,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         )
         self.assertEqual(
             self.namespaces,
-            {"flux-system", "cloudflare-public", "naranjo-online", "lidersea-com"},
+            {"flux-system", "cloudflare-public", *DIRECT_WORKLOAD_NAMESPACES},
         )
 
         ungrounded = model.ungrounded_grants(self.granted, self.derived)
@@ -1019,7 +1066,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         # every row carries a reason. Both are asserted so the table cannot
         # quietly become the place authority goes to hide.
         self.assertLess(len(DECLARED_SLACK_REQUESTS), len(self.granted) // 2)
-        self.assertEqual(len(DECLARED_SLACK_REQUESTS), 39)
+        self.assertEqual(len(DECLARED_SLACK_REQUESTS), 46)
         for row in DECLARED_SLACK:
             with self.subTest(subject=str(row.subject), resources=row.resources):
                 self.assertTrue(row.verbs and row.resources and row.scopes)
@@ -1065,7 +1112,9 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         for subject in (
             Subject("flux-system", "naranjo-online-reconciler"),
             Subject("flux-system", "lidersea-com-reconciler"),
+            Subject("flux-system", "obsidian-reconciler"),
             Subject("naranjo-online", "helm-reconciler"),
+            Subject("obsidian", "helm-reconciler"),
             Subject("kube-system", "kustomize-controller"),
         ):
             for group, resource in (
@@ -1110,16 +1159,14 @@ class FluxRbacNarrownessTests(unittest.TestCase):
             for name in INSTALLED_CONTROLLERS
         ]
         subjects.extend(
-            Subject(namespace, name)
-            for namespace, name in (
-                ("flux-system", "naranjo-online-reconciler"),
-                ("flux-system", "lidersea-com-reconciler"),
-                ("naranjo-online", "helm-reconciler"),
-                ("lidersea-com", "helm-reconciler"),
-            )
+            Subject("flux-system", name + "-reconciler")
+            for name in DIRECT_WORKLOAD_NAMESPACES
+        )
+        subjects.extend(
+            Subject(name, "helm-reconciler") for name in DIRECT_WORKLOAD_NAMESPACES
         )
         namespaces = (
-            None, "flux-system", "cloudflare-public", "naranjo-online", "lidersea-com",
+            None, "flux-system", "cloudflare-public", *DIRECT_WORKLOAD_NAMESPACES,
             "untrusted", "kube-system",
         )
         for subject in subjects:
@@ -1176,7 +1223,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
                         "an impersonate grant without resourceNames covers every account "
                         "in the namespace",
                     )
-        self.assertEqual(found, 3, "one impersonation Role per namespace holding accounts")
+        self.assertEqual(found, 4, "one impersonation Role per namespace holding accounts")
 
     def test_forbidden_requests_are_denied(self):
         for subject, verb, group, resource, namespace, name, why in FORBIDDEN_REQUESTS:
@@ -1296,8 +1343,8 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         )
         write_verbs = ("create", "update", "patch", "delete", "deletecollection")
         namespaces = (
-            None, "flux-system", "cloudflare-public", "naranjo-online",
-            "lidersea-com", "untrusted", "kube-system",
+            None, "flux-system", "cloudflare-public", *DIRECT_WORKLOAD_NAMESPACES,
+            "untrusted", "kube-system",
         )
         checked = 0
         for owner, kinds in sorted(model.OWNED_CONTROLLER_KINDS.items()):
@@ -1326,7 +1373,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
         # The enumeration is pinned: a matrix that checked nothing would pass.
         # 7 kinds x 2 non-owners each, minus the one by-design pair, x 3 targets
         # x 5 write verbs x 7 scopes.
-        self.assertEqual(checked, 1365)
+        self.assertEqual(checked, 1560)
 
     def test_every_per_controller_grant_is_owned_and_exclusive(self):
         """Two-sided evidence per GRANT, read out of the manifests themselves.
@@ -1402,7 +1449,7 @@ class FluxRbacNarrownessTests(unittest.TestCase):
     def test_no_controller_can_write_secrets_anywhere(self):
         for subject in (KUSTOMIZE_CONTROLLER, HELM_CONTROLLER, SOURCE_CONTROLLER):
             for namespace in (
-                "flux-system", "cloudflare-public", "naranjo-online", "lidersea-com",
+                "flux-system", "cloudflare-public", *DIRECT_WORKLOAD_NAMESPACES,
                 "untrusted", "kube-system", None,
             ):
                 for verb in ("create", "update", "patch", "delete"):
@@ -1583,9 +1630,12 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
         # helm-controller may not be able to impersonate — so it must appear in
         # the derivation wherever it lives.
         found = model.flux_custom_resources(ROOT)
-        self.assertEqual(len(found.kustomizations), 2)
-        self.assertEqual(len(found.helm_releases), 2)
-        self.assertEqual(len(found.sources), 3)
+        workloads = len(DIRECT_WORKLOAD_NAMESPACES)
+        self.assertEqual(len(found.kustomizations), workloads)
+        self.assertEqual(len(found.helm_releases), workloads)
+        # One chart source per workload, plus the flux-system GitRepository the
+        # reconciliation itself syncs from.
+        self.assertEqual(len(found.sources), workloads + 1)
         directory = tempfile.mkdtemp(prefix="flux-rbac-graph.")
         self.addCleanup(shutil.rmtree, directory, True)
         root = Path(directory).resolve()
@@ -1624,7 +1674,9 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
             index.read_text(encoding="utf-8") + "  - extra/release.yaml\n", encoding="utf-8"
         )
         reached = model.flux_custom_resources(root)
-        self.assertEqual(len(reached.helm_releases), 3)
+        self.assertEqual(
+            len(reached.helm_releases), len(DIRECT_WORKLOAD_NAMESPACES) + 1
+        )
         self.assertIn(
             "extra", {release["metadata"]["name"] for release in reached.helm_releases}
         )
@@ -1773,7 +1825,7 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
         """Behavioural equivalence on the real tree, proven rather than asserted.
 
         Parsing the apiGroup instead of prefix-matching the whole apiVersion
-        must change NOTHING about the 7 custom resources this repository
+        must change NOTHING about the custom resources this repository
         actually declares — it may only change what happens to shapes that were
         being handled by string luck. Both halves are pinned here: the exact
         inventory that must keep classifying, and version-agnosticism within a
@@ -1781,9 +1833,12 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
         """
 
         found = model.flux_custom_resources(ROOT)
-        self.assertEqual(len(found.kustomizations), 2)
-        self.assertEqual(len(found.helm_releases), 2)
-        self.assertEqual(len(found.sources), 3)
+        workloads = len(DIRECT_WORKLOAD_NAMESPACES)
+        self.assertEqual(len(found.kustomizations), workloads)
+        self.assertEqual(len(found.helm_releases), workloads)
+        # One chart source per workload, plus the flux-system GitRepository the
+        # reconciliation itself syncs from.
+        self.assertEqual(len(found.sources), workloads + 1)
         self.assertEqual(
             sorted(
                 (document["kind"], document["apiVersion"])
@@ -1791,10 +1846,10 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
                 for document in bucket
             ),
             sorted(
-                [("Kustomization", "kustomize.toolkit.fluxcd.io/v1")] * 2
-                + [("HelmRelease", "helm.toolkit.fluxcd.io/v2")] * 2
+                [("Kustomization", "kustomize.toolkit.fluxcd.io/v1")] * workloads
+                + [("HelmRelease", "helm.toolkit.fluxcd.io/v2")] * workloads
                 + [("GitRepository", "source.toolkit.fluxcd.io/v1")]
-                + [("OCIRepository", "source.toolkit.fluxcd.io/v1")] * 2
+                + [("OCIRepository", "source.toolkit.fluxcd.io/v1")] * workloads
             ),
         )
         for index, bucket, group in (
@@ -1880,16 +1935,14 @@ class FluxRbacEnumerationStrictnessTests(unittest.TestCase):
         # it needs no permission, which would satisfy every assertion above.
         self.assertEqual(
             set(model.SITE_CHART_KINDS),
-            {("HelmRelease", "naranjo-online"), ("HelmRelease", "lidersea-com")},
+            {("HelmRelease", name) for name in DIRECT_WORKLOAD_NAMESPACES},
         )
 
     def test_the_reviewed_roots_are_all_enumerable(self):
         # The strictness above must not be satisfied by refusing everything;
-        # only the two direct site roots belong to this reconciliation graph.
-        for relative in (
-            "kubernetes/websites/naranjo-online",
-            "kubernetes/websites/lidersea-com",
-        ):
+        # every direct workload root belongs to this reconciliation graph.
+        for name in DIRECT_WORKLOAD_NAMESPACES:
+            relative = "kubernetes/websites/" + name
             with self.subTest(root=relative):
                 self.assertTrue(model.objects_applied_by(ROOT, relative))
 
@@ -2058,7 +2111,7 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
 
     def test_tenant_helm_readback_rules_are_required_and_cannot_write(self):
         relative = "kubernetes/flux-system/access.yaml"
-        tenants = ("naranjo-online", "lidersea-com")
+        tenants = DIRECT_WORKLOAD_NAMESPACES
         for tenant_index, namespace in enumerate(tenants):
             for group, resource in (("", "pods"), ("apps", "replicasets")):
                 group_text = '""' if group == "" else group
@@ -2108,44 +2161,75 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
                         errors,
                     )
 
-    def test_naranjo_pvc_rule_is_required_exact_and_site_local(self):
+    def test_claim_lifecycle_rules_are_required_exact_and_namespace_local(self):
+        """Claim authority exists in two namespaces and must be exact in both.
+
+        Issue #211 gave naranjo-online's helm-reconciler claim lifecycle for the
+        usage-export pair; issue #348 gave obsidian's the same for the obsync
+        blobs and journal pair. Each rule is mutated at its OWN occurrence, so a
+        rule that stopped being required in one namespace cannot be covered by
+        the other still being there — which is exactly what a single-occurrence
+        mutation would have hidden once a second claim-owning namespace existed.
+        The order below is the order the rules appear in access.yaml.
+        """
+
         relative = "kubernetes/flux-system/access.yaml"
+        claim_namespaces = ("naranjo-online", "obsidian")
         rule = (
             '  - apiGroups: [""]\n'
             "    resources: [persistentvolumeclaims]\n"
             "    verbs: [get, list, watch, create, update, patch, delete]\n"
         )
-        for label, replacement in (
-            ("missing", ""),
-            (
-                "extra verb",
-                rule.replace("patch, delete", "patch, delete, deletecollection"),
-            ),
-            (
-                "combined backing resource",
-                rule.replace(
-                    "resources: [persistentvolumeclaims]",
-                    "resources: [persistentvolumeclaims, persistentvolumes]",
+        for occurrence, namespace in enumerate(claim_namespaces):
+            for label, replacement, expected in (
+                (
+                    "missing",
+                    "",
+                    "must carry exactly one exact helm-reconciler PVC lifecycle rule",
                 ),
-            ),
-        ):
-            with self.subTest(mutation=label):
-                errors = self.mutate(relative, rule, replacement)
-                self.assertTrue(
-                    any("exact PVC lifecycle" in error for error in errors), errors
-                )
+                (
+                    "extra verb",
+                    rule.replace("patch, delete", "patch, delete, deletecollection"),
+                    "PVC lifecycle must be only the exact namespaced helm-reconciler rule",
+                ),
+                (
+                    "combined backing resource",
+                    rule.replace(
+                        "resources: [persistentvolumeclaims]",
+                        "resources: [persistentvolumeclaims, persistentvolumes]",
+                    ),
+                    "PVC lifecycle must be only the exact namespaced helm-reconciler rule",
+                ),
+            ):
+                with self.subTest(namespace=namespace, mutation=label):
+                    errors = self.mutate_occurrence(
+                        relative, rule, replacement, occurrence
+                    )
+                    self.assertTrue(
+                        any(expected in error for error in errors), errors
+                    )
 
-        lidersea_role = (
-            "kind: Role\n"
-            "metadata:\n"
-            "  name: helm-reconciler\n"
-            "  namespace: lidersea-com\n"
-            "rules:\n"
-        )
-        errors = self.mutate(relative, lidersea_role, lidersea_role + rule)
-        self.assertTrue(
-            any("PVC lifecycle must be only" in error for error in errors), errors
-        )
+        # And the negative direction: a namespace whose chart creates no claim
+        # may not hold the grant even in its exact reviewed shape. Claim
+        # authority is per namespace, never a tier every tenant reaches.
+        for namespace in ("lidersea-com", "cloudflare-public"):
+            with self.subTest(namespace=namespace, mutation="unentitled"):
+                role = (
+                    "kind: Role\n"
+                    "metadata:\n"
+                    "  name: helm-reconciler\n"
+                    "  namespace: {}\n"
+                    "rules:\n"
+                ).format(namespace)
+                if role not in (self.build_tree() / relative).read_text(
+                    encoding="utf-8"
+                ):
+                    self.skipTest(namespace + " holds no helm-reconciler Role")
+                errors = self.mutate(relative, role, role + rule)
+                self.assertTrue(
+                    any("PVC lifecycle must be only" in error for error in errors),
+                    errors,
+                )
 
     def test_an_unrestricted_impersonate_grant_is_refused(self):
         errors = self.mutate(

@@ -88,14 +88,23 @@ def flux_system_consumers(path: Path, text: str) -> list[tuple[str, ...]]:
     return consumers
 
 
+# The direct reconcilers this repository's root synchronization declares, in
+# the order the template declares them. Written out rather than derived from
+# the template under test: a list read from the same bytes it checks would
+# agree with any topology at all, including one that lost a workload.
+DIRECT_WORKLOADS = ("naranjo-online", "lidersea-com", "obsidian")
+
+
 def rendered_sync_template() -> tuple[Path, str]:
     path = ROOT / "kubernetes/flux-system/gotk-sync.yaml.in"
     text = path.read_text()
+    # Derived from the reconcilers the template itself declares, so a workload
+    # added to the template cannot be missing from the rendered sparse checkout.
+    paths = re.findall(r"(?m)^  path: \./(kubernetes/websites/[a-z0-9-]+)$", text)
     text = text.replace(
-        "  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_TWO_PATHS\n",
+        "  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_THREE_PATHS\n",
         "  sparseCheckout:\n"
-        "    - kubernetes/websites/naranjo-online\n"
-        "    - kubernetes/websites/lidersea-com\n",
+        + "".join("    - {}\n".format(path) for path in paths),
     )
     text = text.replace(
         "  sourceRef: BOOTSTRAP_RENDERS_VERIFIED_SOURCE\n",
@@ -125,23 +134,30 @@ class PlatformReleaseSelectorContractTests(unittest.TestCase):
         self.assertEqual(
             sum("\nkind: GitRepository\n" in "\n" + item for item in documents), 1
         )
+        # One direct Kustomization per reconciled workload, and every one of
+        # them non-pruning and Orphan-on-delete: the counts are tied to the
+        # workload list so adding a reconciler without those two properties is
+        # a failure rather than an unnoticed third topology.
         self.assertEqual(
-            sum("\nkind: Kustomization\n" in "\n" + item for item in documents), 2
+            sum("\nkind: Kustomization\n" in "\n" + item for item in documents),
+            len(DIRECT_WORKLOADS),
         )
-        self.assertEqual(sync.count("  prune: false\n"), 2)
-        self.assertEqual(sync.count("  deletionPolicy: Orphan\n"), 2)
+        self.assertEqual(sync.count("  prune: false\n"), len(DIRECT_WORKLOADS))
+        self.assertEqual(
+            sync.count("  deletionPolicy: Orphan\n"), len(DIRECT_WORKLOADS)
+        )
         self.assertNotIn("dependsOn:", sync)
         self.assertNotIn("secretRef:", sync)
         self.assertNotIn("serviceAccountName: root-reconciler", sync)
         self.assertNotIn("./kubernetes/reconciliation", sync)
-        for site in ("naranjo-online", "lidersea-com"):
+        for site in DIRECT_WORKLOADS:
             self.assertIn(f"  name: {site}-reconciler\n", sync)
             self.assertIn(f"  path: ./kubernetes/websites/{site}\n", sync)
             self.assertIn(f"  serviceAccountName: {site}-reconciler\n", sync)
             self.assertIn(f"    - kubernetes/websites/{site}\n", sync)
         self.assertFalse(any((ROOT / "kubernetes/reconciliation").glob("*.yaml")))
 
-    def test_dedicated_source_has_only_two_consumers_across_flux_kinds(self):
+    def test_dedicated_source_has_only_the_direct_consumers_across_flux_kinds(self):
         self.assertEqual(
             SOURCE_REF_KINDS,
             {"ExternalArtifact", "HelmChart", "HelmRelease", "Kustomization"},
@@ -156,14 +172,10 @@ class PlatformReleaseSelectorContractTests(unittest.TestCase):
         self.assertEqual(consumers, [
             (
                 "kubernetes/flux-system/gotk-sync.yaml.in", "Kustomization",
-                "flux-system", "naranjo-online-reconciler", "GitRepository",
+                "flux-system", f"{workload}-reconciler", "GitRepository",
                 "flux-system", "",
-            ),
-            (
-                "kubernetes/flux-system/gotk-sync.yaml.in", "Kustomization",
-                "flux-system", "lidersea-com-reconciler", "GitRepository",
-                "flux-system", "",
-            ),
+            )
+            for workload in DIRECT_WORKLOADS
         ])
         hostile = """\
 apiVersion: source.toolkit.fluxcd.io/v1
@@ -379,7 +391,7 @@ spec:
         self.assertIn("sites", schema["required"])
         flux_sync = (ROOT / "kubernetes/flux-system/gotk-sync.yaml.in").read_text()
         self.assertIn(
-            "sparseCheckout: BOOTSTRAP_RENDERS_EXACT_TWO_PATHS", flux_sync
+            "sparseCheckout: BOOTSTRAP_RENDERS_EXACT_THREE_PATHS", flux_sync
         )
         sparse_paths = "\n".join(
             line.strip()[2:]

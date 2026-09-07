@@ -61,6 +61,23 @@ connectors:
       podLabels:
         app.kubernetes.io/name: lidersea-com
       port: 8080
+  obsidian:
+    instance: obsidian-tunnel
+    secretName: obsidian-tunnel-token
+    tokenRevision: not-configured
+    origin:
+      namespace: obsidian
+      # NOT the namespace name, and that is deliberate. The two sites publish
+      # `app.kubernetes.io/name: <namespace>` because their charts are named
+      # for their domains; the obsync chart hardcodes `obsync` as its app name
+      # (`obsync.name` in its `_helpers.tpl`) while the platform names the
+      # namespace and the Flux release `obsidian`. This selector must state
+      # the label the ORIGIN POD actually carries, not the one the namespace
+      # is called, or the egress leg selects nothing and the connector reaches
+      # no origin at all.
+      podLabels:
+        app.kubernetes.io/name: obsync
+      port: 8080
 
 resources:
   requests:

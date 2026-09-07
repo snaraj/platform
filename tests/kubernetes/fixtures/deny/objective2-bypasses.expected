@@ -22,7 +22,7 @@ ConfigMap lidersea-com/encoded-media-in-data contains a recognized encoded media
 ConfigMap lidersea-com/media-in-etcd key album.flac looks like a media payload
 ConfigMap lidersea-com/media-in-etcd must not store binary data in etcd
 Gateway API resource Gateway/unexpected-hostname is forbidden before an approved routing redesign
-GitRepository lidersea-com/lidersea-com-source is forbidden; site charts arrive as cosign-verified OCI artifacts
+GitRepository lidersea-com/lidersea-com-source is forbidden; workload charts arrive as cosign-verified OCI artifacts
 GitRepository lidersea-com/lidersea-com-source is outside the exact source identity allowlist
 Ingress unexpected-hostname is forbidden; Cloudflare Tunnel routes directly to ClusterIP Services
 NetworkPolicy lidersea-com/endport-widening widens the exact cloudflare-public TCP 8080 ingress contract

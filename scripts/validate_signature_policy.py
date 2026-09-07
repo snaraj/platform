@@ -34,10 +34,16 @@ MAX_POLICY_BYTES = 64 * 1024
 SIGNATURE_CONTRACTS = {
     "naranjo-online": "release-publisher.yml",
     "lidersea-com": "release-publisher.yml",
+    "obsidian": "release-publisher.yml",
 }
+# The repository each workload's chart publisher lives in. It is the workload's
+# own name for the two websites, whose repositories are named for their
+# domains; `obsidian` is the namespace the platform gave the obsync workload
+# (owner ruling 2026-09-07) and `obsync` is the repository that publishes it.
 SIGNATURE_REPOSITORIES = {
     "naranjo-online": "naranjo.online",
     "lidersea-com": "lidersea.com",
+    "obsidian": "obsync",
 }
 # The published chart repository each site's release publisher pushes to. It is
 # part of the site's identity tuple exactly like its image repository is; the
@@ -45,6 +51,28 @@ SIGNATURE_REPOSITORIES = {
 CHART_REPOSITORIES = {
     "naranjo-online": "oci://ghcr.io/snaraj/charts/naranjo-online",
     "lidersea-com": "oci://ghcr.io/snaraj/charts/lidersea-com",
+    "obsidian": "oci://ghcr.io/snaraj/charts/obsync",
+}
+# Workloads onboarded into the reconciliation graph whose publisher has not cut
+# its first release, so no digest exists to select. Their committed selection is
+# the all-zero fail-closed sentinel, and that is REQUIRED here rather than
+# merely tolerated: `chart_source_release` refuses a nonzero digest for a
+# pending workload exactly as it refuses a zero digest for a released one.
+#
+# Read the direction carefully, because the obvious reading is backwards. This
+# is not a relaxation that lets an unverified selection through. source-controller
+# produces no artifact for a digest no registry can resolve, so a pending
+# workload deploys nothing at all; and because the sentinel is the ONLY value
+# this validator accepts here, a real digest cannot be committed for a pending
+# workload by any edit to a manifest. It arrives only in the reviewed change
+# that moves the slug out of this set and into CHART_RELEASES with the (tag,
+# digest) pair an independent acquisition ceremony resolved — which is the same
+# gate every release selection already passes.
+PENDING_CHART_RELEASES = {
+    "obsidian": {
+        "tag": "0.1.0",
+        "digest": "sha256:" + "0" * 64,
+    },
 }
 # One reviewed human release label paired with the immutable OCI manifest
 # digest Flux actually consumes. The annotation is audit metadata; only the
@@ -126,10 +154,12 @@ spec:
     !/kubernetes/websites/naranjo-online/**
     !/kubernetes/websites/lidersea-com/
     !/kubernetes/websites/lidersea-com/**
+    !/kubernetes/websites/obsidian/
+    !/kubernetes/websites/obsidian/**
   interval: 1m0s
   ref:
     branch: main
-  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_TWO_PATHS
+  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_THREE_PATHS
   timeout: 60s
   url: https://github.com/snaraj/website-infrastructure.git
 ---
@@ -164,6 +194,24 @@ spec:
   prune: false
   retryInterval: 1m0s
   serviceAccountName: lidersea-com-reconciler
+  sourceRef: BOOTSTRAP_RENDERS_VERIFIED_SOURCE
+  suspend: false
+  timeout: 5m0s
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: obsidian-reconciler
+  namespace: flux-system
+spec:
+  deletionPolicy: Orphan
+  force: false
+  interval: 10m0s
+  path: ./kubernetes/websites/obsidian
+  prune: false
+  retryInterval: 1m0s
+  serviceAccountName: obsidian-reconciler
   sourceRef: BOOTSTRAP_RENDERS_VERIFIED_SOURCE
   suspend: false
   timeout: 5m0s
@@ -218,9 +266,18 @@ def chart_source_certificate_subject(slug):
 
 
 def chart_source_release(slug):
-    """Return and validate one site's reviewed ``(tag, digest)`` pair."""
+    """Return and validate one workload's reviewed ``(tag, digest)`` pair.
 
-    release = CHART_RELEASES.get(slug)
+    A released workload must carry a canonical NONZERO digest; a pending one
+    must carry the all-zero sentinel and nothing else. A slug in both tables,
+    or in neither, is a refusal: the two states are exclusive by construction,
+    so no workload can be half-registered.
+    """
+
+    if slug in CHART_RELEASES and slug in PENDING_CHART_RELEASES:
+        raise ValueError("workload cannot be both released and pending")
+    pending = slug in PENDING_CHART_RELEASES
+    release = (PENDING_CHART_RELEASES if pending else CHART_RELEASES).get(slug)
     if not isinstance(release, dict):
         raise ValueError("site is outside the closed chart-source allowlist")
     tag = release.get("tag")
@@ -231,12 +288,14 @@ def chart_source_release(slug):
         or tag == "0.0.0"
     ):
         raise ValueError("chart release tag is outside the closed grammar")
-    if (
-        not isinstance(digest, str)
-        or CHART_DIGEST_RE.fullmatch(digest) is None
-        or set(digest.removeprefix("sha256:")) == {"0"}
-    ):
-        raise ValueError("chart release digest is not canonical and nonzero")
+    if not isinstance(digest, str) or CHART_DIGEST_RE.fullmatch(digest) is None:
+        raise ValueError("chart release digest is not canonical")
+    zero_digest = set(digest.removeprefix("sha256:")) == {"0"}
+    if zero_digest != pending:
+        raise ValueError(
+            "pending workloads must select the all-zero sentinel and released "
+            "workloads must select a nonzero digest"
+        )
     return tag, digest
 
 

@@ -49,25 +49,28 @@ class TransitionPlan(NamedTuple):
     mode: str
     naranjo_online: str
     lidersea_com: str
+    obsidian: str
     cloudflare_public: str
     platform_suspended: bool
     naranjo_parent_suspended: bool
     lidersea_parent_suspended: bool
+    obsidian_parent_suspended: bool
 
     @property
     def any_website_active(self) -> bool:
-        """Keep production controls while a site is live or directly selected.
+        """Keep production controls while a workload is live or directly selected.
 
-        The #189 topology has no suspendable aggregate parent: both direct site
-        Kustomizations always select their exact website paths. A staged
+        The #189 topology has no suspendable aggregate parent: every direct
+        workload Kustomization always selects its exact path. A staged
         HelmRelease therefore still sits inside an active reconciliation and
-        keeps the website signature/capacity envelope mandatory.
+        keeps the signature/capacity envelope mandatory.
         """
 
         return (
-            "active" in (self.naranjo_online, self.lidersea_com)
+            "active" in (self.naranjo_online, self.lidersea_com, self.obsidian)
             or not self.naranjo_parent_suspended
             or not self.lidersea_parent_suspended
+            or not self.obsidian_parent_suspended
         )
 
     @property
@@ -238,29 +241,41 @@ def classify(root: Path = ROOT) -> TransitionPlan:
     lidersea_parent_suspended = STATE.load_parent_suspension(
         "lidersea-com", root
     )
+    obsidian_parent_suspended = STATE.load_parent_suspension("obsidian", root)
     naranjo_phase = _website_phase(
         "naranjo-online", root, naranjo_parent_suspended
     )
     lidersea_phase = _website_phase(
         "lidersea-com", root, lidersea_parent_suspended
     )
+    # The obsync workload joins the same classification the two sites use
+    # (issue #348). It is not decoration: the mode this function returns is what
+    # selects the policy suite `scripts/render-manifests.sh` runs, and the
+    # release suite refuses a suspended HelmRelease outright. A workload staged
+    # behind a placeholder chart digest that the classifier could not see would
+    # let the tree claim a mode its own render then fails — the classification
+    # has to cover every workload the render covers, or the two disagree.
+    obsidian_phase = _website_phase("obsidian", root, obsidian_parent_suspended)
     cloudflare_phase = _cloudflare_phase(root, platform_suspended)
 
     # The direct website loop is independent of any retired admission-controller
     # premise.
 
+    website_phases = (naranjo_phase, lidersea_phase, obsidian_phase)
+    website_parents_suspended = (
+        naranjo_parent_suspended,
+        lidersea_parent_suspended,
+        obsidian_parent_suspended,
+    )
     if (
-        naranjo_phase == "staged"
-        and lidersea_phase == "staged"
+        set(website_phases) == {"staged"}
         and cloudflare_phase == "initial"
         and platform_suspended
-        and naranjo_parent_suspended
-        and lidersea_parent_suspended
+        and all(website_parents_suspended)
     ):
         mode = "scaffold"
     elif (
-        naranjo_phase == "active"
-        and lidersea_phase == "active"
+        set(website_phases) == {"active"}
         and cloudflare_phase == "active"
         and not platform_suspended
     ):
@@ -272,10 +287,12 @@ def classify(root: Path = ROOT) -> TransitionPlan:
         mode,
         naranjo_phase,
         lidersea_phase,
+        obsidian_phase,
         cloudflare_phase,
         platform_suspended,
         naranjo_parent_suspended,
         lidersea_parent_suspended,
+        obsidian_parent_suspended,
     )
 
 
@@ -285,6 +302,7 @@ def _print_plan(plan: TransitionPlan) -> None:
     print("mode={}".format(plan.mode))
     print("naranjo-online={}".format(plan.naranjo_online))
     print("lidersea-com={}".format(plan.lidersea_com))
+    print("obsidian={}".format(plan.obsidian))
     print("cloudflare-public={}".format(plan.cloudflare_public))
     print(
         "platform-services-suspended={}".format(

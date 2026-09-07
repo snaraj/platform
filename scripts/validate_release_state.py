@@ -22,10 +22,12 @@ SCALAR_RE = re.compile(r"[A-Za-z0-9./][A-Za-z0-9_./:@+-]*\Z")
 TOKEN_REVISION_RE = re.compile(
     r"(?:not-configured|UNRESOLVED|rev-[a-z0-9][a-z0-9._-]{0,62})\Z"
 )
-# One public connector per website (ADR 0015), each with its OWN rotation
-# revision so one Tunnel rotates without disturbing the other. The order is the
-# canonical order of the release values block.
-PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com")
+# One public connector per PUBLISHED WORKLOAD (ADR 0015 and its 2026-09-07
+# revision), each with its OWN rotation revision so one Tunnel rotates without
+# disturbing the others. The order is the canonical order of the release values
+# block. The name is historical: `obsidian` is a workload rather than a
+# website, and the per-connector independence this list expresses is the same.
+PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com", "obsidian")
 MAX_RELEASE_YAML_BYTES = 65536
 
 RELEASE_CONTRACTS = {
@@ -53,6 +55,9 @@ RELEASE_CONTRACTS = {
         "chart_ref": "naranjo-online-chart",
         "parent_path": "./kubernetes/websites/naranjo-online",
         "parent_service_account": "naranjo-online-reconciler",
+        # The verified exact-site chart is the sole image-identity carrier, so
+        # this site's whole platform values block is one readiness scalar.
+        "values": ("    deploymentReady: true",),
     },
     "lidersea-com": {
         "release": "kubernetes/websites/lidersea-com/release.yaml",
@@ -71,6 +76,67 @@ RELEASE_CONTRACTS = {
         "chart_ref": "lidersea-com-chart",
         "parent_path": "./kubernetes/websites/lidersea-com",
         "parent_service_account": "lidersea-com-reconciler",
+        "values": ("    deploymentReady: true",),
+    },
+    # The obsync workload (issue #348). Its namespace, Flux release and
+    # reconciler are named `obsidian` per the owner's 2026-09-07 ruling; its
+    # chart, image and source repository are named `obsync`. Two halves of one
+    # identity tuple.
+    #
+    # It differs from the two sites in exactly one structural way, and the
+    # `values` list below is where that difference lives: the obsync chart is a
+    # deployment-provider BINDING POINT whose values schema is closed and
+    # refuses a half-specified deployment, so the hostname, edge posture,
+    # ingress peer, Secret name and storage classes have to be stated by the
+    # platform. They are stated as an exhaustive ordered allowlist for the same
+    # reason the sites' single scalar is: every line outside it is rejected,
+    # image repository/tag/digest overrides included.
+    "obsidian": {
+        "release": "kubernetes/websites/obsidian/release.yaml",
+        "parent": None,
+        "bootstrap_parent": True,
+        "parent_name": "obsidian-reconciler",
+        "namespace": "obsidian",
+        "repository": "ghcr.io/snaraj/obsync",
+        # Suspended on the connector's fail-closed pattern: the chart selection
+        # beside it is the all-zero placeholder digest until snaraj/obsync
+        # publishes v0.1.0 and the acquisition ceremony resolves it.
+        "readiness": "suspended-until-obsync-chart-release",
+        "interval": "1m0s",
+        "chart": None,
+        "source": None,
+        "chart_ref": "obsidian-chart",
+        "parent_path": "./kubernetes/websites/obsidian",
+        "parent_service_account": "obsidian-reconciler",
+        "values": (
+            "    deploymentReady: false",
+            "    edge:",
+            "      mode: cloudflare",
+            "    ingress:",
+            "      peerAppName: cloudflare-public",
+            "      peerInstance: obsidian-tunnel",
+            "      peerNamespace: cloudflare-public",
+            "    publicUrl: https://obsidian.naranjo.online",
+            "    resources:",
+            "      limits:",
+            "        cpu: 2000m",
+            "        memory: 1Gi",
+            "      requests:",
+            "        cpu: 100m",
+            "        memory: 64Mi",
+            "    serverKeySecret:",
+            "      key: OBSYNC_SERVER_KEY",
+            "      name: obsidian-server-key",
+            "    storage:",
+            "      blobs:",
+            "        capacity: 250Gi",
+            "        className: local-pie-ssd",
+            "        size: 250Gi",
+            "      journal:",
+            "        capacity: 4Gi",
+            "        className: local-pie-ssd",
+            "        size: 4Gi",
+        ),
     },
     "cloudflare-public": {
         "release": "kubernetes/platform/cloudflare-public/release/release.yaml",
@@ -92,6 +158,9 @@ RELEASE_CONTRACTS = {
         "chart_ref": None,
         "parent_path": "./kubernetes/platform/cloudflare-public/release",
         "parent_service_account": "platform-services-reconciler",
+        # Derived from PUBLIC_CONNECTOR_SITES rather than written out, so a
+        # connector added to that tuple and to the manifest cannot disagree.
+        "values": None,
     },
 }
 
@@ -487,10 +556,12 @@ def _helm_release_shape(name: str) -> list[str | re.Pattern[str]]:
             "  values:",
         ]
     )
-    if contract["chart_ref"] is not None:
-        # The verified exact-site chart is the sole image-identity carrier.
-        # The exhaustive allowlist rejects every extra platform value.
-        common.append("    deploymentReady: true")
+    # The exhaustive allowlist rejects every value outside this identity's own
+    # closed block — an image repository, tag or digest override above all, and
+    # equally one workload's values appearing under another's release.
+    values = contract["values"]
+    if values is not None:
+        common.extend(values)
     else:
         common.append("    connectors:")
         for site in PUBLIC_CONNECTOR_SITES:
@@ -566,10 +637,20 @@ def load_helm_release(name: str, root: Path = ROOT) -> HelmReleaseState:
             rendered_lines.append("")
     values_text = "\n".join(rendered_lines).rstrip("\n") + "\n"
 
-    if contract["chart_ref"] is not None:
-        if values != {("deploymentReady",): "true"}:
+    if contract["values"] is not None:
+        # The same closed line list the shape allowlist above enforces, read
+        # back through the same parser and compared as a MAPPING. The two
+        # checks answer different questions — the allowlist rejects an extra or
+        # reordered line, this one rejects a line that parses to something
+        # other than what it looks like — and neither can drift from the other,
+        # because both are derived from the one list in RELEASE_CONTRACTS.
+        expected_lines = list(contract["values"])
+        expected_values = _parse_simple_mapping(
+            expected_lines, 0, len(expected_lines), 4
+        )
+        if values != expected_values:
             raise CanonicalYamlError(
-                "site release values must contain exactly deploymentReady: true"
+                "release values are outside the closed contract for " + name
             )
     else:
         # Every connector carries its own canonical revision; a missing or

@@ -17,9 +17,14 @@ from .support import load_script
 
 MODULE = load_script("validate_repository.py")
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Every release the transition classifier walks. `obsidian` is here because
+# check_activation classifies before it filters, so a fixture missing one
+# workload's release fails with "release transition state is unavailable"
+# instead of exercising the filter under test (issue #348).
 ACTIVATION_FIXTURE_FILES = (
     "kubernetes/websites/naranjo-online/release.yaml",
     "kubernetes/websites/lidersea-com/release.yaml",
+    "kubernetes/websites/obsidian/release.yaml",
     "kubernetes/platform/cloudflare-public/release/release.yaml",
     "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
 )
@@ -54,6 +59,7 @@ def init_git_repository(root):
 SITE_BASELINE_FILES = (
     "kubernetes/websites/naranjo-online/release.yaml",
     "kubernetes/websites/lidersea-com/release.yaml",
+    "kubernetes/websites/obsidian/release.yaml",
 )
 # The single release failure the validator both MANDATES elsewhere and refuses
 # here; spelled once so the two directions below cannot drift apart.
@@ -1013,7 +1019,7 @@ class RepositoryPolicyTests(unittest.TestCase):
             "resources:\n  - network-policies.yaml # egress\n", "network-policies.yaml"
         ))
 
-    def test_site_default_denies_are_owned_by_the_two_direct_roots(self):
+    def test_site_default_denies_are_owned_by_every_direct_root(self):
         relative_files = (
             "kubernetes/platform/prerequisites/network-policies.yaml",
             "kubernetes/platform/prerequisites/kustomization.yaml",
@@ -1021,6 +1027,8 @@ class RepositoryPolicyTests(unittest.TestCase):
             "kubernetes/websites/naranjo-online/kustomization.yaml",
             "kubernetes/websites/lidersea-com/default-deny.yaml",
             "kubernetes/websites/lidersea-com/kustomization.yaml",
+            "kubernetes/websites/obsidian/default-deny.yaml",
+            "kubernetes/websites/obsidian/kustomization.yaml",
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1181,7 +1189,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         """Per-object policy cannot silently accept an absent site budget."""
 
         def quota(namespace, evidence, values=None):
-            hard = dict(MODULE.REVIEWED_SITE_CAPACITY_HARD)
+            hard = dict(MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][1])
             hard.update(values or {})
             return (
                 "apiVersion: v1\n"
@@ -1209,68 +1217,129 @@ class RepositoryPolicyTests(unittest.TestCase):
                 limits_memory=hard["limits.memory"],
             )
 
+        namespaces = sorted(MODULE.REVIEWED_NAMESPACE_CAPACITY)
+
+        def write_quotas(prerequisites, digests, mutations=None):
+            documents = [
+                quota(namespace, digests[namespace], (mutations or {}).get(namespace))
+                for namespace in namespaces
+            ]
+            prerequisites.joinpath("resource-controls.yaml").write_bytes(
+                "---\n".join(documents).encode("utf-8")
+            )
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             prerequisites = root / "kubernetes/platform/prerequisites"
             prerequisites.mkdir(parents=True)
-            evidence_path = root / MODULE.REVIEWED_SITE_CAPACITY_EVIDENCE
-            evidence_path.parent.mkdir(parents=True)
-            evidence_path.write_bytes(b"sanitized owner capacity evidence\n")
-            evidence = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            # One evidence document per namespace, written distinctly, so a
+            # quota bound to ANOTHER namespace's evidence hash is a detectable
+            # substitution rather than an invisible one — which is the whole
+            # reason the table is per namespace (issue #348).
+            digests = {}
+            for namespace in namespaces:
+                evidence_path = root / MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][0]
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                evidence_path.write_bytes(
+                    "sanitized owner capacity evidence for {}\n".format(
+                        namespace
+                    ).encode("utf-8")
+                )
+            for namespace in namespaces:
+                evidence_path = root / MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][0]
+                digests[namespace] = hashlib.sha256(
+                    evidence_path.read_bytes()
+                ).hexdigest()
             prerequisites.joinpath("kustomization.yaml").write_bytes(
                 b"resources:\n  - resource-controls.yaml\n"
             )
-            quotas = quota("naranjo-online", evidence) + "---\n" + quota(
-                "lidersea-com", evidence
-            )
-            prerequisites.joinpath("resource-controls.yaml").write_bytes(
-                quotas.encode("utf-8")
-            )
+            write_quotas(prerequisites, digests)
             self.assertEqual(MODULE.reviewed_capacity_errors(root), [])
 
-            evidence_path.write_bytes(b"mutated owner capacity evidence\n")
-            mutation_errors = MODULE.reviewed_capacity_errors(root)
-            for namespace in ("lidersea-com", "naranjo-online"):
-                self.assertIn(
-                    "reviewed website capacity evidence hash does not match document: "
-                    + namespace,
-                    mutation_errors,
-                )
-            evidence_path.write_bytes(b"sanitized owner capacity evidence\n")
+            for namespace in namespaces:
+                with self.subTest(namespace=namespace, mutation="evidence bytes"):
+                    evidence_path = (
+                        root / MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][0]
+                    )
+                    original = evidence_path.read_bytes()
+                    evidence_path.write_bytes(b"mutated owner capacity evidence\n")
+                    self.assertIn(
+                        "reviewed website capacity evidence hash does not match "
+                        "document: " + namespace,
+                        MODULE.reviewed_capacity_errors(root),
+                    )
+                    evidence_path.write_bytes(original)
+            self.assertEqual(MODULE.reviewed_capacity_errors(root), [])
 
-            hostile_values = {
-                "pods": "7",
-                "requests.cpu": "151m",
-                "requests.memory": "193Mi",
-                "limits.cpu": "1201m",
-                "limits.memory": "769Mi",
-            }
-            for namespace in ("lidersea-com", "naranjo-online"):
-                other = (
-                    "naranjo-online"
-                    if namespace == "lidersea-com"
-                    else "lidersea-com"
+            # Another namespace's individually APPROVED evidence hash is still
+            # the wrong one here. The two sites deliberately share a document,
+            # so this only proves anything for a namespace with its own.
+            for namespace in namespaces:
+                foreign = next(
+                    other
+                    for other in namespaces
+                    if MODULE.REVIEWED_NAMESPACE_CAPACITY[other][0]
+                    != MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][0]
                 )
-                for key, hostile in hostile_values.items():
+                with self.subTest(namespace=namespace, mutation="foreign evidence"):
+                    swapped = dict(digests)
+                    swapped[namespace] = digests[foreign]
+                    write_quotas(prerequisites, swapped)
+                    self.assertIn(
+                        "reviewed website capacity evidence hash does not match "
+                        "document: " + namespace,
+                        MODULE.reviewed_capacity_errors(root),
+                    )
+            write_quotas(prerequisites, digests)
+
+            for namespace in namespaces:
+                reviewed = MODULE.REVIEWED_NAMESPACE_CAPACITY[namespace][1]
+                for key, value in reviewed.items():
+                    hostile = value + "0" if value.isdigit() else "9" + value
                     with self.subTest(namespace=namespace, key=key):
-                        mutated = quota(namespace, evidence, {key: hostile})
-                        mutated += "---\n" + quota(other, evidence)
-                        prerequisites.joinpath("resource-controls.yaml").write_bytes(
-                            mutated.encode("utf-8")
+                        write_quotas(
+                            prerequisites, digests, {namespace: {key: hostile}}
                         )
                         self.assertIn(
-                            "reviewed website capacity limits do not match owner decision: "
-                            + namespace,
+                            "reviewed website capacity limits do not match owner "
+                            "decision: " + namespace,
                             MODULE.reviewed_capacity_errors(root),
                         )
+                # And the cross-namespace substitution the per-namespace table
+                # exists to refuse: another namespace's whole approved map.
+                foreign = next(
+                    other
+                    for other in namespaces
+                    if MODULE.REVIEWED_NAMESPACE_CAPACITY[other][1] != reviewed
+                )
+                with self.subTest(namespace=namespace, key="foreign budget"):
+                    write_quotas(
+                        prerequisites,
+                        digests,
+                        {namespace: MODULE.REVIEWED_NAMESPACE_CAPACITY[foreign][1]},
+                    )
+                    self.assertIn(
+                        "reviewed website capacity limits do not match owner "
+                        "decision: " + namespace,
+                        MODULE.reviewed_capacity_errors(root),
+                    )
+            write_quotas(prerequisites, digests)
 
-            prerequisites.joinpath("resource-controls.yaml").write_bytes(
-                quota("naranjo-online", evidence).encode("utf-8")
-            )
-            self.assertIn(
-                "reviewed website capacity quota missing or duplicated: lidersea-com",
-                MODULE.reviewed_capacity_errors(root),
-            )
+            for namespace in namespaces:
+                with self.subTest(namespace=namespace, mutation="absent"):
+                    documents = [
+                        quota(other, digests[other])
+                        for other in namespaces
+                        if other != namespace
+                    ]
+                    prerequisites.joinpath("resource-controls.yaml").write_bytes(
+                        "---\n".join(documents).encode("utf-8")
+                    )
+                    self.assertIn(
+                        "reviewed website capacity quota missing or duplicated: "
+                        + namespace,
+                        MODULE.reviewed_capacity_errors(root),
+                    )
 
     def test_activation_gate_observes_every_site_live_release_signal(self):
         """Unsuspension for either site invokes the shared gate."""

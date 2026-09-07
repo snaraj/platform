@@ -1,13 +1,14 @@
 {{- /*
-The two per-connector origin egress policies are written explicitly, one per
-site, looked up by their exact site key and carrying their literal
-cloudflared-<site> names, so each site's egress leg stays auditable in place
-and the reconciliation cannot silently drop one. Each is the egress half of the
-double-pin; the site chart pins the reciprocal ingress peer to the same
-<site>-tunnel instance.
+The three per-connector origin egress policies are written explicitly, one per
+workload, looked up by their exact connector key and carrying their literal
+cloudflared-<workload> names, so each egress leg stays auditable in place and
+the reconciliation cannot silently drop one. Each is the egress half of the
+double-pin; the workload chart pins the reciprocal ingress peer to the same
+<workload>-tunnel instance.
 */ -}}
 {{- $naranjo := index .Values.connectors "naranjo-online" -}}
 {{- $lidersea := index .Values.connectors "lidersea-com" -}}
+{{- $obsidian := index .Values.connectors "obsidian" -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -121,4 +122,31 @@ spec:
               {{- toYaml $lidersea.origin.podLabels | nindent 14 }}
       ports:
         - port: {{ $lidersea.origin.port }}
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cloudflare-public.connectorLabels" (dict "root" $ "instance" $obsidian.instance) | nindent 4 }}
+spec:
+  # Per-connector name+instance selector: only the obsidian connector may reach
+  # the obsidian origin.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cloudflare-public.name" . }}
+      app.kubernetes.io/instance: {{ $obsidian.instance }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $obsidian.origin.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $obsidian.origin.podLabels | nindent 14 }}
+      ports:
+        - port: {{ $obsidian.origin.port }}
           protocol: TCP

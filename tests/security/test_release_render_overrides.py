@@ -226,7 +226,7 @@ class CapacityPolicyContractTests(unittest.TestCase):
             (
                 RELEASE_POLICY,
                 lambda namespace: (
-                    "site capacity gate remains closed or lacks a hash-bound "
+                    "workload capacity gate remains closed or lacks a hash-bound "
                     "reviewed budget in namespace {}"
                 ).format(namespace),
             ),
@@ -308,11 +308,12 @@ class ReleaseRenderOverrideTests(unittest.TestCase):
             'validate_release_transition.py\" plan \\\n    --expect-mode "$mode_name"',
             self.script,
         )
-        self.assertIn('((${#release_plan_lines[@]} == 7))', self.script)
+        self.assertIn('((${#release_plan_lines[@]} == 8))', self.script)
         for record in (
             "mode=${mode_name}",
             "^naranjo-online=(staged|active)$",
             "^lidersea-com=(staged|active)$",
+            "^obsidian=(staged|active)$",
             "^cloudflare-public=(initial|staged|active)$",
             "^platform-services-suspended=(true|false)$",
             "^any-website-active=(true|false)$",
@@ -328,6 +329,7 @@ class ReleaseRenderOverrideTests(unittest.TestCase):
 
         self.assertIn('[naranjo-online]="$naranjo_phase"', self.script)
         self.assertIn('[lidersea-com]="$lidersea_phase"', self.script)
+        self.assertIn('[obsidian]="$obsidian_phase"', self.script)
         self.assertIn(
             'assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-'
             '${website}.yaml" \\\n      "$website" "${WEBSITE_PHASES[$website]}"',
@@ -402,7 +404,19 @@ class ReleaseRenderOverrideTests(unittest.TestCase):
         messages = set()
         for block in policy.split("deny contains msg if {")[1:]:
             body = block.split("\n}", 1)[0]
-            if "site_namespaces" not in body:
+            # Both the site-shaped rules and the workload-shaped ones: a rule
+            # scoped to `chart_source_namespaces` or to one workload's own
+            # namespace reaches a rendered workload root exactly as a
+            # site-scoped rule reaches a site root, so leaving either family
+            # out would let a denial land outside the closed vocabulary.
+            if not any(
+                scope in body
+                for scope in (
+                    "site_namespaces",
+                    "chart_source_namespaces",
+                    '"obsidian"',
+                )
+            ):
                 continue
             kind = re.search(r'input\.kind\s*==\s*"([A-Za-z]+)"', body)
             if kind is None or kind.group(1) not in rendered_kinds:
@@ -436,6 +450,7 @@ class ReleaseRenderOverrideTests(unittest.TestCase):
         for site, phase in (
             ("naranjo-online", "naranjo_phase"),
             ("lidersea-com", "lidersea_phase"),
+            ("obsidian", "obsidian_phase"),
         ):
             with self.subTest(site=site):
                 self.assertIn(

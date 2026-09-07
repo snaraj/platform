@@ -1,0 +1,85 @@
+# Positive control for the third connector and the pending chart selection
+# (issue #348). Without it every obsidian deny arm in
+# deny/obsidian-identity-bypasses.yaml could be satisfied by a rule that denies
+# the shape unconditionally, which is not a control at all.
+#
+# It proves four things are ACCEPTED:
+#   - the obsidian connector-egress policy pinned to its own instance and
+#     reaching the origin by the label the obsync chart actually publishes
+#     (`obsync`, not the namespace name);
+#   - the obsidian chart source at its reviewed PENDING selection — the
+#     all-zero sentinel, the obsync publisher identity, the obsync chart
+#     repository;
+#   - the obsidian namespace budget against its own evidence document;
+#   - the namespace's own default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: obsidian-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: obsidian
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: obsync
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: obsidian
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.0"
+  name: obsidian-chart
+  namespace: obsidian
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/obsync
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/obsync/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: obsidian
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    platform.snaraj.dev/capacity-evidence-sha256: 1de8673fc922ba0e701ebfc5b4e9d5b2723890b1c9d6cde02d4edeb59bd97511
+spec:
+  hard:
+    pods: "2"
+    requests.cpu: 200m
+    requests.memory: 128Mi
+    limits.cpu: 4000m
+    limits.memory: 2Gi

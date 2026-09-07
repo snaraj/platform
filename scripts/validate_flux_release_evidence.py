@@ -121,22 +121,33 @@ def desired_flux_object(kind, api_version, namespace, name):
 
 
 # The live Kustomization inventory is exactly what the synced tree creates:
-# kubernetes/flux-system/gotk-sync.yaml.in defines the two site reconcilers
-# and nothing else (the #232 activation retired every other reconciler
-# identity), so any additional name — the pre-activation suffixless names
-# included — is a finding, not a variant spelling.
+# kubernetes/flux-system/gotk-sync.yaml.in defines these reconcilers and
+# nothing else (the #232 activation retired every other reconciler identity),
+# so any additional name — the pre-activation suffixless names included — is a
+# finding, not a variant spelling.
+#
+# `obsidian-reconciler` is here because the object EXISTS live the moment its
+# entry merges (issue #348), whatever the state of the workload below it. That
+# is the one thing this script can say about a workload that is reconciled but
+# STAGED: its Kustomization runs and applies its root. The source and release
+# inventories further down deliberately do NOT list it — the chart source it
+# applies carries the all-zero placeholder digest and can never report
+# SourceVerified, and its HelmRelease is suspended and carries the closed
+# obsync binding rather than one readiness scalar. Those inventories describe
+# ACTIVATED workloads and have no vocabulary for a staged one; adding obsidian
+# to them would demand live evidence that cannot exist, and inventing a
+# vocabulary for it inside a live-evidence contract is an owner decision
+# (recorded in docs/design/obsidian-onboarding.md), not an onboarding detail.
 kustomization_identities = {
     ("flux-system", "naranjo-online-reconciler"),
     ("flux-system", "lidersea-com-reconciler"),
+    ("flux-system", "obsidian-reconciler"),
 }
 kustomizations = load_items("kustomizations.json")
 exact_namespaced_inventory(
     kustomizations, kustomization_identities, "Kustomization"
 )
-for name in (
-    "naranjo-online-reconciler",
-    "lidersea-com-reconciler",
-):
+for _, name in sorted(kustomization_identities):
     identity = "flux-system/" + name
     item = by_identity(kustomizations, "flux-system", name, "Kustomization")
     desired = desired_flux_object(

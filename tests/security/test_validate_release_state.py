@@ -13,6 +13,11 @@ from .support import load_script
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE = load_script("validate_release_state.py")
 
+# The two websites, whose HelmRelease shape is identical down to the single
+# readiness scalar in `values`. `obsidian` is a workload with the same release
+# GRAMMAR but a different values block (the obsync chart is a
+# deployment-provider binding point), so it has its own fixture builder below
+# rather than a parameter on this one.
 SITE_NAMES = ("naranjo-online", "lidersea-com")
 
 
@@ -156,6 +161,57 @@ def cloudflare_release_text(
     )
 
 
+def obsidian_release_text(*, suspended=True, extra_values=""):
+    """Return the complete canonical obsidian HelmRelease fixture.
+
+    The values block is rendered from the closed line list in
+    RELEASE_CONTRACTS, for the same reason the readiness annotation above is
+    read from there: a fixture that restated 27 lines by hand would drift from
+    the contract it exists to exercise, and the assertion that the COMMITTED
+    manifest matches that contract lives in
+    ``test_current_repository_uses_exact_values_only`` where it reads the real
+    file. ``extra_values`` appends the hostile lines a closed block must refuse.
+    """
+
+    contract = MODULE.RELEASE_CONTRACTS["obsidian"]
+    return (
+        "apiVersion: helm.toolkit.fluxcd.io/v2\n"
+        "kind: HelmRelease\n"
+        "metadata:\n"
+        "  name: obsidian\n"
+        "  namespace: obsidian\n"
+        "  labels:\n"
+        "    app.kubernetes.io/managed-by: fluxcd\n"
+        "  annotations:\n"
+        "    platform.snaraj.dev/readiness: {readiness}\n"
+        "spec:\n"
+        "  suspend: {suspended}\n"
+        "  interval: 1m0s\n"
+        "  maxHistory: 2\n"
+        "  releaseName: obsidian\n"
+        "  serviceAccountName: helm-reconciler\n"
+        "  driftDetection:\n"
+        "    mode: enabled\n"
+        "  chartRef:\n"
+        "    kind: OCIRepository\n"
+        "    name: obsidian-chart\n"
+        "  install:\n"
+        "    remediation:\n"
+        "      retries: 0\n"
+        "  upgrade:\n"
+        "    cleanupOnFail: true\n"
+        "    remediation:\n"
+        "      retries: 0\n"
+        "      strategy: rollback\n"
+        "  values:\n"
+        + "".join(line + "\n" for line in contract["values"])
+        + extra_values
+    ).format(
+        readiness=contract["readiness"],
+        suspended=str(suspended).lower(),
+    )
+
+
 def write_complete_tree(root):
     """Write all closed release identities.
 
@@ -166,6 +222,7 @@ def write_complete_tree(root):
 
     for name in SITE_NAMES:
         write_lf(release_path(root, name), website_release_text(name))
+    write_lf(release_path(root, "obsidian"), obsidian_release_text())
     write_lf(
         release_path(root, "cloudflare-public"),
         cloudflare_release_text(),
@@ -186,12 +243,64 @@ class StrictReleaseStateTests(unittest.TestCase):
                 self.assertEqual(release.values, {("deploymentReady",): "true"})
                 self.assertEqual(release.values_text, "deploymentReady: true\n")
 
+        # The obsync workload's values block is the closed obsync binding, not
+        # one readiness scalar, and it is suspended while its chart selection is
+        # the all-zero placeholder. What it shares with the sites is what the
+        # rule above is really about: no image repository, tag or digest.
+        obsidian = MODULE.load_helm_release("obsidian", REPO_ROOT)
+        self.assertTrue(obsidian.suspended)
+        self.assertEqual(obsidian.values[("deploymentReady",)], "false")
+        for forbidden in ("image:", "repository:", "tag:", "digest:"):
+            self.assertNotIn(forbidden, obsidian.values_text)
+
         self.assertTrue(
             MODULE.load_helm_release("cloudflare-public", REPO_ROOT).suspended
         )
         self.assertTrue(
             MODULE.load_parent_suspension("cloudflare-public", REPO_ROOT)
         )
+
+    def test_obsidian_values_reject_every_extra_or_image_override(self):
+        """The closed obsync binding is as exact as the sites' single scalar.
+
+        A larger values block is the shape a second image authority could hide
+        in, so every hostile line below must be refused by the same
+        exhaustive allowlist that accepts the reviewed one.
+        """
+
+        hostile_values = {
+            "image digest": "    image:\n      digest: sha256:" + "a" * 64 + "\n",
+            "image tag": "    image:\n      tag: v1.2.3\n",
+            "repository": "    image:\n      repository: example.invalid/obsync\n",
+            "unreviewed scalar": "    featureFlag: true\n",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            write_complete_tree(root)
+            release = release_path(root, "obsidian")
+            for label, extra in hostile_values.items():
+                with self.subTest(label=label):
+                    write_lf(release, obsidian_release_text(extra_values=extra))
+                    with self.assertRaises(MODULE.CanonicalYamlError):
+                        MODULE.load_helm_release("obsidian", root)
+            # A REVIEWED line changed in place is refused too, so the closure is
+            # over values rather than merely over line count.
+            write_lf(
+                release,
+                obsidian_release_text().replace(
+                    "      peerInstance: obsidian-tunnel\n",
+                    "      peerInstance: naranjo-online-tunnel\n",
+                ),
+            )
+            with self.assertRaises(MODULE.CanonicalYamlError):
+                MODULE.load_helm_release("obsidian", root)
+            write_lf(release, obsidian_release_text())
+            self.assertEqual(
+                MODULE.load_helm_release("obsidian", root).values[
+                    ("ingress", "peerInstance")
+                ],
+                "obsidian-tunnel",
+            )
 
     def test_temporary_site_states_are_only_staged_or_active(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -681,6 +790,8 @@ class StrictReleaseStateTests(unittest.TestCase):
                     write_complete_tree(root)
                     if name == "cloudflare-public":
                         candidate = cloudflare_release_text(suspended=False)
+                    elif name == "obsidian":
+                        candidate = obsidian_release_text(suspended=False)
                     else:
                         candidate = website_release_text(name, suspended=False)
                     write_lf(release_path(root, name), candidate)

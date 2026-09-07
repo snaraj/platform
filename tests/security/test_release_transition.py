@@ -16,12 +16,19 @@ TRANSITION = load_script("validate_release_transition.py")
 RELEASE_FILES = (
     "kubernetes/websites/naranjo-online/release.yaml",
     "kubernetes/websites/lidersea-com/release.yaml",
+    "kubernetes/websites/obsidian/release.yaml",
     "kubernetes/platform/cloudflare-public/release/release.yaml",
     "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
 )
+# Every workload the classifier walks. `obsidian` is in it because the
+# classifier selects the release MODE, and release mode is what turns the
+# release-conftest suite on: a workload the classifier could not see could sit
+# suspended behind a placeholder chart digest while the tree claimed `release`,
+# a mode no render can then pass (issue #348).
 SITE_FILES = {
     "naranjo-online": "kubernetes/websites/naranjo-online/release.yaml",
     "lidersea-com": "kubernetes/websites/lidersea-com/release.yaml",
+    "obsidian": "kubernetes/websites/obsidian/release.yaml",
 }
 
 
@@ -46,6 +53,9 @@ class ReleaseTransitionTests(unittest.TestCase):
         for relative in SITE_FILES.values():
             path = self.root / relative
             text = path.read_text(encoding="utf-8")
+            # `obsidian` is already committed suspended, so this normalizes
+            # rather than flips: the assertion below is what proves each
+            # fixture reached the one staged state regardless of its start.
             text = text.replace("  suspend: false\n", "  suspend: true\n")
             self.assertEqual(text.count("  suspend: true\n"), 1, relative)
             with path.open("w", encoding="utf-8", newline="\n") as output:
@@ -98,13 +108,19 @@ class ReleaseTransitionTests(unittest.TestCase):
         plan = TRANSITION.classify(self.root)
         self.assertEqual(plan.mode, "transition")
         self.assertEqual(
-            (plan.naranjo_online, plan.lidersea_com, plan.cloudflare_public),
-            ("staged", "staged", "initial"),
+            (
+                plan.naranjo_online,
+                plan.lidersea_com,
+                plan.obsidian,
+                plan.cloudflare_public,
+            ),
+            ("staged", "staged", "staged", "initial"),
         )
         self.assertTrue(plan.any_website_active)
         self.assertTrue(plan.any_workload_active)
         self.assertFalse(plan.naranjo_parent_suspended)
         self.assertFalse(plan.lidersea_parent_suspended)
+        self.assertFalse(plan.obsidian_parent_suspended)
 
     def test_extra_site_value_is_rejected(self):
         self.replace_once(
@@ -131,8 +147,13 @@ class ReleaseTransitionTests(unittest.TestCase):
         plan = TRANSITION.classify(self.root)
         self.assertEqual(plan.mode, "transition")
         self.assertEqual(
-            (plan.naranjo_online, plan.lidersea_com, plan.cloudflare_public),
-            ("active", "active", "initial"),
+            (
+                plan.naranjo_online,
+                plan.lidersea_com,
+                plan.obsidian,
+                plan.cloudflare_public,
+            ),
+            ("active", "active", "active", "initial"),
         )
         self.assertTrue(plan.platform_suspended)
         self.assertTrue(plan.any_website_active)
@@ -143,8 +164,13 @@ class ReleaseTransitionTests(unittest.TestCase):
         plan = TRANSITION.classify(REPO_ROOT)
         self.assertEqual(plan.mode, "transition")
         self.assertEqual(
-            (plan.naranjo_online, plan.lidersea_com, plan.cloudflare_public),
-            ("active", "active", "initial"),
+            (
+                plan.naranjo_online,
+                plan.lidersea_com,
+                plan.obsidian,
+                plan.cloudflare_public,
+            ),
+            ("active", "active", "staged", "initial"),
         )
         self.assertTrue(plan.platform_suspended)
 
@@ -155,6 +181,34 @@ class ReleaseTransitionTests(unittest.TestCase):
         self.assertEqual(plan.mode, "transition")
         self.assertEqual(plan.naranjo_online, "staged")
         self.assertEqual(plan.lidersea_com, "active")
+        self.assertEqual(plan.obsidian, "active")
+
+    def test_the_third_workload_is_parsed_and_classified_like_the_two_sites(self):
+        """obsidian carries a phase of its own, and the classifier earns it.
+
+        `release` mode is what turns the release-conftest suite on, and that
+        suite refuses a suspended HelmRelease outright, so a workload the
+        classifier could not see could sit staged behind a placeholder chart
+        digest while the mode said otherwise. The last assertion is what makes
+        the first two non-vacuous: an unreviewed value in this release is
+        refused exactly as one in a site release is, which a classifier that
+        skipped the file could not do.
+        """
+
+        self.assertEqual(TRANSITION.classify(self.root).obsidian, "staged")
+        self.activate_site("obsidian")
+        plan = TRANSITION.classify(self.root)
+        self.assertEqual(plan.obsidian, "active")
+        self.assertEqual(
+            (plan.naranjo_online, plan.lidersea_com), ("staged", "staged")
+        )
+        self.replace_once(
+            SITE_FILES["obsidian"],
+            "    deploymentReady: false\n",
+            "    deploymentReady: false\n    unreviewed: true\n",
+        )
+        with self.assertRaises(TRANSITION.STATE.CanonicalYamlError):
+            TRANSITION.classify(self.root)
 
     def test_cloudflare_cannot_enter_the_selected_site_loop(self):
         self.set_suspended(
@@ -206,7 +260,10 @@ class ReleaseTransitionTests(unittest.TestCase):
         self.activate_both_sites()
         plan = TRANSITION.classify(self.root)
         self.assertEqual(plan.mode, "transition")
-        self.assertEqual((plan.naranjo_online, plan.lidersea_com), ("active", "active"))
+        self.assertEqual(
+            (plan.naranjo_online, plan.lidersea_com, plan.obsidian),
+            ("active", "active", "active"),
+        )
         self.assertEqual(plan.cloudflare_public, "initial")
         self.assertTrue(plan.platform_suspended)
         self.assertTrue(plan.any_workload_active)
@@ -251,6 +308,7 @@ class ReleaseTransitionTests(unittest.TestCase):
                 "mode=transition",
                 "naranjo-online=staged",
                 "lidersea-com=staged",
+                "obsidian=staged",
                 "cloudflare-public=initial",
                 "platform-services-suspended=true",
                 "any-website-active=true",

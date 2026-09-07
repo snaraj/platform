@@ -23,7 +23,12 @@ class MediaContractTests(unittest.TestCase):
         releases = sorted(
             (REPO_ROOT / "kubernetes" / "websites").glob("*/release.yaml")
         )
-        self.assertEqual(len(releases), 2)
+        # Every reconciled workload, not a fixed count: a release added under
+        # this root and forgotten here would be the one that re-enabled media.
+        self.assertEqual(
+            [release.parent.name for release in releases],
+            ["lidersea-com", "naranjo-online", "obsidian"],
+        )
         for release in releases:
             with self.subTest(release=release.name):
                 text = release.read_text(encoding="utf-8")
@@ -100,6 +105,8 @@ class MediaContractTests(unittest.TestCase):
             "!/kubernetes/websites/naranjo-online/**",
             "!/kubernetes/websites/lidersea-com/",
             "!/kubernetes/websites/lidersea-com/**",
+            "!/kubernetes/websites/obsidian/",
+            "!/kubernetes/websites/obsidian/**",
         )
         self.assertEqual(
             tuple(

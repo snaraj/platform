@@ -55,18 +55,32 @@ class RetiredPromotionContractTests(unittest.TestCase):
                 self.assertEqual(completed.stdout, "")
                 self.assertEqual(completed.stderr, expected)
 
-    def test_site_releases_have_no_second_image_authority(self):
+    def test_releases_have_no_second_image_authority(self):
+        """No workload release may carry image identity, whatever else it carries.
+
+        The two sites carry exactly one readiness scalar. `obsidian` carries the
+        obsync chart's closed deployment binding, which is larger — and this is
+        the assertion that matters for it: whatever a values block states, it
+        never states a repository, tag or digest. The signed chart is the sole
+        image-identity carrier (ADR 0016), and `scripts/validate_release_state.py`
+        pins each block line for line.
+        """
+
         for slug in SIGNATURE.CHART_REPOSITORIES:
             with self.subTest(slug=slug):
                 state = STATE.load_helm_release(slug, REPO_ROOT)
-                self.assertEqual(state.values, {("deploymentReady",): "true"})
-                self.assertNotIn("image:", state.values_text)
-                self.assertNotIn("repository:", state.values_text)
-                self.assertNotIn("tag:", state.values_text)
-                self.assertNotIn("digest:", state.values_text)
+                if slug in SIGNATURE.PENDING_CHART_RELEASES:
+                    self.assertNotEqual(state.values, {})
+                else:
+                    self.assertEqual(state.values, {("deploymentReady",): "true"})
+                for forbidden in ("image:", "repository:", "tag:", "digest:"):
+                    self.assertNotIn(forbidden, state.values_text)
 
     def test_sources_select_only_the_reviewed_nonzero_digest(self):
-        for slug in SIGNATURE.CHART_REPOSITORIES:
+        released = set(SIGNATURE.CHART_REPOSITORIES) - set(
+            SIGNATURE.PENDING_CHART_RELEASES
+        )
+        for slug in sorted(released):
             with self.subTest(slug=slug):
                 tag, digest = SIGNATURE.chart_source_release(slug)
                 source = (
@@ -78,6 +92,32 @@ class RetiredPromotionContractTests(unittest.TestCase):
                 self.assertIn("  ref:\n    digest: {}\n".format(digest), source)
                 self.assertNotEqual(digest, "sha256:" + "0" * 64)
                 self.assertNotRegex(source, r"(?m)^    (?:tag|semver):")
+
+    def test_a_pending_source_selects_only_the_sentinel_and_no_selector(self):
+        """The other half of the rule above, for a workload with no release yet.
+
+        A pending workload must carry the all-zero digest — which resolves to
+        nothing, so it deploys nothing — and must still refuse a tag or semver
+        selector, because the way a placeholder turns into a live deploy is a
+        mutable selector quietly replacing it.
+        """
+
+        for slug in sorted(SIGNATURE.PENDING_CHART_RELEASES):
+            with self.subTest(slug=slug):
+                tag, digest = SIGNATURE.chart_source_release(slug)
+                source = (
+                    REPO_ROOT / "kubernetes" / "websites" / slug / "source.yaml"
+                ).read_text(encoding="utf-8")
+                self.assertEqual(digest, "sha256:" + "0" * 64)
+                self.assertIn(
+                    'platform.snaraj.dev/chart-release: "{}"'.format(tag), source
+                )
+                self.assertIn("  ref:\n    digest: {}\n".format(digest), source)
+                self.assertNotRegex(source, r"(?m)^    (?:tag|semver):")
+                # And it must be reconciled to nothing until then: a pending
+                # workload whose HelmRelease was live would be asking
+                # helm-controller to install an artifact that cannot exist.
+                self.assertTrue(STATE.load_helm_release(slug, REPO_ROOT).suspended)
 
     def test_rollback_requires_a_new_exact_pair_and_has_no_fallback(self):
         runbook = ROLLBACK.read_text(encoding="utf-8")

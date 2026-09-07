@@ -636,6 +636,16 @@ SITE_CHART_KINDS = {
     ("HelmRelease", "lidersea-com"): (
         "Deployment", "Service", "ServiceAccount", "NetworkPolicy",
     ),
+    # snaraj/obsync's chart (issue #348). Its templates are
+    # deployment/service/service-account/network-policy/storage, and `storage`
+    # renders CLAIMS only — the chart deliberately holds no cluster-scoped
+    # PersistentVolume authority, so the volumes themselves stay an operator
+    # step (docs/runbooks/storage-admission.md) and no PersistentVolume
+    # requirement follows from this row.
+    ("HelmRelease", "obsidian"): (
+        "Deployment", "Service", "ServiceAccount", "NetworkPolicy",
+        "PersistentVolumeClaim",
+    ),
 }
 
 # Helm keeps one release-state Secret per revision in the release namespace, so
@@ -1216,22 +1226,32 @@ def bootstrap_flux_documents(root=REPO_ROOT):
     by Kustomize or kubectl.  The owner-attended bootstrap renders these two
     sentinels from verified release evidence.  This test model performs only
     the corresponding structural substitutions so RBAC derivation follows the
-    same two direct parents without creating a second activation path.
+    same direct parents without creating a second activation path.
+
+    The sparse-checkout paths are DERIVED from the reconcilers the template
+    itself declares, not listed here: a hand-kept list beside a hand-kept
+    template is two places a workload can be forgotten, and the one that gets
+    forgotten is the one that then reconciles with no derived authority.
     """
 
     entry = Path(root) / "kubernetes/flux-system/gotk-sync.yaml.in"
     text = entry.read_text(encoding="utf-8")
-    sparse_sentinel = "  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_TWO_PATHS\n"
+    sparse_sentinel = "  sparseCheckout: BOOTSTRAP_RENDERS_EXACT_THREE_PATHS\n"
     source_sentinel = "  sourceRef: BOOTSTRAP_RENDERS_VERIFIED_SOURCE\n"
-    if text.count(sparse_sentinel) != 1 or text.count(source_sentinel) != 2:
+    paths = re.findall(r"(?m)^  path: \./(kubernetes/websites/[a-z0-9-]+)$", text)
+    if (
+        text.count(sparse_sentinel) != 1
+        or text.count(source_sentinel) != len(paths)
+        or len(paths) != len(set(paths))
+        or not paths
+    ):
         raise AssertionError(
             "bootstrap review template sentinels are absent or duplicated"
         )
     text = text.replace(
         sparse_sentinel,
         "  sparseCheckout:\n"
-        "    - kubernetes/websites/naranjo-online\n"
-        "    - kubernetes/websites/lidersea-com\n",
+        + "".join("    - {}\n".format(path) for path in paths),
         1,
     ).replace(
         source_sentinel,

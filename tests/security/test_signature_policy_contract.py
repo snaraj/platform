@@ -278,6 +278,46 @@ class ChartSourceContractTests(unittest.TestCase):
                         self.assertNotEqual(mutation, canonical)
                         self.assertTrue(MODULE.chart_source_errors(mutation, slug))
 
+    def test_a_pending_workload_may_select_only_the_all_zero_sentinel(self):
+        """The pending state is a NARROWING, not an escape hatch.
+
+        A pending workload's committed selection must be the fail-closed
+        sentinel and nothing else, so a real digest cannot appear for a
+        publisher that has cut no release without moving the slug into
+        CHART_RELEASES in the same reviewed change.
+        """
+
+        slug = "obsidian"
+        self.assertIn(slug, MODULE.PENDING_CHART_RELEASES)
+        tag, digest = MODULE.chart_source_release(slug)
+        self.assertEqual(set(digest.removeprefix("sha256:")), {"0"})
+        saved = MODULE.PENDING_CHART_RELEASES[slug]["digest"]
+        MODULE.PENDING_CHART_RELEASES[slug]["digest"] = "sha256:" + "a" * 64
+        try:
+            with self.assertRaises(ValueError):
+                MODULE.chart_source_release(slug)
+        finally:
+            MODULE.PENDING_CHART_RELEASES[slug]["digest"] = saved
+        # And the reverse direction: a RELEASED workload may not fall back to
+        # the sentinel, so "pending" can never be reached by editing a digest.
+        released = "naranjo-online"
+        saved_release = MODULE.CHART_RELEASES[released]["digest"]
+        MODULE.CHART_RELEASES[released]["digest"] = "sha256:" + "0" * 64
+        try:
+            with self.assertRaises(ValueError):
+                MODULE.chart_source_release(released)
+        finally:
+            MODULE.CHART_RELEASES[released]["digest"] = saved_release
+
+    def test_a_workload_cannot_be_both_released_and_pending(self):
+        slug = "naranjo-online"
+        MODULE.PENDING_CHART_RELEASES[slug] = {"tag": "0.1.0", "digest": "sha256:" + "0" * 64}
+        try:
+            with self.assertRaisesRegex(ValueError, "both released and pending"):
+                MODULE.chart_source_release(slug)
+        finally:
+            del MODULE.PENDING_CHART_RELEASES[slug]
+
     def test_zero_release_tag_is_not_a_valid_reviewed_pair(self):
         saved = MODULE.CHART_RELEASES["naranjo-online"]["tag"]
         MODULE.CHART_RELEASES["naranjo-online"]["tag"] = "0.0.0"
@@ -295,8 +335,16 @@ class ChartSourceContractTests(unittest.TestCase):
         )
         self.assertEqual(receipt["schema"], "dev.snaraj.chart-acquisition-receipt/v2")
         self.assertEqual(receipt["chartLayerMediaType"], MODULE.CHART_LAYER_MEDIA_TYPE)
+        # A PENDING workload has no acquisition record and must not have one:
+        # the receipt states the exact bytes an acquisition ceremony resolved,
+        # and no ceremony has run for a publisher that has cut no release. An
+        # invented record here would be the one place a placeholder could be
+        # laundered into evidence.
+        for slug in MODULE.PENDING_CHART_RELEASES:
+            self.assertNotIn(slug, receipt["records"])
         expected = {}
-        for slug in MODULE.CHART_REPOSITORIES:
+        released = set(MODULE.CHART_REPOSITORIES) - set(MODULE.PENDING_CHART_RELEASES)
+        for slug in released:
             tag, manifest_digest = MODULE.chart_source_release(slug)
             expected[slug] = {
                 **ACQUISITION_EXTRAS[slug],

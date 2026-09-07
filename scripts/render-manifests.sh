@@ -59,7 +59,7 @@ done
 
 # The workflow selects a mode once. Reclassifying here and requiring that exact
 # mode closes both direct-invocation mistakes and a state change between the CI
-# selector and renderer. The seven-line record is parsed as data, never sourced.
+# selector and renderer. The eight-line record is parsed as data, never sourced.
 mode_name="${MODE#--}"
 release_plan=''
 if ! release_plan="$(
@@ -69,7 +69,7 @@ if ! release_plan="$(
   die "authoritative release state does not permit ${MODE}"
 fi
 mapfile -t release_plan_lines <<<"$release_plan"
-((${#release_plan_lines[@]} == 7)) || die 'release transition plan has an invalid shape'
+((${#release_plan_lines[@]} == 8)) || die 'release transition plan has an invalid shape'
 [[ "${release_plan_lines[0]}" == "mode=${mode_name}" ]] || die 'release transition mode does not match'
 [[ "${release_plan_lines[1]}" =~ ^naranjo-online=(staged|active)$ ]] || \
   die 'naranjo-online transition phase is invalid'
@@ -77,15 +77,18 @@ naranjo_phase="${BASH_REMATCH[1]}"
 [[ "${release_plan_lines[2]}" =~ ^lidersea-com=(staged|active)$ ]] || \
   die 'lidersea-com transition phase is invalid'
 lidersea_phase="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[3]}" =~ ^cloudflare-public=(initial|staged|active)$ ]] || \
+[[ "${release_plan_lines[3]}" =~ ^obsidian=(staged|active)$ ]] || \
+  die 'obsidian transition phase is invalid'
+obsidian_phase="${BASH_REMATCH[1]}"
+[[ "${release_plan_lines[4]}" =~ ^cloudflare-public=(initial|staged|active)$ ]] || \
   die 'cloudflare-public transition phase is invalid'
 cloudflare_phase="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[4]}" =~ ^platform-services-suspended=(true|false)$ ]] || \
+[[ "${release_plan_lines[5]}" =~ ^platform-services-suspended=(true|false)$ ]] || \
   die 'platform-services suspension summary is invalid'
-[[ "${release_plan_lines[5]}" =~ ^any-website-active=(true|false)$ ]] || \
+[[ "${release_plan_lines[6]}" =~ ^any-website-active=(true|false)$ ]] || \
   die 'website safety-envelope summary is invalid'
 any_website_active="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[6]}" =~ ^any-workload-active=(true|false)$ ]] || \
+[[ "${release_plan_lines[7]}" =~ ^any-workload-active=(true|false)$ ]] || \
   die 'workload activation summary is invalid'
 any_workload_active="${BASH_REMATCH[1]}"
 
@@ -100,6 +103,7 @@ python3 -B "${REPO_ROOT}/scripts/validate_signature_policy.py" flux-sync \
 declare -a SIGNED_CHART_SITES=(
   naranjo-online
   lidersea-com
+  obsidian
 )
 signature_site=''
 for signature_site in "${SIGNED_CHART_SITES[@]}"; do
@@ -122,6 +126,7 @@ declare -a KUSTOMIZE_TARGETS=(
   kubernetes/platform/cloudflare-public/release
   kubernetes/websites/naranjo-online
   kubernetes/websites/lidersea-com
+  kubernetes/websites/obsidian
 )
 
 rendered_files=()
@@ -211,7 +216,12 @@ assert_site_release_phase() {
   local website="$2"
   local phase="$3"
   local suspended="HelmRelease ${website} remains suspended"
+  # The two websites carry one readiness scalar as their whole values block;
+  # obsidian carries the closed obsync binding (release-conftest states both).
   local invalid_values="HelmRelease ${website} values must contain exactly deploymentReady: true"
+  if [[ "$website" == 'obsidian' ]]; then
+    invalid_values="HelmRelease ${website} values are outside the reviewed obsidian binding"
+  fi
   local unverified="chart source ${website}/${website}-chart does not require cosign verification"
   local unbound="chart source ${website}/${website}-chart does not bind exactly one keyless publisher identity"
   local result='' fragment=''
@@ -258,6 +268,8 @@ if [[ "$MODE" == '--scaffold' ]]; then
     naranjo-online "$naranjo_phase"
   assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-lidersea-com.yaml" \
     lidersea-com "$lidersea_phase"
+  assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-obsidian.yaml" \
+    obsidian "$obsidian_phase"
   expect_release_rejection "${ARTIFACT_ROOT}/kubernetes-platform-cloudflare-public-release.yaml" 'HelmRelease cloudflare-public remains suspended'
 elif [[ "$MODE" == '--release' ]]; then
   for rendered in "${rendered_files[@]}"; do
@@ -273,9 +285,10 @@ else
   declare -A WEBSITE_PHASES=(
     [naranjo-online]="$naranjo_phase"
     [lidersea-com]="$lidersea_phase"
+    [obsidian]="$obsidian_phase"
   )
   website=''
-  for website in naranjo-online lidersea-com; do
+  for website in naranjo-online lidersea-com obsidian; do
     assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-${website}.yaml" \
       "$website" "${WEBSITE_PHASES[$website]}"
   done
