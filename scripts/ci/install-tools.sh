@@ -100,8 +100,8 @@ install_archive_binary() {
 }
 
 install_archive_binary \
-  'https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz' \
-  '2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b' \
+  'https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz' \
+  '2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a' \
   'trivy' 'trivy' 'trivy'
 install_archive_binary \
   'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz' \
@@ -124,8 +124,8 @@ install_archive_binary \
   '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d' \
   'kustomize' 'kustomize' 'kustomize'
 install_archive_binary \
-  'https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz' \
-  'e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c' \
+  'https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz' \
+  'c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3' \
   'linux-amd64/helm' 'helm' 'helm'
 install_archive_binary \
   'https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz' \
@@ -136,14 +136,14 @@ install_archive_binary \
 # checksum asset itself before trusting the archive entry selected from it.
 oras_checksums="${download_root}/oras-checksums.txt"
 fetch \
-  'https://github.com/oras-project/oras/releases/download/v1.3.3/oras_1.3.3_checksums.txt' \
-  '5cf7ff102a941bdb35e8eabfc8cbe937c5387d20e7a2ee75dc4be90410e462cd' \
+  'https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_checksums.txt' \
+  '19d479e497fb5e30c7de3c621e3ed337e3857de0d96542021a73e2d8016dbe5a' \
   "${oras_checksums}"
-oras_filename='oras_1.3.3_linux_amd64.tar.gz'
+oras_filename='oras_1.3.4_linux_amd64.tar.gz'
 oras_sha256="$(awk -v filename="${oras_filename}" '$2 == filename {print $1}' "${oras_checksums}")"
 [[ "${oras_sha256}" =~ ^[0-9a-f]{64}$ ]] || { printf 'ORAS archive checksum entry is missing.\n' >&2; exit 1; }
 install_archive_binary \
-  "https://github.com/oras-project/oras/releases/download/v1.3.3/${oras_filename}" \
+  "https://github.com/oras-project/oras/releases/download/v1.3.4/${oras_filename}" \
   "${oras_sha256}" \
   'oras' 'oras' 'oras'
 

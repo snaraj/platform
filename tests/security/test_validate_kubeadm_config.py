@@ -22,7 +22,7 @@ nodeRegistration:
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
-kubernetesVersion: v1.36.3
+kubernetesVersion: v1.36.4
 imageRepository: registry.k8s.io
 controlPlaneEndpoint: 192.168.50.10:6443
 networking:
@@ -138,7 +138,7 @@ class KubeadmConfigTests(unittest.TestCase):
 
     def test_rejects_runtime_version_endpoint_and_taints_drift(self):
         self.assert_rejected(VALID_CONFIG.replace(MODULE.CRI_SOCKET, "unix:///var/run/cri-dockerd.sock"), "criSocket")
-        self.assert_rejected(VALID_CONFIG.replace("v1.36.3", "v1.36.2"), "kubernetesVersion")
+        self.assert_rejected(VALID_CONFIG.replace("v1.36.4", "v1.36.2"), "kubernetesVersion")
         self.assert_rejected(VALID_CONFIG.replace("controlPlaneEndpoint: 192.168.50.10:6443",
                                                   "controlPlaneEndpoint: 192.168.50.11:6443"),
                              "controlPlaneEndpoint")

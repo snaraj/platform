@@ -114,6 +114,17 @@ the owner. In order:
 upgrade or rollback procedure. If discovery finds stale K3s state, do not run
 its uninstall script; stop for a reviewed backup and migration decision.
 
+**Software maintenance (issue #343).** The owner's infrastructure-update
+commission covers supported runtime/tool pins, the matching kubeadm templates,
+controller export, connector chart and canary, and their validation inputs.
+The unused frontend tool pins and their redundant test assertions are removed;
+site toolchains remain in their own repositories. Choose the newest stable
+compatible versions, preserving kubeadm's component bundle and the reviewed
+network-plugin support range. Daily upstream checks are read-only drift
+detection; Dependabot proposes changes through the existing merge controls.
+Neither changes live state or supplies merge authority. Installed-version and
+health evidence, recovery and bounded operator upgrades remain separate.
+
 ## Delivery lane
 
 This repository must be operable cold by any major frontier model: AGENTS.md

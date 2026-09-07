@@ -30,6 +30,7 @@ rollback including the cluster-scoped objects no namespace delete can remove.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -132,8 +133,8 @@ CLUSTER_SCOPED_BINDINGS = (
 CONTROLLER_DEPLOYMENTS = ("source-controller", "kustomize-controller", "helm-controller")
 CANARY_NAME = "flux-api-reachability-canary"
 CANARY_IMAGE = (
-    "registry.k8s.io/kubectl:v1.36.3@sha256:"
-    "6e4fce3c83651edb91b74bc67701c5cd263dd8aa3cd4254b1798d6425a5ab789"
+    "registry.k8s.io/kubectl:v1.36.4@sha256:"
+    "b8d523e7b8cdc5e3caa0f8891ee9f504abf137dec786e6e0ddd33e4f272c2f13"
 )
 
 # RFC 5737 documentation space throughout: TEST-NET-2 is the fixture's reviewed
@@ -146,7 +147,7 @@ FIXTURE_CONTEXT = "reviewed-operator"
 FIXTURE_OTHER_SERVER = "https://203.0.113.7:6443"
 FIXTURE_OTHER_CONTEXT = "some-other-cluster"
 FIXTURE_KUSTOMIZE_VERSION = "v5.8.1"
-FIXTURE_KUBECTL_VERSION = "v1.36.3"
+FIXTURE_KUBECTL_VERSION = "v1.36.4"
 FIXTURE_EXISTING_ATTEMPT_ID = "e" * 64
 FIXTURE_FOREIGN_ATTEMPT_ID = "f" * 64
 
@@ -327,6 +328,27 @@ class ApiCanaryManifestTests(unittest.TestCase):
         self.assertEqual(match.group(1), CANARY_IMAGE)
         self.assertIn("image: " + CANARY_IMAGE, read(CANARY / "pod.yaml"))
         self.assertIn(CANARY_IMAGE, read(REGO))
+
+    @unittest.skipUnless(shutil.which("conftest"), "conftest is required")
+    def test_canary_policy_exception_accepts_only_the_exact_image(self):
+        source = read(CANARY / "pod.yaml")
+        images = (CANARY_IMAGE, CANARY_IMAGE.replace("v1.36.4", "v1.37.0"),
+                  CANARY_IMAGE.rsplit(":", 1)[0] + ":" + "a" * 64,
+                  CANARY_IMAGE.split("@")[0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "canary.yaml"
+            for image in images:
+                with self.subTest(image=image):
+                    path.write_text(source.replace(CANARY_IMAGE, image))
+                    result = subprocess.run([required_tool(shutil.which("conftest"), "conftest is required"),
+                        "test", "--policy", str(REGO.parent), "--output", "json", str(path)],
+                        capture_output=True, text=True, timeout=20)
+                    self.assertIn(result.returncode, (0, 1), result.stderr)
+                    denials = {failure["msg"] for document in json.loads(result.stdout)
+                               for failure in document.get("failures", [])}
+                    expected = set() if image == CANARY_IMAGE else {
+                        "container kubernetes-api image must use an approved registry and full digest"}
+                    self.assertEqual(denials, expected)
 
     def test_canary_is_rendered_but_not_reachable_from_the_flux_bootstrap_root(self):
         self.assertIn("kubernetes/flux-system/canary", read(RENDERER))
@@ -2785,7 +2807,7 @@ class ToolAndTargetBindingTests(InstallerBehaviourTestCase):
             extra_environment={"FLUX_STUB_KUBECTL_VERSION": "v1.30.0"}
         )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("versions.env pins v1.36.3", completed.stderr)
+        self.assertIn("versions.env pins v1.36.4", completed.stderr)
 
     def test_a_kustomize_outside_the_version_pin_is_refused(self):
         completed = self._run(
