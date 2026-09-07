@@ -103,7 +103,7 @@ metadata:
     # file, and the schema-invalid scalars below prevent accidental kubectl use.
     # Site delivery is decoupled from platform releases (owner ruling
     # 2026-09-01, issue #275): ref.branch follows protected main, and the
-    # live flip ceremony is docs/runbooks/site-sync-branch-flip.md.
+    # source handoff is docs/runbooks/application-source-transition.md.
     release-selector.platform.snaraj.dev/schema: BOOTSTRAP_RENDERS_CANONICAL_IDENTITY
     release-selector.platform.snaraj.dev/release-id: "0"
     release-selector.platform.snaraj.dev/release-tag: v0.1.43
