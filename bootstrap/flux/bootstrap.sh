@@ -136,19 +136,23 @@ if [[ "${mode}" == --generate ]]; then
   HELM_IMAGE="${FLUX_HELM_CONTROLLER_IMAGE}" \
     "${python3_binary}" -I - <<'PY' || fail
 import os
+import re
 from pathlib import Path
 
 path = Path(os.environ["COMPONENTS_PATH"])
 text = path.read_text(encoding="utf-8")
-replacements = {
-    "ghcr.io/fluxcd/source-controller:v1.9.3": os.environ["SOURCE_IMAGE"],
-    "ghcr.io/fluxcd/kustomize-controller:v1.9.4": os.environ["KUSTOMIZE_IMAGE"],
-    "ghcr.io/fluxcd/helm-controller:v1.6.3": os.environ["HELM_IMAGE"],
-}
-for old, new in replacements.items():
-    if text.count(old) != 1:
+for component, key in (("source", "SOURCE_IMAGE"),
+                       ("kustomize", "KUSTOMIZE_IMAGE"),
+                       ("helm", "HELM_IMAGE")):
+    new = os.environ[key]
+    prefix = "ghcr.io/fluxcd/" + component + "-controller"
+    if not re.fullmatch(re.escape(prefix) + r":v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}", new):
         raise SystemExit(1)
-    text = text.replace(old, new)
+    old = new.split("@", 1)[0]
+    pattern = r"(?m)^([ \t]*image: )" + re.escape(old) + r"$"
+    text, count = re.subn(pattern, lambda match: match[1] + new, text)
+    if count != 1:
+        raise SystemExit(1)
 path.write_text(text, encoding="utf-8")
 PY
   [[ "$(sha256sum -- "${flux}" | awk '{print $1}')" == "${FLUX_LINUX_AMD64_SHA256}" ]] || fail

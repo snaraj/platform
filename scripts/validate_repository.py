@@ -2758,7 +2758,7 @@ DEPENDABOT_KEYS = {
     (): ("version", "updates"),
     ("updates",): ("package-ecosystem", "directory", "schedule",
                    "open-pull-requests-limit", "groups"),
-    ("updates", "schedule"): ("interval",),
+    ("updates", "schedule"): ("interval", "cronjob"),
     ("updates", "groups", "*"): ("patterns",),
 }
 _DEPENDABOT_ENTRY = re.compile(r"(?:- )?([A-Za-z0-9_.-]+):(?: (\S.*))?")
@@ -2775,6 +2775,7 @@ def check_dependabot(root):
     stack = []
     version = None
     updates = 0
+    schedules = {}
     for line in text.split("\n"):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -2801,12 +2802,22 @@ def check_dependabot(root):
             continue
         if parent == () and key == "version":
             version = value
+        if parent == ("updates", "schedule"):
+            schedule = schedules.setdefault(updates, {})
+            if key in schedule:
+                errors.append("duplicate schedule key " + key)
+            schedule[key] = value
         if value is None:
             stack.append((indent + (2 if item else 0), child))
     if version != "2":
         errors.append("version must be exactly 2")
     if not updates:
         errors.append("updates must list at least one ecosystem")
+    expected_schedule = {"interval": "cron", "cronjob": '"17 10 * * *"'}
+    if set(schedules) != set(range(1, updates + 1)) or any(
+        schedule != expected_schedule for schedule in schedules.values()
+    ):
+        errors.append("every ecosystem must use the reviewed daily cron schedule")
     return errors
 
 

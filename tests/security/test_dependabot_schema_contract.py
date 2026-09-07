@@ -26,6 +26,22 @@ class DependabotSchemaTests(unittest.TestCase):
         target.write_text(original, encoding="utf-8")
         self.assertEqual(MODULE.check_dependabot(scratch), [])
 
+    def test_missing_duplicate_or_changed_daily_schedule_is_rejected(self):
+        scratch = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        target = scratch / MODULE.DEPENDABOT_PATH
+        target.parent.mkdir(parents=True)
+        original = (MODULE.ROOT / MODULE.DEPENDABOT_PATH).read_text()
+        for bad in (
+            original.replace("interval: cron", "interval: weekly"),
+            original.replace('      cronjob: "17 10 * * *"\n', ""),
+            original.replace('cronjob: "17 10 * * *"', 'cronjob: "* * * * *"'),
+            original.replace("interval: cron", "interval: cron\n      interval: cron"),
+            original.replace("cronjob:", "cronjobs:"),
+        ):
+            with self.subTest(bad=bad):
+                target.write_text(bad)
+                self.assertTrue(MODULE.check_dependabot(scratch))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -646,7 +646,16 @@ class ReceiptRenderingTests(unittest.TestCase):
             MODULE.parse_capture_header("# nothing\n")
 
     def test_tool_pins_come_from_versions_env(self):
-        self.assertEqual(MODULE.tool_pins(REPO_ROOT), MODULE.load_receipt(REPO_ROOT)["tools"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pins = root / MODULE.VERSIONS_ENV
+            pins.write_text("COSIGN_VERSION=v9.8.7\nORAS_VERSION=v6.5.4\n")
+            self.assertEqual(MODULE.tool_pins(root), {"cosign": "9.8.7", "oras": "6.5.4"})
+            for text in ("COSIGN_VERSION=v9.8.7\n",
+                         "COSIGN_VERSION=v9.8.7\nORAS_VERSION=v6.5.4\nORAS_VERSION=v6.5.4\n"):
+                pins.write_text(text)
+                with self.assertRaises(MODULE.Refusal):
+                    MODULE.tool_pins(root)
 
 
 def quiet_git_environment(*args, **kwargs) -> dict:
@@ -819,28 +828,18 @@ class RewriteTests(unittest.TestCase):
         self.assertTrue(all(line.startswith(("###", "- ")) or not line for line in fragment.splitlines()))
         self.assertIn("naranjo.online `0.1.99`", fragment)
 
-    def test_inverse_promotion_restores_every_pinned_file_byte_for_byte(self):
+    def test_inverse_promotion_restores_selection_bytes_and_records_current_tools(self):
         self.promote()
         original = self.receipt["records"]["naranjo-online"]
         (self.root / "changelog.d/990-promote-naranjo-online-0-1-99.md").unlink()
         date, issues = MODULE.parse_capture_header(self.markdown)
         issue = int(issues.split("/")[0].lstrip("#"))
-        # FIXTURE — the shape `main` takes from the first canonical promotion
-        # this tool cuts onward: the fragment that capture committed is already
-        # in the tree. Today's `main` predates that only because the #285
-        # fragment was hand-named, so testing against today's tree alone would
-        # measure a coincidence (PR #305 finding 1).
-        replayed = self.root / MODULE.fragment_path(issue, {"naranjo-online": original["chartTag"]})
-        replayed.write_text("### Changed\n\n- committed by that promotion\n", encoding="utf-8")
-        # REPAIR under test — the inverse REPLAYS exactly that capture, so on
-        # the fixture above it meets apply_promotion's immutable-fragment
-        # refusal instead of restoring bytes. The pre-promotion tree carried
-        # neither fragment, so dropping this one is the same scratch setup as
-        # the 990 line above, not a relaxation: the refusal itself stays pinned
-        # by test_refused_fragment_collision_writes_nothing below, and the
-        # rewrite never reads changelog.d/ at all. Delete this line and the
-        # restoration below never runs.
-        replayed.unlink()
+        # This scratch replay needs a free fragment name; real collisions remain
+        # covered by test_refused_fragment_collision_writes_nothing.
+        (self.root / MODULE.fragment_path(issue, {"naranjo-online": original["chartTag"]})).unlink(missing_ok=True)
+        # A fresh acquisition restores the old selection but records the tools
+        # used now. Historical receipt metadata must never be rewritten merely
+        # because an infrastructure tool pin changed.
         MODULE.apply_promotion(
             self.root, self.selections, {"naranjo-online": (original, self.inspection["naranjo"])}, issue, issues, date
         )
@@ -848,7 +847,12 @@ class RewriteTests(unittest.TestCase):
             if name == "docs/assurance/195-chart-acquisition-receipt.md":
                 continue
             with self.subTest(path=name):
-                self.assertEqual((self.root / name).read_bytes(), self.originals[name])
+                expected = self.originals[name]
+                if name == str(MODULE.RECEIPT_JSON):
+                    receipt = json.loads(expected)
+                    receipt["tools"] = MODULE.tool_pins(self.root)
+                    expected = MODULE.render_receipt_json(receipt).encode()
+                self.assertEqual((self.root / name).read_bytes(), expected)
         self.assertEqual(MODULE.parse_inspection((self.root / MODULE.RECEIPT_MD).read_text()), self.inspection)
 
     def test_both_workloads_promote_in_one_rewrite(self):

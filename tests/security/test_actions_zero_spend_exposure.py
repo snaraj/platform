@@ -52,6 +52,8 @@ PINNED_CRON_INVENTORY = {
     # sub-minute API sweep on the free public-repo tier.
     "deploy-assurance.yml": ("23 * * * *",),
     "scheduled-security.yml": ("19 10 * * 6",),
+    # Daily read-only release metadata audit; no build, artifact or deployment.
+    "software-currency.yml": ("41 10 * * *",),
 }
 
 _KEY_LINE = re.compile(
@@ -356,13 +358,14 @@ class ActionsZeroSpendExposureTests(unittest.TestCase):
         )
 
     def test_cron_pin_covers_every_committed_scheduled_workflow(self):
-        """The pin and the tree must describe the same three cron sets."""
+        """The pin and the tree must describe the same scheduled workflows."""
 
         names = {path.name for path in workflow_files(WORKFLOW_ROOT)}
         self.assertEqual(set(PINNED_CRON_INVENTORY), {
             "codeql.yml",
             "deploy-assurance.yml",
             "scheduled-security.yml",
+            "software-currency.yml",
         })
         self.assertLessEqual(set(PINNED_CRON_INVENTORY), names)
 
