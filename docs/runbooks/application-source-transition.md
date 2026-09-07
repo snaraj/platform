@@ -65,7 +65,7 @@ Require the CronJob suspended, no active references and no execution residue.
 Use complete control-namespace Job and Pod collections negotiated as
 `meta.k8s.io/v1` `PartialObjectMetadataList`, without a full-object fallback.
 Require explicit list/item types, namespace and UID identities, owner lineage,
-resource versions, no continuation and no remaining items. Bound each collection
+resource versions, no continuation and `remainingItemCount` absent or integer zero. Bound each collection
 and reject malformed or unknown ownership. Retain only identity/lineage metadata.
 An additional exact server-side Pod ServiceAccount filter must return no items;
 labels cannot prove absence. Any selector Job lineage or selector-account Pod
@@ -73,9 +73,12 @@ stops retirement, regardless of phase; no Pod specifications or status are neede
 
 Before each authority change, repeat the complete census and require identical
 corresponding resource versions and identities, with the suspended CronJob and
-its empty active-reference list unchanged. Any concurrent change stops that
-attempt. Fix namespace, collection limits and the exact ServiceAccount filter in
-the reviewed operator package; never accept a caller-supplied API path or query.
+its empty active-reference list unchanged. Reject changes observed across this
+barrier and dispatch the authority mutation immediately after it. The census is
+an observation, not a lock: UID/resourceVersion compare-and-swap preconditions
+guard each authority mutation against concurrent target changes. Fix namespace,
+collection limits and the exact ServiceAccount filter in the reviewed operator
+package; never accept a caller-supplied API path or query.
 
 First atomically test the RoleBinding UID, current resourceVersion, whole roleRef
 and subjects, then empty its subjects. Prove that a fresh SubjectAccessReview for
