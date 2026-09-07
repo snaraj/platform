@@ -294,7 +294,6 @@ class ChartSourceContractTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(receipt["schema"], "dev.snaraj.chart-acquisition-receipt/v2")
-        self.assertEqual(receipt["tools"], {"cosign": "3.1.3", "oras": "1.3.3"})
         self.assertEqual(receipt["chartLayerMediaType"], MODULE.CHART_LAYER_MEDIA_TYPE)
         expected = {}
         for slug in MODULE.CHART_REPOSITORIES:

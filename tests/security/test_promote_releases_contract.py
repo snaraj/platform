@@ -856,6 +856,8 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(MODULE.parse_inspection((self.root / MODULE.RECEIPT_MD).read_text()), self.inspection)
 
     def test_both_workloads_promote_in_one_rewrite(self):
+        pins = self.root / MODULE.VERSIONS_ENV
+        pins.write_text(re.sub(r"^ORAS_VERSION=.*$", "ORAS_VERSION=v6.5.4", pins.read_text(), flags=re.MULTILINE))
         acquired = {}
         for slug, salt in (("naranjo-online", "n"), ("lidersea-com", "l")):
             acquired[slug] = (promoted_record(self.receipt["records"][slug], "0.2.0", salt), {"Chart.yaml": sha(f"{salt}c".encode()), "values.yaml": sha(f"{salt}v".encode())})
@@ -866,6 +868,15 @@ class RewriteTests(unittest.TestCase):
             self.assertIn('"tag": "0.2.0"', (self.root / "policies/conftest/kubernetes.rego").read_text())
         rego = (self.root / "policies/conftest/kubernetes.rego").read_text()
         self.assertEqual(rego.count('"tag": "0.2.0"'), 2)
+        self.assertEqual(MODULE.load_receipt(self.root)["tools"]["oras"], "6.5.4")
+        # Run the downstream receipt test too: compiling its rewritten pins
+        # missed a stale tool-version assertion that blocked real promotions.
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "unittest",
+             "tests.security.test_signature_policy_contract.ChartSourceContractTests.test_acquisition_receipt_matches_every_reviewed_identity_tuple"],
+            cwd=self.root, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def assert_tree_untouched(self):
         for name in PINNED:

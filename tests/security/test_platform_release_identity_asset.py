@@ -306,6 +306,9 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
     def test_receipt_v2_rejects_partial_or_conflicting_acquisition_evidence(self) -> None:
         exact = json.loads(self.receipt_bytes())
         mutations = {
+            "missing tool": lambda value: value["tools"].pop("oras"),
+            "foreign tool": lambda value: value["tools"].update(other="1.0.0"),
+            "empty tool version": lambda value: value["tools"].update(cosign=""),
             "legacy schema": lambda value: value.update(
                 schema="dev.snaraj.chart-acquisition-receipt/v1"
             ),
