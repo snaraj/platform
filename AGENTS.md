@@ -450,6 +450,20 @@ READMEs describe enduring purpose and routine use. Setup, recovery commands and
 source-transition procedures belong in runbooks or adjacent procedure files;
 prelaunch status and one-time project history do not belong in READMEs.
 
+**Application source handoff (issue #340).** The owner's 2026-09-06 platform
+commission authorizes the bounded live source handoff and retirement of the
+legacy selector, including its exact nine installed objects, under the reviewed
+operator procedure. Independently reviewed, hash-bound private operation code
+implements that contract without adding disposable executables to this public
+repository. The procedure must be merged before live handoff. This grants no
+merge authority. The completed tag-to-main
+tool, its dedicated tests and stale recovery instructions are removed; no
+selector-resume path is carried into recovery. Application objects, controllers,
+tenant RBAC and artifact selections remain unchanged. Keep application manifests
+and frozen selector source until observed convergence and runtime retirement;
+their later removal is a separate reviewed change. Neither a source release nor
+offline transition validation proves that the cluster has consumed the new source.
+
 ## Adversarial review protocol
 
 Every substantive PR receives an independent adversarial review BEFORE it
