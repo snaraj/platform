@@ -61,7 +61,7 @@ class FluxGenerationContractTests(unittest.TestCase):
         self.assertLess(checksum, execute)
         self.assertIn('--components=source-controller,kustomize-controller,helm-controller', source)
         self.assertIn('--network-policy=true --export', source)
-        self.assertIn('if text.count(old) != 1:', source)
+        self.assertIn('if count != 1:', source)
         self.assertEqual(source.count('sha256sum -- "${flux}"'), 2)
 
     def test_generation_replaces_all_three_images_and_rejects_incomplete_export(self):
@@ -75,7 +75,8 @@ class FluxGenerationContractTests(unittest.TestCase):
                 for i, (key, image) in enumerate(zip(keys, originals), 1)}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "components.yaml"
-            for images in (originals, originals[:-1], originals + originals[:1]):
+            for images in (originals, originals[:-1], originals + originals[:1],
+                           (originals[0] + "0", *originals[1:])):
                 with self.subTest(image_count=len(images)):
                     before = "\n".join("image: " + image for image in images) + "\n"
                     path.write_text(before, encoding="utf-8")
@@ -88,6 +89,32 @@ class FluxGenerationContractTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 0)
                         self.assertEqual(path.read_text(), "\n".join(
                             "image: " + pins[key] for key in keys) + "\n")
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(path.read_text(), before)
+
+    def test_generation_rejects_wrong_publisher_component_digest_and_version(self):
+        source = BOOTSTRAP.read_text(encoding="utf-8")
+        program = re.search(r"<<'PY'.*?\n(.*?)\nPY\n", source, re.S).group(1)
+        images = {key: "ghcr.io/fluxcd/" + component + "-controller:v9.8.7@sha256:" + "a" * 64
+                  for key, component in (("SOURCE_IMAGE", "source"),
+                                         ("KUSTOMIZE_IMAGE", "kustomize"),
+                                         ("HELM_IMAGE", "helm"))}
+        before = "\n".join("image: " + pin.split("@")[0] for pin in images.values()) + "\n"
+        wrong = (images["SOURCE_IMAGE"].replace("fluxcd/", "other/"),
+                 images["HELM_IMAGE"], images["SOURCE_IMAGE"][:-1],
+                 images["SOURCE_IMAGE"].replace("v9.8.7", "v9.8.8"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "components.yaml"
+            for pin in (images["SOURCE_IMAGE"], *wrong):
+                with self.subTest(pin=pin):
+                    path.write_text(before)
+                    result = subprocess.run([sys.executable, "-I", "-B", "-c", program],
+                        env={**images, "SOURCE_IMAGE": pin, "COMPONENTS_PATH": str(path)},
+                        capture_output=True, check=False, timeout=10)
+                    if pin == images["SOURCE_IMAGE"]:
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(path.read_text().count("@sha256:"), 3)
                     else:
                         self.assertNotEqual(result.returncode, 0)
                         self.assertEqual(path.read_text(), before)

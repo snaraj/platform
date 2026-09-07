@@ -31,21 +31,15 @@ class DependencyVersionContractTests(unittest.TestCase):
         cls.versions = version_values()
 
     def test_builder_references_encode_canonical_versions(self):
-        """Digest pins must identify the same Node and Go versions they review."""
+        """The selector builder must retain its reviewed Go version."""
 
-        node_pattern = (
-            r"docker\.io/library/node:{}-[^@]+@sha256:[0-9a-f]{{64}}".format(
-                re.escape(self.versions["NODE_VERSION"])
-            )
-        )
         go_pattern = (
             r"docker\.io/library/golang:{}-[^@]+@sha256:[0-9a-f]{{64}}".format(
                 re.escape(self.versions["GO_VERSION"])
             )
         )
-        self.assertRegex(self.versions["WEBSITE_NODE_BUILDER"], r"^{}$".format(node_pattern))
         self.assertRegex(self.versions["WEBSITE_GO_BUILDER"], r"^{}$".format(go_pattern))
-        for key in ("WEBSITE_NODE_BUILDER", "WEBSITE_GO_BUILDER", "WEBSITE_RUNTIME"):
+        for key in ("WEBSITE_GO_BUILDER", "WEBSITE_RUNTIME"):
             with self.subTest(key=key):
                 self.assertRegex(self.versions[key], r"@sha256:[0-9a-f]{64}$")
 

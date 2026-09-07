@@ -16,7 +16,7 @@ from pathlib import Path
 # These pins join kubeadm to the locally installed containerd runtime and exact
 # upstream Kubernetes release; bootstrap must not drift to host defaults.
 CRI_SOCKET = "unix:///run/containerd/containerd.sock"
-KUBERNETES_VERSION = "v1.36.3"
+KUBERNETES_VERSION = "v1.36.4"
 IMAGE_REPOSITORY = "registry.k8s.io"
 
 # API_SERVER_ARGS is the reviewed control-plane hardening contract: PSA, audit,
