@@ -62,10 +62,20 @@ binding and admission policy. Validate their complete normalized bodies against
 the reviewed frozen model and retain every original UID/resourceVersion.
 
 Require the CronJob suspended, no active references and no execution residue.
-Use complete control-namespace JobList/PodList API snapshots with resourceVersion
-and no continuation token, reduced to names, owner UID lineage, terminal status
-and Pod ServiceAccount identity. Labels cannot establish absence. Any owned Job
-or selector-account Pod, including terminal residue, stops retirement.
+Use complete control-namespace Job and Pod collections negotiated as
+`meta.k8s.io/v1` `PartialObjectMetadataList`, without a full-object fallback.
+Require explicit list/item types, namespace and UID identities, owner lineage,
+resource versions, no continuation and no remaining items. Bound each collection
+and reject malformed or unknown ownership. Retain only identity/lineage metadata.
+An additional exact server-side Pod ServiceAccount filter must return no items;
+labels cannot prove absence. Any selector Job lineage or selector-account Pod
+stops retirement, regardless of phase; no Pod specifications or status are needed.
+
+Before each authority change, repeat the complete census and require identical
+corresponding resource versions and identities, with the suspended CronJob and
+its empty active-reference list unchanged. Any concurrent change stops that
+attempt. Fix namespace, collection limits and the exact ServiceAccount filter in
+the reviewed operator package; never accept a caller-supplied API path or query.
 
 First atomically test the RoleBinding UID, current resourceVersion, whole roleRef
 and subjects, then empty its subjects. Prove that a fresh SubjectAccessReview for
@@ -104,5 +114,5 @@ operation slot only after resulting-state verification, never on command success
 
 [Flux source behavior](https://fluxcd.io/flux/components/source/gitrepositories/),
 [Helm digest status](https://fluxcd.io/flux/components/helm/helmreleases/) and
-[Kubernetes deletion](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_delete/)
-define the controller and API semantics used here.
+[Kubernetes deletion](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_delete/) and
+[metadata-only API responses](https://kubernetes.io/docs/reference/using-api/api-concepts/#metadata-only-fetches) define the controller and API semantics used here.
