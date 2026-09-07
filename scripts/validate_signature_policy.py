@@ -52,12 +52,12 @@ CHART_REPOSITORIES = {
 # and the exact-site keyless signature before changing either value.
 CHART_RELEASES = {
     "naranjo-online": {
-        "tag": "0.1.76",
-        "digest": "sha256:f6af207beeca485c7c47e8b66efd1e5061a82c65d329ec0b8096571948308fc2",
+        "tag": "0.1.80",
+        "digest": "sha256:a665c74985b0dc3e9b8351c0306d58f8d318a581f7fdda71874a98fde85773f3",
     },
     "lidersea-com": {
-        "tag": "0.1.41",
-        "digest": "sha256:a3d242a2689c2c41a8d6960e848ea3b195ae14bc80cbf9461de36f69d4845cb6",
+        "tag": "0.1.42",
+        "digest": "sha256:5a944c4602cd1b1df8b6613bc2daa037dcc00b2616402de33e5eece1edd8cdf7",
     },
 }
 # How long a merged selection can wait before source-controller re-reads the
