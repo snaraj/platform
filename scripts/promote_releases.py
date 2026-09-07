@@ -1660,20 +1660,41 @@ def branch_name(base: str, issue: int, targets: dict) -> str:
     return BRANCH_PREFIX + f"{base[:7]}/{issue}-" + "_".join(f"{s}-{v}" for s, v in sorted(targets.items()))
 
 
-def plan(report: dict, open_prs: list) -> dict:
+def plan(report: dict, open_prs: list, receipted: set = frozenset()) -> dict:
     """Decide the tick's actions from the status report and the open
     promoter pull requests (``{"number", "branch", "behind_by"}``).
 
     Returns ``{"targets": {slug: version}, "keep": [numbers],
-    "supersede": [numbers]}``. Any selection the watchdog would call
-    unpublished or ahead is refused: the promoter only ever moves a
-    selection FORWARD to a published release.
+    "supersede": [numbers]}``. Any RECEIPTED selection the watchdog would call
+    unpublished or ahead is refused, and the refusal stops the whole tick: the
+    promoter only ever moves a selection FORWARD to a published release, and a
+    receipted workload whose repository has stopped publishing — or whose
+    committed selection is newer than anything published — is a condition
+    serious enough that continuing to move a SIBLING workload would be acting
+    on a fleet nobody has explained.
+
+    ``receipted`` is the set of slugs the acquisition receipt binds, and a slug
+    outside it is skipped rather than refused. That is not a relaxation: this
+    tool cannot promote such a workload at all — ``apply_promotion`` refuses it
+    by name before it writes anything — so its verdict cannot change what this
+    tick does. Letting it stop the tick would mean an onboarding state, which
+    issue #348 made an ordinary one, halting fully receipted promotions of
+    unrelated workloads for as long as a new application takes to cut its first
+    release. The condition itself stays loud: the deploy-assurance watchdog
+    opens and holds it, which is what "the watchdog owns this condition"
+    already meant.
     """
 
     targets = {}
     for slug, entry in report.items():
         if entry["verdict"] in {"unpublished", "ahead"}:
-            raise Refusal(f"{slug}: selection is {entry['verdict']}; the watchdog owns this condition")
+            if slug in receipted:
+                raise Refusal(f"{slug}: selection is {entry['verdict']}; the watchdog owns this condition")
+            log(
+                f"{slug}: selection is {entry['verdict']} and the receipt contract"
+                " does not bind it; skipped, the watchdog owns this condition"
+            )
+            continue
         if entry["verdict"] == "behind":
             targets[slug] = entry["latest"]
     keep, supersede = [], []
@@ -2843,7 +2864,7 @@ def tick(repo: Path, dry_run: bool, registry=None, github=None, cosign=None, run
             log(f"{slug}: committed {entry['committed']} vs latest {entry['latest']} -> {entry['verdict']}")
             outcomes[slug] = entry["verdict"]
         open_prs = open_promoter_prs(github)
-        decision = plan(report, open_prs)
+        decision = plan(report, open_prs, set(load_receipt(repo)["records"]))
         # The receipt step runs on the pull requests the planner KEEPS — never
         # on one it is about to supersede — and never stops the tick: a promotion
         # that is due must still be cut when a receipt cannot be earned.

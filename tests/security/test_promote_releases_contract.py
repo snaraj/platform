@@ -988,9 +988,57 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(MODULE.plan(behind, [matching, stale, other, foreign]), {"targets": {"naranjo-online": "0.1.71"}, "keep": [300], "supersede": [301, 302]})
         current = {slug: dict(entry, verdict="current", committed=entry["latest"]) for slug, entry in behind.items()}
         self.assertEqual(MODULE.plan(current, [matching]), {"targets": {}, "keep": [], "supersede": [300]})
+        # A RECEIPTED workload in either integrity state stops the whole tick:
+        # a repository that has stopped publishing, or a selection newer than
+        # anything published, is not a condition to keep promoting siblings
+        # through.
         for verdict in ("ahead", "unpublished"):
-            with self.subTest(verdict=verdict), self.assertRaisesRegex(MODULE.Refusal, "the watchdog owns"):
-                MODULE.plan({"naranjo-online": {"committed": "0.1.69", "latest": None, "verdict": verdict}}, [])
+            with self.subTest(verdict=verdict, receipted=True), self.assertRaisesRegex(
+                MODULE.Refusal, "the watchdog owns"
+            ):
+                MODULE.plan(
+                    {"naranjo-online": {"committed": "0.1.69", "latest": None, "verdict": verdict}},
+                    [],
+                    {"naranjo-online"},
+                )
+
+    def test_an_unreceipted_selection_is_skipped_rather_than_stopping_the_tick(self):
+        """The onboarding state issue #348 made ordinary, proven both ways.
+
+        A workload committed before its publisher cut a release reads
+        `unpublished` on every tick. This tool cannot promote it at all —
+        `apply_promotion` refuses a slug the receipt does not bind, by name and
+        before it writes anything — so its verdict cannot change what a tick
+        does, and letting it stop one would halt fully receipted promotions of
+        unrelated workloads for as long as a new application takes to publish.
+        The condition stays loud in the watchdog, which owns it.
+        """
+
+        report = {
+            "naranjo-online": {"committed": "0.1.69", "latest": "0.1.71", "verdict": "behind"},
+            "obsidian": {"committed": "0.1.0", "latest": None, "verdict": "unpublished"},
+        }
+        for verdict in ("ahead", "unpublished"):
+            with self.subTest(verdict=verdict):
+                report["obsidian"]["verdict"] = verdict
+                self.assertEqual(
+                    MODULE.plan(report, [], {"naranjo-online", "lidersea-com"}),
+                    {"targets": {"naranjo-online": "0.1.71"}, "keep": [], "supersede": []},
+                )
+        # The control that keeps the skip from being a blanket exemption: the
+        # SAME report with that slug receipted stops the tick.
+        with self.assertRaisesRegex(MODULE.Refusal, "the watchdog owns"):
+            MODULE.plan(report, [], {"naranjo-online", "obsidian"})
+        # The skip is scoped to the two integrity verdicts and nothing else.
+        # An unreceipted slug that is merely BEHIND still becomes a target here
+        # and is refused later, by name, at the write — which is the loud place
+        # for it: `apply_promotion` names the missing closure, and the tick logs
+        # that refusal instead of silently dropping a workload from its plan.
+        report["obsidian"] = {"committed": "0.1.0", "latest": "0.2.0", "verdict": "behind"}
+        self.assertEqual(
+            MODULE.plan(report, [], {"naranjo-online", "lidersea-com"})["targets"],
+            {"naranjo-online": "0.1.71", "obsidian": "0.2.0"},
+        )
 
     def test_branch_grammar_round_trips_and_rejects_foreign_names(self):
         targets = {"naranjo-online": "0.1.71", "lidersea-com": "0.1.42"}
