@@ -176,7 +176,11 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
 
     def test_tenant_helm_readback_rules_are_required_and_cannot_write(self):
         relative = "kubernetes/flux-system/access.yaml"
-        tenants = ("naranjo-online", "lidersea-com")
+        # Every namespace with a helm-reconciler Role, in the order access.yaml
+        # declares them — `mutate_occurrence` addresses them positionally, so a
+        # namespace appended to the file must be appended here too or its rules
+        # are never mutated and its subtests silently prove nothing.
+        tenants = ("naranjo-online", "lidersea-com", "obsidian")
         for tenant_index, namespace in enumerate(tenants):
             for group, resource in (("", "pods"), ("apps", "replicasets")):
                 group_text = '""' if group == "" else group
@@ -226,41 +230,62 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
                         errors,
                     )
 
-    def test_naranjo_pvc_rule_is_required_exact_and_site_local(self):
+    def test_claim_lifecycle_rules_are_required_exact_and_namespace_local(self):
+        """Issues #211 and #348: exactly the claim-owning namespaces, no others.
+
+        Two namespaces hold claim lifecycle now — naranjo-online for its
+        usage-export pair and obsync for the obsync blobs/journal pair — so
+        every mutation is applied to EACH of them by position. A check that
+        only ever mutated the first would pass unchanged if the second's rule
+        were deleted outright, which is precisely the regression a second
+        holder introduces.
+        """
+
         relative = "kubernetes/flux-system/access.yaml"
+        claim_namespaces = ("naranjo-online", "obsidian")
         rule = (
             '  - apiGroups: [""]\n'
             "    resources: [persistentvolumeclaims]\n"
             "    verbs: [get, list, watch, create, update, patch, delete]\n"
         )
-        for label, replacement in (
-            ("missing", ""),
-            (
-                "extra verb",
-                rule.replace("patch, delete", "patch, delete, deletecollection"),
-            ),
-            (
-                "combined backing resource",
-                rule.replace(
-                    "resources: [persistentvolumeclaims]",
-                    "resources: [persistentvolumeclaims, persistentvolumes]",
+        for occurrence, namespace in enumerate(claim_namespaces):
+            for label, replacement in (
+                ("missing", ""),
+                (
+                    "extra verb",
+                    rule.replace("patch, delete", "patch, delete, deletecollection"),
                 ),
-            ),
-        ):
-            with self.subTest(mutation=label):
-                errors = self.mutate(relative, rule, replacement)
-                self.assertTrue(
-                    any("exact PVC lifecycle" in error for error in errors), errors
-                )
+                (
+                    "combined backing resource",
+                    rule.replace(
+                        "resources: [persistentvolumeclaims]",
+                        "resources: [persistentvolumeclaims, persistentvolumes]",
+                    ),
+                ),
+            ):
+                with self.subTest(namespace=namespace, mutation=label):
+                    errors = self.mutate_occurrence(
+                        relative, rule, replacement, occurrence
+                    )
+                    self.assertTrue(
+                        any(
+                            "exact helm-reconciler PVC lifecycle rule" in error
+                            or "PVC lifecycle must be only" in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
 
-        lidersea_role = (
+        # The other direction: a namespace with no claims of its own may not
+        # acquire claim lifecycle by having the rule pasted into its Role.
+        unentitled_role = (
             "kind: Role\n"
             "metadata:\n"
             "  name: helm-reconciler\n"
             "  namespace: lidersea-com\n"
             "rules:\n"
         )
-        errors = self.mutate(relative, lidersea_role, lidersea_role + rule)
+        errors = self.mutate(relative, unentitled_role, unentitled_role + rule)
         self.assertTrue(
             any("PVC lifecycle must be only" in error for error in errors), errors
         )

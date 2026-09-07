@@ -123,3 +123,57 @@ spec:
         cpu: 25m
         memory: 32Mi
       type: Container
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: obsidian
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    # This annotation equals the SHA-256 of the current bytes at
+    # docs/audits/2026-09-07-obsync-capacity-evidence.md — this namespace's
+    # OWN evidence document, not the two sites'. The sites measure a two-replica
+    # stateless web workload; obsync pays for one stateful single-writer Pod
+    # with a far larger per-Pod limit, so one shared five-value map could not
+    # have stated both honestly. Independently, validate_repository.py,
+    # policies/conftest/kubernetes.rego, and
+    # policies/release-conftest/deployment-readiness.rego require the exact
+    # hard map below FOR THIS NAMESPACE. Audit-byte drift fails the hash check;
+    # drift in a quota value fails the exact-map check.
+    platform.snaraj.dev/capacity-evidence-sha256: 33e2aab63f9c4c8d7d01f393588fa92aa035015711a24ae167325c05353a464f
+spec:
+  hard:
+    # The volumes are ReadWriteOnce and the journal has exactly one writer, so
+    # the chart rolls with `Recreate` and two Pods can never run at once. Two
+    # is therefore not surge headroom: it is the slot a terminating Pod still
+    # occupies in quota accounting while its replacement is created, plus one
+    # operator debug Pod. A ceiling of one reproduces #198 — a Pod stuck
+    # Terminating would block its own replacement against quota with no retry
+    # able to recover it.
+    pods: "2"
+    # Every quantity is the Pod ceiling times the reviewed per-Pod envelope
+    # stated in the obsync HelmRelease that `snaraj/platform-k8s-infra`
+    # composes; this repository owns the budget, that one owns the Pod the
+    # budget pays for, and the audit hash above binds them. Raising `pods` alone
+    # would be cosmetic: a ceiling equal to one Pod's limits cannot admit the
+    # second Pod whatever `pods` says.
+    requests.cpu: 200m
+    requests.memory: 128Mi
+    limits.cpu: 4000m
+    limits.memory: 2Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: obsidian
+spec:
+  limits:
+    - default:
+        cpu: "2"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 64Mi
+      type: Container
