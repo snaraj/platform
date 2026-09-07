@@ -107,14 +107,23 @@ require current operational evidence.
 
 ## Workloads
 
-| Workload | Application source |
-| --- | --- |
-| [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) |
-| [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) |
+| Workload | Application source | State |
+| --- | --- | --- |
+| [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) | reconciled from a signed chart digest |
+| [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) | reconciled from a signed chart digest |
+| obsidian (obsync) | [snaraj/obsync](https://github.com/snaraj/obsync) | onboarded, not deployed |
 
 Selected chart digests and their acquisition evidence live in the application
 composition. Application repositories own each workload's image, chart and
 signed release history.
+
+The third row is deliberately not a link and deliberately not "deployed": the
+`obsidian` namespace, its budget, its reconciler and its chart source exist in
+desired state, but that source carries the fail-closed placeholder digest until
+snaraj/obsync publishes v0.1.0, its release is suspended, and its Tunnel,
+Secrets and volumes are owner ceremonies that have not run.
+[docs/design/obsidian-onboarding.md](docs/design/obsidian-onboarding.md) is the
+reviewable proposal for the parts this repository does not carry.
 
 ## Repository layout
 
