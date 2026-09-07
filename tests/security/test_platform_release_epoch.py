@@ -1,6 +1,7 @@
 """Guard the one terminal-v2 to selector-free v3 release edge."""
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +116,49 @@ class PlatformReleaseEpochTests(unittest.TestCase):
             record.write_text(json.dumps({"full_name": "snaraj/platform", "id": EPOCH.REPOSITORY_ID + 1}))
             with mock.patch("sys.argv", args):
                 self.assertEqual(EPOCH.main(), 1)
+
+    def test_identity_release_record_cli_requires_selector_only_before_v3(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            release = folder / "release.json"
+            identity = folder / "identity.json"
+            bundle = folder / "bundle.json"
+            release.write_text("{}", encoding="utf-8")
+            identity.write_text("{}", encoding="utf-8")
+            bundle.write_text("{}", encoding="utf-8")
+            for command in ("identity-release-record", "staged-identity-release-record"):
+                for tag in ("v0.1.78", "v0.1.79"):
+                    args = [
+                        "contract", command,
+                        "--release-json", str(release),
+                        "--identity", str(identity),
+                        "--bundle", str(bundle),
+                        "--tag", tag,
+                        "--source-sha", SOURCE,
+                    ]
+                    with (
+                        self.subTest(command=command, tag=tag),
+                        mock.patch.object(sys, "argv", args),
+                        mock.patch.object(CONTRACT, "validate_identity_release_record") as validate,
+                    ):
+                        self.assertEqual(CONTRACT.main(), 0)
+                        self.assertIsNone(validate.call_args.kwargs["selector_build_sha"])
+
+                historical = [
+                    "contract", command,
+                    "--release-json", str(release),
+                    "--identity", str(identity),
+                    "--bundle", str(bundle),
+                    "--tag", "v0.1.77",
+                    "--source-sha", SOURCE,
+                ]
+                with (
+                    self.subTest(command=command, tag="v0.1.77"),
+                    mock.patch.object(sys, "argv", historical),
+                    mock.patch.object(CONTRACT, "validate_identity_release_record") as validate,
+                ):
+                    self.assertEqual(CONTRACT.main(), 1)
+                    validate.assert_not_called()
 
 
 if __name__ == "__main__":

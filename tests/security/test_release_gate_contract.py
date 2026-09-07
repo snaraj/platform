@@ -1469,11 +1469,23 @@ class ReleaseGateContractTests(unittest.TestCase):
             for item in roots:
                 item.mkdir(parents=True)
                 (item / "safe.yaml").write_text("kind: ConfigMap\n", encoding="utf-8")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            rg = bin_dir / "rg"
+            rg.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[[ $# -eq 8 && $1 == -n && $2 == --glob && $4 == --glob ]] || exit 2\n"
+                "exec grep -R -n -E --include=\"$3\" --include=\"$5\" -- \"$6\" \"$7\" \"$8\"\n",
+                encoding="utf-8",
+            )
+            rg.chmod(0o755)
             harness = "\n".join((
                 "set -euo pipefail",
                 "die() { printf '%s\\n' \"$*\" >&2; exit 1; }",
                 "log() { :; }",
                 f"REPO_ROOT={shlex.quote(str(root))}",
+                f"PATH={shlex.quote(str(bin_dir))}:/usr/bin:/bin",
                 self.storage_disabled,
                 "assert_storage_disabled",
             ))

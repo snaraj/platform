@@ -3180,7 +3180,7 @@ def _parser() -> argparse.ArgumentParser:
     identity_release_record.add_argument("--bundle", type=Path, required=True)
     identity_release_record.add_argument("--tag", required=True)
     identity_release_record.add_argument("--source-sha", required=True)
-    identity_release_record.add_argument("--selector-build-sha", required=True)
+    identity_release_record.add_argument("--selector-build-sha")
     identity_release_record.add_argument("--tag-object-sha")
     identity_release_record.add_argument("--source-tree-sha")
     staged_identity_record = commands.add_parser("staged-identity-release-record")
@@ -3189,7 +3189,7 @@ def _parser() -> argparse.ArgumentParser:
     staged_identity_record.add_argument("--bundle", type=Path, required=True)
     staged_identity_record.add_argument("--tag", required=True)
     staged_identity_record.add_argument("--source-sha", required=True)
-    staged_identity_record.add_argument("--selector-build-sha", required=True)
+    staged_identity_record.add_argument("--selector-build-sha")
     staged_identity_record.add_argument("--tag-object-sha")
     staged_identity_record.add_argument("--source-tree-sha")
     selector_image = commands.add_parser("selector-image-from-release")
@@ -3436,6 +3436,14 @@ def main(argv: list[str] | None = None) -> int:
             "identity-release-record",
             "staged-identity-release-record",
         }:
+            try:
+                identity_version = EPOCH.identity(args.tag)["version"]
+            except (KeyError, TypeError, ValueError) as error:
+                raise ContractError("release identity tag is malformed") from error
+            if identity_version < 3 and args.selector_build_sha is None:
+                raise ContractError(
+                    "historical selector identity requires its build source SHA"
+                )
             validate_identity_release_record(
                 _read_object(args.release_json),
                 identity=args.identity.read_bytes(),
