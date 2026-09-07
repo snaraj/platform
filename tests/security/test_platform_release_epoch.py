@@ -87,6 +87,10 @@ class PlatformReleaseEpochTests(unittest.TestCase):
             "tag": EPOCH.TERMINAL_V2_TAG,
             "peeled_commit": EPOCH.TERMINAL_V2_SOURCE,
         })
+        EPOCH.validate_identity(rendered)
+        rendered["repository_id"] = EPOCH.REPOSITORY_ID + 1
+        with self.assertRaises(ValueError):
+            EPOCH.validate_identity(rendered)
 
     def test_current_workflow_and_publisher_have_no_selector_build_surface(self):
         workflow = (ROOT / ".github/workflows/platform-release.yml").read_text()

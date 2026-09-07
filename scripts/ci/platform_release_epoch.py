@@ -107,7 +107,7 @@ def validate_identity(evidence: dict) -> None:
     selected = identity(tag)
     if (evidence.get("schema"), evidence.get("repository")) != (selected["schema"], selected["repository"]):
         raise ValueError("signed repository and release epoch disagree")
-    if selected["version"] == 2:
+    if selected["version"] >= 2:
         repository(evidence["repository"], evidence.get("repository_id"))
     predecessor = evidence["predecessor"]
     if next_tag(predecessor["tag"]) != tag:

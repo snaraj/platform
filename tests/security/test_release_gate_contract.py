@@ -1,6 +1,7 @@
 import json
 import copy
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,9 @@ class ReleaseGateContractTests(unittest.TestCase):
         cls.script = RELEASE_GATE.read_text(encoding="utf-8")
         cls.clean_commit = function_body(
             cls.script, "assert_clean_commit", "assert_storage_disabled"
+        )
+        cls.storage_disabled = function_body(
+            cls.script, "assert_storage_disabled", "assert_capacity_evidence"
         )
         live_start = cls.script.index("run_live_gate() {")
         live_end = cls.script.index('\ncase "${1:---check}" in', live_start)
@@ -1454,6 +1458,30 @@ class ReleaseGateContractTests(unittest.TestCase):
                 timeout=10,
             )
             self.assertNotEqual(result.returncode, 0)
+
+    def test_storage_gate_executes_against_only_retained_platform_roots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roots = (
+                root / "kubernetes/platform/prerequisites",
+                root / "kubernetes/platform/cloudflare-public/chart",
+            )
+            for item in roots:
+                item.mkdir(parents=True)
+                (item / "safe.yaml").write_text("kind: ConfigMap\n", encoding="utf-8")
+            harness = "\n".join((
+                "set -euo pipefail",
+                "die() { printf '%s\\n' \"$*\" >&2; exit 1; }",
+                "log() { :; }",
+                f"REPO_ROOT={shlex.quote(str(root))}",
+                self.storage_disabled,
+                "assert_storage_disabled",
+            ))
+            accepted = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            (roots[1] / "unsafe.yaml").write_text("hostPath:\n  path: /tmp\n", encoding="utf-8")
+            rejected = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
 
 
 if __name__ == "__main__":
