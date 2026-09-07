@@ -27,7 +27,7 @@
     "connectors": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["naranjo-online", "lidersea-com"],
+      "required": ["naranjo-online", "lidersea-com", "obsync"],
       "properties": {
         "naranjo-online": {
           "type": "object",
@@ -81,6 +81,34 @@
                   "properties": {"app.kubernetes.io/name": {"type": "string", "const": "lidersea-com"}}
                 },
                 "port": {"type": "integer", "const": 8080}
+              }
+            }
+          }
+        },
+        "obsync": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["instance", "secretName", "tokenRevision", "origin"],
+          "properties": {
+            "instance": {"type": "string", "const": "obsync-tunnel"},
+            "secretName": {"type": "string", "const": "obsync-tunnel-token"},
+            "tokenRevision": {
+              "type": "string",
+              "pattern": "^(?:not-configured|UNRESOLVED|rev-[a-z0-9][a-z0-9._-]{0,62})$"
+            },
+            "origin": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["namespace", "podLabels", "port"],
+              "properties": {
+                "namespace": {"type": "string", "const": "obsidian"},
+                "podLabels": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["app.kubernetes.io/name"],
+                  "properties": {"app.kubernetes.io/name": {"type": "string", "const": "obsync-tls-proxy"}}
+                },
+                "port": {"type": "integer", "const": 8443}
               }
             }
           }

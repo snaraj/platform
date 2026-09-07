@@ -1,0 +1,13 @@
+# The exact denial each document in obsync-identity-bypasses.yaml must produce.
+# scripts/test-policy-fixtures.sh compares this whole set: a message that
+# disappears is a weakened rule, a message that appears is an unreviewed
+# denial. File-level rejection alone hides both. Seven documents, seven
+# denials, one arm each — so neutering any single arm turns this red rather
+# than leaving the file "rejected" by the other six.
+NetworkPolicy cloudflare-public/cloudflared-obsidian is outside the exact DNS, edge, and site egress allowlist
+NetworkPolicy cloudflare-public/cloudflared-obsidian is outside the exact DNS, edge, and site egress allowlist
+OCIRepository obsidian/obsync-chart must select the exact reviewed immutable chart digest
+OCIRepository obsidian/obsync-chart must verify chart signatures against this site's exact keyless publisher identity
+OCIRepository obsidian/obsync-chart must pull the canonical published chart repository
+ResourceQuota obsidian/namespace-budget must be either the exact zero-Pod gate or a hash-bound reviewed namespace budget
+container obsync must use the canonical image repository for namespace obsidian

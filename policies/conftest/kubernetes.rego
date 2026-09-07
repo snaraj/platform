@@ -4,9 +4,9 @@ import rego.v1
 
 workload_kinds := {"Pod", "Deployment", "ReplicaSet", "DaemonSet", "StatefulSet", "Job", "CronJob"}
 
-tenant_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com"}
+tenant_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian"}
 
-restricted_role_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com"}
+restricted_role_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian"}
 
 # Every private, loopback, link-local, carrier-grade-NAT, multicast, and
 # reserved block that a "public destinations only" egress rule must exclude.
@@ -24,6 +24,32 @@ private_and_reserved_ranges := {
 }
 
 site_namespaces := {"naranjo-online", "lidersea-com"}
+
+# Every namespace that reconciles a published, cosign-verified OCI chart under
+# `kubernetes/websites/`. Wider than site_namespaces above, which stays exactly
+# the two WEBSITES: their charts render an identical Deployment, ingress policy
+# name, ServiceAccount name and tmp volume, and those shape rules would be
+# wrong — not merely wider — applied to a different application. What every
+# member of this set does share is the chart-SOURCE contract: canonical
+# OCIRepository identity, published chart repository, exact immutable digest,
+# audit-only release annotation, keyless publisher verification and chart layer
+# media type.
+chart_source_namespaces := site_namespaces | {"obsidian"}
+
+# Workloads whose reviewed chart selection is not yet a resolvable digest,
+# because the publishing repository has not cut its first release. The all-zero
+# digest is a fail-closed SENTINEL, not a relaxation: source-controller
+# produces no artifact for it, so nothing deploys, and the digest rule below
+# requires EXACTLY that value for a pending namespace. A real digest can
+# therefore only appear in the same reviewed change that removes the namespace
+# from this set and records its (tag, digest) pair — the opposite of a gap a
+# selection could drift through.
+pending_chart_namespaces := {"obsidian"}
+
+# The namespaces a reviewed hash-bound namespace budget is required for. The
+# quota map is per namespace (see reviewed_namespace_capacity): the sites share
+# one measured envelope, obsync pays for a much larger single stateful Pod.
+budgeted_namespaces := chart_source_namespaces
 
 gateway_kinds := {
   "GatewayClass",
@@ -165,21 +191,32 @@ containers := array.concat(
 approved_kustomization_accounts := {
   "naranjo-online-reconciler": "naranjo-online-reconciler",
   "lidersea-com-reconciler": "lidersea-com-reconciler",
+  "obsync-reconciler": "obsync-reconciler",
 }
 
 approved_kustomization_paths := {
   "naranjo-online-reconciler": "./kubernetes/websites/naranjo-online",
   "lidersea-com-reconciler": "./kubernetes/websites/lidersea-com",
+  "obsync-reconciler": "./kubernetes/websites/obsync",
 }
 
 approved_kustomization_dependencies := {
   "naranjo-online-reconciler": set(),
   "lidersea-com-reconciler": set(),
+  "obsync-reconciler": set(),
 }
 
+# The ServiceAccount each namespace's workload Pods may run as. Each chart
+# names its account for itself, which equals the namespace for the two sites
+# because those charts are named for their domains. It does not for `obsidian`:
+# that namespace is the owner's, and may later hold other Obsidian-related
+# workloads, while the account belongs to the obsync APPLICATION. A table
+# rather than a derivation for exactly that reason — a second workload in the
+# same namespace states its own row rather than inheriting this one.
 site_workload_accounts := {
   "naranjo-online": "naranjo-online",
   "lidersea-com": "lidersea-com",
+  "obsidian": "obsync",
 }
 
 # Only the connector release still resolves its chart from a Git source; both
@@ -203,11 +240,13 @@ git_chart_namespaces := {"cloudflare-public"}
 site_chart_sources := {
   "naranjo-online": "naranjo-online-chart",
   "lidersea-com": "lidersea-com-chart",
+  "obsidian": "obsync-chart",
 }
 
 site_chart_urls := {
   "naranjo-online": "oci://ghcr.io/snaraj/charts/naranjo-online",
   "lidersea-com": "oci://ghcr.io/snaraj/charts/lidersea-com",
+  "obsidian": "oci://ghcr.io/snaraj/charts/obsync",
 }
 
 # The audit tag is paired with the immutable manifest digest Flux consumes.
@@ -220,6 +259,13 @@ site_chart_releases := {
   "lidersea-com": {
     "tag": "0.1.42",
     "digest": "sha256:5a944c4602cd1b1df8b6613bc2daa037dcc00b2616402de33e5eece1edd8cdf7",
+  },
+  # Pending (see pending_chart_namespaces): snaraj/obsync has not published
+  # v0.1.0, so the reviewed selection is the all-zero fail-closed sentinel and
+  # the digest rule below requires exactly it.
+  "obsidian": {
+    "tag": "0.1.0",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   },
 }
 
@@ -240,6 +286,10 @@ site_chart_identities := {
   "lidersea-com": {
     "issuer": `^https://token\.actions\.githubusercontent\.com$`,
     "subject": `^https://github\.com/snaraj/lidersea\.com/\.github/workflows/release-publisher\.yml@refs/heads/main$`,
+  },
+  "obsidian": {
+    "issuer": `^https://token\.actions\.githubusercontent\.com$`,
+    "subject": `^https://github\.com/snaraj/obsync/\.github/workflows/release-publisher\.yml@refs/heads/main$`,
   },
 }
 
@@ -344,6 +394,36 @@ valid_public_dns_rule(rule) if {
   }
 }
 
+# The `app.kubernetes.io/name` label each connector's ORIGIN carries. For the
+# two websites the origin IS the application Pod, and the label equals the
+# namespace because those charts are named for their domains.
+#
+# For `obsync` the origin is deliberately NOT the application. The obsync
+# server speaks plain HTTP, and a connector-matching rule on the app would
+# grant the connector direct access to that plain listener; the reviewed design
+# instead terminates TLS in-cluster in a dedicated proxy workload, so the only
+# admitted edges are connector -> proxy (TLS) and proxy -> app (HTTP), and NO
+# contributing policy allows connector -> app. The proxy's real identity
+# arrives with the security lane's own reviewed deployment change; until then
+# this is a DECLARED PLACEHOLDER that no Pod in the cluster carries, so the
+# egress leg matches nothing and the path fails closed rather than reading
+# closed while admitting the connector.
+origin_app_labels := {
+  "naranjo-online": "naranjo-online",
+  "lidersea-com": "lidersea-com",
+  "obsidian": "obsync-tls-proxy",
+}
+
+# The port each origin listens on, per namespace for the same reason the label
+# is: the sites' origin is the application's plain HTTP port, obsync's is the
+# proxy's TLS port. One shared literal would have forced the TLS leg onto the
+# application's HTTP port or the application's onto a TLS one.
+origin_ports := {
+  "naranjo-online": 8080,
+  "lidersea-com": 8080,
+  "obsidian": 8443,
+}
+
 valid_public_site_rule(rule) if {
   peers := object.get(rule, "to", [])
   count(peers) == 1
@@ -353,16 +433,16 @@ valid_public_site_rule(rule) if {
     "kubernetes.io/metadata.name",
     "",
   )
-  namespace in site_namespaces
+  namespace in chart_source_namespaces
   peer == {
     "namespaceSelector": {
       "matchLabels": {"kubernetes.io/metadata.name": namespace},
     },
     "podSelector": {
-      "matchLabels": {"app.kubernetes.io/name": namespace},
+      "matchLabels": {"app.kubernetes.io/name": origin_app_labels[namespace]},
     },
   }
-  object.get(rule, "ports", []) == [{"port": 8080, "protocol": "TCP"}]
+  object.get(rule, "ports", []) == [{"port": origin_ports[namespace], "protocol": "TCP"}]
 }
 
 valid_public_edge_rule(rule) if {
@@ -421,8 +501,8 @@ valid_public_tunnel_policy if {
 valid_public_tunnel_policy if {
   valid_public_policy_envelope
   namespace := trim_prefix(input.metadata.name, "cloudflared-")
-  namespace in site_namespaces
-  valid_public_connector_selector(sprintf("%s-tunnel", [namespace]))
+  namespace in chart_source_namespaces
+  valid_public_connector_selector(connector_instances[namespace])
   valid_public_site_rule(input.spec.egress[0])
   target := input.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
   target == namespace
@@ -525,18 +605,53 @@ valid_zero_capacity_quota if {
   object.get(input.spec, "hard", {}) == {"pods": "0"}
 }
 
+# ONE reviewed budget per namespace, each bound to the exact bytes of its OWN
+# evidence document. The two sites share theirs because they run the identical
+# measured workload (issue #201); obsync runs one stateful single-writer Pod
+# whose per-Pod limit is ten times the site figure, so one shared map could not
+# have stated both honestly (issue #348). Each entry is still an exact
+# five-value map plus an exact document hash, and a namespace absent from this
+# table has no admissible budget at all.
+reviewed_namespace_capacity := {
+  "naranjo-online": {
+    "evidence": "955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34",
+    "hard": {
+      "pods": "6",
+      "requests.cpu": "150m",
+      "requests.memory": "192Mi",
+      "limits.cpu": "1200m",
+      "limits.memory": "768Mi",
+    },
+  },
+  "lidersea-com": {
+    "evidence": "955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34",
+    "hard": {
+      "pods": "6",
+      "requests.cpu": "150m",
+      "requests.memory": "192Mi",
+      "limits.cpu": "1200m",
+      "limits.memory": "768Mi",
+    },
+  },
+  "obsidian": {
+    "evidence": "33e2aab63f9c4c8d7d01f393588fa92aa035015711a24ae167325c05353a464f",
+    "hard": {
+      "pods": "2",
+      "requests.cpu": "200m",
+      "requests.memory": "128Mi",
+      "limits.cpu": "4000m",
+      "limits.memory": "2Gi",
+    },
+  },
+}
+
 valid_reviewed_capacity_quota if {
   input.metadata.name == "namespace-budget"
+  reviewed := reviewed_namespace_capacity[input.metadata.namespace]
   annotations := object.get(input.metadata, "annotations", {})
   object.get(annotations, "platform.snaraj.dev/readiness", "") == "reviewed-pi-capacity"
-  object.get(annotations, "platform.snaraj.dev/capacity-evidence-sha256", "") == "955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34"
-  object.get(input.spec, "hard", {}) == {
-    "pods": "6",
-    "requests.cpu": "150m",
-    "requests.memory": "192Mi",
-    "limits.cpu": "1200m",
-    "limits.memory": "768Mi",
-  }
+  object.get(annotations, "platform.snaraj.dev/capacity-evidence-sha256", "") == reviewed.evidence
+  object.get(input.spec, "hard", {}) == reviewed.hard
 }
 
 valid_tenant_volume(namespace, volume) if {
@@ -559,7 +674,7 @@ valid_tenant_volume(namespace, volume) if {
 # pi-websites-tunnel-token matches no connector instance and is denied.
 valid_tenant_volume(namespace, volume) if {
   namespace == "cloudflare-public"
-  connector_instance in {"naranjo-online-tunnel", "lidersea-com-tunnel"}
+  connector_instance in connector_deployments
   volume == {
     "name": "tunnel-token",
     "secret": {
@@ -570,8 +685,24 @@ valid_tenant_volume(namespace, volume) if {
   }
 }
 
-# The reviewed connector Deployment inventory (ADR 0015): one per website.
-connector_deployments := {"naranjo-online-tunnel", "lidersea-com-tunnel"}
+# The connector instance serving each namespace. It is `<namespace>-tunnel` for
+# the two sites, whose namespace and application are the same word; it is NOT
+# for `obsidian`, whose namespace is the owner's and whose connector belongs to
+# the obsync APPLICATION inside it. Stated per namespace so a second workload
+# later admitted to that namespace brings its own connector row rather than
+# colliding with this one.
+connector_instances := {
+  "naranjo-online": "naranjo-online-tunnel",
+  "lidersea-com": "lidersea-com-tunnel",
+  "obsidian": "obsync-tunnel",
+}
+
+# The reviewed connector Deployment inventory (ADR 0015 and its 2026-09-07
+# revision): one per published workload, never a shared one.
+connector_deployments := {instance |
+  some namespace in chart_source_namespaces
+  instance := connector_instances[namespace]
+}
 
 public_connector_deployment if {
   input.kind == "Deployment"
@@ -741,9 +872,15 @@ valid_helm_readback_rule(rule) if {
   rule == {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
 }
 
-valid_naranjo_pvc_rule(rule) if {
+# The namespaces whose Helm chart creates its own claims: naranjo-online's
+# usage-export pair (issue #211) and obsync's blobs/journal pair (issue #348).
+# Claim lifecycle confers NO authority over the backing PersistentVolume,
+# StorageClass, node path or provisioner, which stay bootstrap/operator owned.
+claim_lifecycle_namespaces := {"naranjo-online", "obsidian"}
+
+valid_claim_lifecycle_rule(rule) if {
   input.metadata.name == "helm-reconciler"
-  input.metadata.namespace == "naranjo-online"
+  input.metadata.namespace in claim_lifecycle_namespaces
   rule == {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]}
 }
 
@@ -751,8 +888,8 @@ deny contains msg if {
   input.kind == "Role"
   some rule in object.get(input, "rules", [])
   "persistentvolumeclaims" in object.get(rule, "resources", [])
-  not valid_naranjo_pvc_rule(rule)
-  msg := sprintf("Role %s/%s must grant PVC lifecycle only as the exact naranjo-online helm-reconciler rule", [input.metadata.namespace, input.metadata.name])
+  not valid_claim_lifecycle_rule(rule)
+  msg := sprintf("Role %s/%s must grant PVC lifecycle only as the exact helm-reconciler rule in a claim-owning namespace", [input.metadata.namespace, input.metadata.name])
 }
 
 deny contains msg if {
@@ -966,13 +1103,13 @@ deny contains msg if {
 # verification at all, so the kind itself is denied there.
 deny contains msg if {
   input.kind == "GitRepository"
-  input.metadata.namespace in site_namespaces
-  msg := sprintf("GitRepository %s/%s is forbidden; site charts arrive as cosign-verified OCI artifacts", [input.metadata.namespace, input.metadata.name])
+  input.metadata.namespace in chart_source_namespaces
+  msg := sprintf("GitRepository %s/%s is forbidden; workload charts arrive as cosign-verified OCI artifacts", [input.metadata.namespace, input.metadata.name])
 }
 
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   expected_name := site_chart_sources[input.metadata.namespace]
   input.metadata.name != expected_name
   msg := sprintf("OCIRepository %s/%s must use canonical identity %s", [input.metadata.namespace, input.metadata.name, expected_name])
@@ -980,13 +1117,13 @@ deny contains msg if {
 
 deny contains msg if {
   input.kind == "OCIRepository"
-  not input.metadata.namespace in site_namespaces
+  not input.metadata.namespace in chart_source_namespaces
   msg := sprintf("OCIRepository %s/%s is outside the exact chart-source identity allowlist", [input.metadata.namespace, input.metadata.name])
 }
 
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(input.spec, "url", "") != site_chart_urls[input.metadata.namespace]
   msg := sprintf("OCIRepository %s/%s must pull the canonical published chart repository", [input.metadata.namespace, input.metadata.name])
 }
@@ -995,14 +1132,14 @@ deny contains msg if {
 # deletion, or replacement cannot change what Flux pulls.
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(input.spec, "ref", {}) != {"digest": site_chart_releases[input.metadata.namespace].digest}
   msg := sprintf("OCIRepository %s/%s must select the exact reviewed immutable chart digest", [input.metadata.namespace, input.metadata.name])
 }
 
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(object.get(input.metadata, "annotations", {}), "platform.snaraj.dev/chart-release", "") != site_chart_releases[input.metadata.namespace].tag
   msg := sprintf("OCIRepository %s/%s must carry the reviewed audit-only chart release annotation", [input.metadata.namespace, input.metadata.name])
 }
@@ -1012,14 +1149,14 @@ deny contains msg if {
 # becomes an artifact.
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   not valid_site_chart_verification(input.metadata.namespace)
   msg := sprintf("OCIRepository %s/%s must verify chart signatures against this site's exact keyless publisher identity", [input.metadata.namespace, input.metadata.name])
 }
 
 deny contains msg if {
   input.kind == "OCIRepository"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(object.get(input.spec, "layerSelector", {}), "mediaType", "") != site_chart_layer_media_type
   msg := sprintf("OCIRepository %s/%s must extract only the Helm chart layer media type", [input.metadata.namespace, input.metadata.name])
 }
@@ -1249,7 +1386,7 @@ deny contains msg if {
 deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(input.spec, "chart", null) != null
   msg := sprintf("HelmRelease %s/%s must not carry an inline chart; site charts arrive as published OCI artifacts", [input.metadata.namespace, input.metadata.name])
 }
@@ -1257,7 +1394,7 @@ deny contains msg if {
 deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(object.get(input.spec, "chartRef", {}), "kind", "") != "OCIRepository"
   msg := sprintf("HelmRelease %s/%s must resolve its chart through an OCIRepository chartRef", [input.metadata.namespace, input.metadata.name])
 }
@@ -1265,7 +1402,7 @@ deny contains msg if {
 deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   expected_name := site_chart_sources[input.metadata.namespace]
   object.get(object.get(input.spec, "chartRef", {}), "name", "") != expected_name
   msg := sprintf("HelmRelease %s/%s must use chart source %s", [input.metadata.namespace, input.metadata.name, expected_name])
@@ -1277,7 +1414,7 @@ deny contains msg if {
 deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in chart_source_namespaces
   object.get(object.get(input.spec, "chartRef", {}), "namespace", input.metadata.namespace) != input.metadata.namespace
   msg := sprintf("HelmRelease %s/%s must not reference a cross-namespace chart source", [input.metadata.namespace, input.metadata.name])
 }
@@ -1717,8 +1854,8 @@ deny contains msg if {
   msg := sprintf("%s %s/%s declares a non-list volumes field", [input.kind, input.metadata.namespace, input.metadata.name])
 }
 
-# Only the two reviewed connector Deployments may exist in cloudflare-public,
-# so an invented third connector cannot claim a site's identity.
+# Only the reviewed connector Deployments may exist in cloudflare-public, so an
+# invented extra connector cannot claim a workload's identity.
 deny contains msg if {
   public_connector_deployment
   not object.get(input.metadata, "name", "") in connector_deployments
@@ -1749,7 +1886,7 @@ deny contains msg if {
 
 deny contains msg if {
   input.kind == "ResourceQuota"
-  input.metadata.namespace in site_namespaces
+  input.metadata.namespace in budgeted_namespaces
   not valid_zero_capacity_quota
   not valid_reviewed_capacity_quota
   msg := sprintf("ResourceQuota %s/%s must be either the exact zero-Pod gate or a hash-bound reviewed namespace budget", [input.metadata.namespace, input.metadata.name])
@@ -1836,6 +1973,7 @@ deny contains msg if {
   expected_repository := {
     "naranjo-online": "ghcr[.]io/snaraj/naranjo-online(:v[0-9]+[.][0-9]+[.][0-9]+)?",
     "lidersea-com": "ghcr[.]io/snaraj/lidersea-com(:v[0-9]+[.][0-9]+[.][0-9]+)?",
+    "obsidian": "ghcr[.]io/snaraj/obsync(:v[0-9]+[.][0-9]+[.][0-9]+)?",
     "cloudflare-public": "cloudflare/cloudflared:[A-Za-z0-9._-]+",
   }[namespace]
   some container in containers
@@ -1982,7 +2120,7 @@ deny contains msg if {
 flux_aggregation_roles := {"flux-edit-flux-system", "flux-view-flux-system"}
 
 # Namespaces whose Roles are part of the Flux authorization surface.
-flux_rbac_namespaces := {"flux-system", "cloudflare-public", "naranjo-online", "lidersea-com"}
+flux_rbac_namespaces := {"flux-system", "cloudflare-public"} | chart_source_namespaces
 
 rbac_binding_kinds := {"RoleBinding", "ClusterRoleBinding"}
 

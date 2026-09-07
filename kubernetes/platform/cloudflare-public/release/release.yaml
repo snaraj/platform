@@ -42,3 +42,5 @@ spec:
         tokenRevision: not-configured
       lidersea-com:
         tokenRevision: not-configured
+      obsync:
+        tokenRevision: not-configured

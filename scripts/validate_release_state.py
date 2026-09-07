@@ -22,10 +22,17 @@ SCALAR_RE = re.compile(r"[A-Za-z0-9./][A-Za-z0-9_./:@+-]*\Z")
 TOKEN_REVISION_RE = re.compile(
     r"(?:not-configured|UNRESOLVED|rev-[a-z0-9][a-z0-9._-]{0,62})\Z"
 )
-# One public connector per website (ADR 0015), each with its OWN rotation
-# revision so one Tunnel rotates without disturbing the other. The order is the
-# canonical order of the release values block.
-PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com")
+# One public connector per PUBLISHED WORKLOAD (ADR 0015 and its 2026-09-07
+# revision), each with its OWN rotation revision so one Tunnel rotates without
+# disturbing the others. The order is the canonical order of the release values
+# block. The name is historical: `obsync` is a workload rather than a
+# website, and the per-connector independence this list expresses is the same.
+#
+# The connector this repository builds is the cluster end of the Tunnel; the
+# origin it reaches is composed in `snaraj/platform-k8s-infra`. Adding a row
+# here creates the connector, its Secret name and its egress leg, and nothing
+# about the workload behind it.
+PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com", "obsync")
 MAX_RELEASE_YAML_BYTES = 65536
 
 RELEASE_CONTRACTS = {

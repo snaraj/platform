@@ -61,6 +61,34 @@ connectors:
       podLabels:
         app.kubernetes.io/name: lidersea-com
       port: 8080
+  obsync:
+    instance: obsync-tunnel
+    secretName: obsync-tunnel-token
+    tokenRevision: not-configured
+    origin:
+      namespace: obsidian
+      # NOT the application, and that is the whole point of this entry.
+      #
+      # The obsync server speaks plain HTTP. A connector-matching rule on the
+      # application would hand this connector direct access to that plain
+      # listener, which is exactly the edge the reviewed design refuses: TLS
+      # terminates in-cluster, in a DEDICATED PROXY WORKLOAD (a separate
+      # platform workload, never a sidecar), so the only admitted edges are
+      # connector -> proxy on the TLS port below and proxy -> application on
+      # the application's HTTP port. No contributing policy allows
+      # connector -> application.
+      #
+      # PENDING IDENTITY. The proxy's exact labels and port arrive with the
+      # security lane's own reviewed deployment change and replace the three
+      # values below in that same change. Until then these are a declared
+      # placeholder that no Pod in this cluster carries, so this egress leg
+      # selects nothing and the path fails CLOSED. That is deliberate: an
+      # absent matching proxy is a route that does not work, whereas naming
+      # the connector-to-application edge "temporarily" would be a route that
+      # works and should not.
+      podLabels:
+        app.kubernetes.io/name: obsync-tls-proxy
+      port: 8443
 
 resources:
   requests:

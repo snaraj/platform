@@ -1,0 +1,63 @@
+# The exact substitution the obsync transport design exists to refuse
+# (issue #348): the obsync connector's egress leg aimed at the APPLICATION
+# instead of at the in-cluster TLS proxy.
+#
+# This is the shape a reviewer would most plausibly wave through, because it
+# is what the two sites legitimately do and what an earlier draft of this
+# onboarding wrote. It must be denied here, because the obsync server speaks
+# plain HTTP: a connector-matching rule on the application hands the connector
+# direct access to that plain listener, and the reviewed design admits only
+# connector -> proxy (TLS) and proxy -> application (HTTP).
+#
+# Both documents below are the same substitution at the two places it can be
+# made — the origin's app label and the origin's port — so neither half of the
+# proxy identity can be relaxed alone while the other still reads correct.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: obsync-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: obsidian
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: obsync
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# The proxy is named correctly, but the port is the application's plain HTTP
+# port rather than the proxy's TLS port. A policy that reads "reaches the
+# proxy" while opening the cleartext port is exactly the half-correct rule the
+# per-namespace origin port pins against.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: obsync-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: obsidian
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: obsync-tls-proxy
+      ports:
+        - port: 8080
+          protocol: TCP
