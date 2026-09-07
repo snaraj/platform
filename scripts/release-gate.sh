@@ -116,13 +116,11 @@ assert_clean_commit() {
 }
 
 assert_storage_disabled() {
-  # Site chart values now live (and prove media stays disabled) in each
-  # standalone site repository; the platform-side proof is the media flag
-  # check on kubernetes/websites/*/release.yaml in validate_repository.py.
+  # Application storage policy lives with application composition. This
+  # repository proves its remaining platform desired-state roots directly.
   local -a storage_roots=(
     "${REPO_ROOT}/kubernetes/platform/prerequisites"
     "${REPO_ROOT}/kubernetes/platform/cloudflare-public/chart"
-    "${REPO_ROOT}/kubernetes/websites"
   )
   local root
   for root in "${storage_roots[@]}"; do

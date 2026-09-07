@@ -141,11 +141,6 @@ jobs:
         # drifted to 5 of 34; git ls-files enrolls every tracked
         # scripts/**/*.py automatically and the count floor refuses a sweep
         # that silently matches too little.
-        env:
-          SELECTOR_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SELECTOR_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          SELECTOR_PUSH_BASE_SHA: ${{ github.event.before }}
-          SELECTOR_PUSH_HEAD_SHA: ${{ github.event.after }}
         run: |
           set -euo pipefail
           git ls-files -z -- 'scripts/*.py' > "${RUNNER_TEMP}/python-script-list"
@@ -171,27 +166,6 @@ jobs:
           # below. Running the identical battery here doubled every PR's test
           # time without adding an independent oracle.
           python3 -B scripts/validate_repository.py all
-          selector_base=""
-          selector_head=""
-          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
-            selector_base="${SELECTOR_PR_BASE_SHA}"
-            selector_head="${SELECTOR_PR_HEAD_SHA}"
-          elif [ "${GITHUB_EVENT_NAME}" = push ]; then
-            selector_base="${SELECTOR_PUSH_BASE_SHA}"
-            selector_head="${SELECTOR_PUSH_HEAD_SHA}"
-          fi
-          if [ -n "${selector_base}" ] && [ -n "${selector_head}" ] && \
-             git diff --quiet "${selector_base}" "${selector_head}" -- \
-               cmd/platform-release-selector internal/releaseselector go.mod; then
-            printf 'Selector build inputs unchanged; skipping duplicate container build.\n'
-          else
-            selector_export="$(mktemp -d "${RUNNER_TEMP}/selector-rootfs.XXXXXX")"
-            selector_tar="${selector_export}/rootfs.tar"
-            docker build --network=none \
-            --output "type=tar,dest=${selector_tar}" \
-            --file cmd/platform-release-selector/Dockerfile .
-            python3 -I -B scripts/ci/validate_selector_rootfs.py "${selector_tar}"
-          fi
       - name: Enforce the self-hosted coverage contract
         # Zero-third-party coverage: the one hash-pinned wheel is installed
         # into a disposable venv outside the checkout, the suite runs once

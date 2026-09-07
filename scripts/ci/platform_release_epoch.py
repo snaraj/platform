@@ -16,6 +16,9 @@ CHECKPOINT_TAG = "v0.1.68"
 CHECKPOINT_SOURCE = "b4bf0ac19038b1bca43651b601a348f8a84e7163"
 FROZEN_SELECTOR_DIGEST = "sha256:c104c4b87f9932f08302fd30454605b3326794097cfbe5d4060db8f9cca5c003"
 FROZEN_SELECTOR_SOURCE = "ce8598a9f0b4eca52cff231ed94137926df13c08"
+TERMINAL_V2_TAG = "v0.1.77"
+TERMINAL_V2_SOURCE = "7b768d56a50f258ff893410c90e0cfd4401441c0"
+FIRST_V3_TAG = "v0.1.78"
 WORKFLOW = ".github/workflows/platform-release.yml@refs/heads/main"
 
 
@@ -67,13 +70,17 @@ def git_remote(url: str) -> str:
 
 
 def identity(tag: str) -> dict[str, object]:
-    epoch = 1 if version(tag) < version(FIRST_V2_TAG) else 2
+    epoch = (1 if version(tag) < version(FIRST_V2_TAG) else
+             2 if version(tag) < version(FIRST_V3_TAG) else 3)
     name = OLD_REPOSITORY if epoch == 1 else NEW_REPOSITORY
     asset = f"platform-release-identity.v{epoch}.json"
-    return {"repository": name, "schema": f"https://snaraj.dev/schemas/platform-release-identity/v{epoch}",
+    value = {"repository": name, "schema": f"https://snaraj.dev/schemas/platform-release-identity/v{epoch}",
             "asset": asset, "bundle": asset + ".sigstore.json",
-            "subject": f"https://github.com/{name}/{WORKFLOW}", "version": epoch,
-            "selector_digest": FROZEN_SELECTOR_DIGEST, "selector_source": FROZEN_SELECTOR_SOURCE}
+            "subject": f"https://github.com/{name}/{WORKFLOW}", "version": epoch}
+    if epoch < 3:
+        value.update(selector_digest=FROZEN_SELECTOR_DIGEST,
+                     selector_source=FROZEN_SELECTOR_SOURCE)
+    return value
 
 
 def publication(name: str, object_id: object, tag: str, base_tag: str, base_sha: str) -> dict[str, object]:
@@ -87,6 +94,8 @@ def publication(name: str, object_id: object, tag: str, base_tag: str, base_sha:
     if name == OLD_REPOSITORY:
         if (tag, base_tag, base_sha) != (TERMINAL_V1_TAG, CHECKPOINT_TAG, CHECKPOINT_SOURCE):
             raise ValueError("old-name publication is only the terminal v1 edge")
+    if tag == FIRST_V3_TAG and (base_tag, base_sha) != (TERMINAL_V2_TAG, TERMINAL_V2_SOURCE):
+        raise ValueError("first v3 publication has a foreign terminal-v2 predecessor")
     # The exact-next check and closed epoch boundary imply terminal-v1 ->
     # first-v2 and v2 -> v2. No second, redundant predecessor exception exists.
     return selected
@@ -98,14 +107,14 @@ def validate_identity(evidence: dict) -> None:
     selected = identity(tag)
     if (evidence.get("schema"), evidence.get("repository")) != (selected["schema"], selected["repository"]):
         raise ValueError("signed repository and release epoch disagree")
-    if selected["version"] == 2:
+    if selected["version"] >= 2:
         repository(evidence["repository"], evidence.get("repository_id"))
     predecessor = evidence["predecessor"]
     if next_tag(predecessor["tag"]) != tag:
         raise ValueError("signed release epoch has a foreign predecessor")
     if tag == TERMINAL_V1_TAG and predecessor != {"tag": CHECKPOINT_TAG, "peeled_commit": CHECKPOINT_SOURCE}:
         raise ValueError("terminal v1 identity has a foreign checkpoint")
-    if version(tag) >= version(TERMINAL_V1_TAG):
+    if selected["version"] < 3 and version(tag) >= version(TERMINAL_V1_TAG):
         selector = evidence["selector"]
         if (selector["digest"], selector["provenance"]["source_sha"]) != (FROZEN_SELECTOR_DIGEST, FROZEN_SELECTOR_SOURCE):
             raise ValueError("retired selector lineage changed")
@@ -160,16 +169,8 @@ def main() -> int:
             value = publication(args.repository, args.repository_id, args.tag, args.base_tag, args.base_sha)
         else:
             value = identity(args.tag)
-        if args.source_sha is not None:
-            if not publishing or re.fullmatch(r"[0-9a-f]{40}", args.source_sha) is None:
-                raise ValueError("selector source check requires an exact publication")
-            result = subprocess.run(
-                ["git", "diff", "--exit-code", FROZEN_SELECTOR_SOURCE, args.source_sha,
-                 "--", "cmd/platform-release-selector", "internal/releaseselector", "go.mod"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False,
-            )
-            if result.returncode != 0:
-                raise ValueError("frozen selector source changed or is unavailable")
+        if args.source_sha is not None and (not publishing or re.fullmatch(r"[0-9a-f]{40}", args.source_sha) is None):
+            raise ValueError("source check requires an exact publication")
         print(json.dumps(value, sort_keys=True))
         return 0
     except subprocess.SubprocessError:

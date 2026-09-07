@@ -1,10 +1,10 @@
-# Full Pi rebuild — Draft / unverified
+# Full Pi rebuild
 
 Follow `docs/runbooks/disaster-recovery.md`. Inventory/revalidate hardware first,
 keep Cloudflare public routing disabled, reinstall the exact compatible
 containerd and upstream Kubernetes components from verified artifacts, then
 restore rather than improvising state. Reconcile desired state only after
-etcd/PKI/API-encryption/age recovery and policy checks. Preserve old media
+etcd/PKI/API-encryption recovery and policy checks. Preserve old media
 read-only until the restore is accepted.
 
 The fresh cluster does not recover media merely because Git and etcd are

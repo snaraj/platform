@@ -155,12 +155,10 @@ jobs:
           tag="$(jq -er '.tag' <<<"${intent}")"
           test "${source_sha}" = "${COMPLETED_SHA}"
           test "${tag}" = "v${version}"
-          epoch="$(python3 -I -B scripts/ci/platform_release_epoch.py "${tag}" \
+          python3 -I -B scripts/ci/platform_release_epoch.py "${tag}" \
             --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
-            --base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${source_sha}")"
-          printf 'selector_digest=%s\nselector_source=%s\n' \
-            "$(jq -er '.selector_digest' <<<"${epoch}")" \
-            "$(jq -er '.selector_source' <<<"${epoch}")" >> "${GITHUB_OUTPUT}"
+            --base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${source_sha}" \
+            >/dev/null
           printf 'base_sha=%s\nbase_tag=%s\nsource_sha=%s\nversion=%s\ntag=%s\n' \
             "${base_sha}" "${base_tag}" "${source_sha}" "${version}" \
             "${tag}" >> "${GITHUB_OUTPUT}"
@@ -173,8 +171,6 @@ jobs:
           BASE_TAG: ${{ steps.release.outputs.base_tag }}
           MAIN_RUN_ID: ${{ github.event.workflow_run.id }}
           MAIN_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SELECTOR_IMAGE_DIGEST: ${{ steps.release.outputs.selector_digest }}
-          SELECTOR_BUILD_SHA: ${{ steps.release.outputs.selector_source }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |

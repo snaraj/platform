@@ -1,6 +1,7 @@
 import json
 import copy
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_GATE = REPO_ROOT / "scripts" / "release-gate.sh"
-GOTK_SYNC = REPO_ROOT / "kubernetes" / "flux-system" / "gotk-sync.yaml.in"
 FLUX_EVIDENCE_VALIDATOR = REPO_ROOT / "scripts" / "validate_flux_release_evidence.py"
 INVENTORY_VALIDATOR = REPO_ROOT / "scripts" / "validate_runtime_inventory_evidence.py"
 COMMIT = "a" * 40
@@ -28,10 +28,7 @@ CILIUM_OPERATOR_IMAGE = "quay.io/cilium/operator-generic:v1.0.0@sha256:" + "8" *
 CILIUM_IMAGE = "quay.io/cilium/cilium:v1.0.0@sha256:" + "9" * 64
 
 # Pinned as literal strings on purpose (issue #251): these are the exact
-# Kustomization names the synced tree creates in gotk-sync.yaml.in, NOT a
-# value derived from the validator under test, so inventory drift in either
-# the validator or this suite turns the suite red instead of staying
-# self-consistently green.
+# Exact Kustomization names in the installed application-reconciliation interface.
 KUSTOMIZATION_NAMES = (
     "naranjo-online-reconciler",
     "lidersea-com-reconciler",
@@ -168,6 +165,9 @@ class ReleaseGateContractTests(unittest.TestCase):
         cls.script = RELEASE_GATE.read_text(encoding="utf-8")
         cls.clean_commit = function_body(
             cls.script, "assert_clean_commit", "assert_storage_disabled"
+        )
+        cls.storage_disabled = function_body(
+            cls.script, "assert_storage_disabled", "assert_capacity_evidence"
         )
         live_start = cls.script.index("run_live_gate() {")
         live_end = cls.script.index('\ncase "${1:---check}" in', live_start)
@@ -813,24 +813,6 @@ class ReleaseGateContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("bound to exact local HEAD", result.stdout)
 
-    def test_kustomization_inventory_matches_the_synced_tree(self):
-        """Cross-bind the pinned identities to what the tree actually creates.
-
-        gotk-sync.yaml.in is the reviewed source of the live Kustomization
-        objects, so the literal names this suite feeds the validator must
-        equal the names that file defines — a rename or an added object in
-        either place turns this red instead of leaving the validator and its
-        fixtures agreeing on a name the cluster never carries (issue #251).
-        """
-
-        tree_names = set()
-        for document in GOTK_SYNC.read_text(encoding="utf-8").split("\n---\n"):
-            if not re.search(r"^kind: Kustomization$", document, re.MULTILINE):
-                continue
-            match = re.search(r"^  name: (\S+)$", document, re.MULTILINE)
-            self.assertIsNotNone(match, document)
-            tree_names.add(match.group(1))
-        self.assertEqual(tree_names, set(KUSTOMIZATION_NAMES))
 
     def test_pre_activation_suffixless_kustomization_name_fails_closed(self):
         """The retired suffixless identities must be refused, not tolerated.
@@ -1476,6 +1458,42 @@ class ReleaseGateContractTests(unittest.TestCase):
                 timeout=10,
             )
             self.assertNotEqual(result.returncode, 0)
+
+    def test_storage_gate_executes_against_only_retained_platform_roots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roots = (
+                root / "kubernetes/platform/prerequisites",
+                root / "kubernetes/platform/cloudflare-public/chart",
+            )
+            for item in roots:
+                item.mkdir(parents=True)
+                (item / "safe.yaml").write_text("kind: ConfigMap\n", encoding="utf-8")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            rg = bin_dir / "rg"
+            rg.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[[ $# -eq 8 && $1 == -n && $2 == --glob && $4 == --glob ]] || exit 2\n"
+                "exec grep -R -n -E --include=\"$3\" --include=\"$5\" -- \"$6\" \"$7\" \"$8\"\n",
+                encoding="utf-8",
+            )
+            rg.chmod(0o755)
+            harness = "\n".join((
+                "set -euo pipefail",
+                "die() { printf '%s\\n' \"$*\" >&2; exit 1; }",
+                "log() { :; }",
+                f"REPO_ROOT={shlex.quote(str(root))}",
+                f"PATH={shlex.quote(str(bin_dir))}:/usr/bin:/bin",
+                self.storage_disabled,
+                "assert_storage_disabled",
+            ))
+            accepted = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            (roots[1] / "unsafe.yaml").write_text("hostPath:\n  path: /tmp\n", encoding="utf-8")
+            rejected = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
 
 
 if __name__ == "__main__":

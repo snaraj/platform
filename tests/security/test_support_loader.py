@@ -38,14 +38,14 @@ class LoadScriptCleanupTests(unittest.TestCase):
 
     def test_an_absent_name_is_absent_again_after_a_successful_load(self):
         self.assertNotIn(PROBE, sys.modules)
-        module = load_script("ci/deploy_assurance.py", module_name=PROBE)
-        self.assertTrue(hasattr(module, "Estimate"), "the subject really did execute")
+        module = load_script("ci/platform_release_contract.py", module_name=PROBE)
+        self.assertTrue(hasattr(module, "Version"), "the subject really did execute")
         self.assertNotIn(PROBE, sys.modules)
 
     def test_a_pre_existing_name_is_restored_after_a_successful_load(self):
         sentinel = object()
         sys.modules[PROBE] = sentinel
-        load_script("ci/deploy_assurance.py", module_name=PROBE)
+        load_script("ci/platform_release_contract.py", module_name=PROBE)
         self.assertIs(sys.modules[PROBE], sentinel)
 
     def test_a_subject_whose_body_fails_leaks_no_name(self):
@@ -71,15 +71,15 @@ class LoadScriptCleanupTests(unittest.TestCase):
                     with self.assertRaises(FileNotFoundError):
                         load_script("no_such_script_for_this_test.py", module_name=PROBE)
                 else:
-                    load_script("ci/deploy_assurance.py", module_name=PROBE)
+                    load_script("ci/platform_release_contract.py", module_name=PROBE)
                 self.assertIn(PROBE, sys.modules)
                 self.assertIsNone(sys.modules[PROBE])
 
     def test_two_loads_of_one_script_stay_independent(self):
         # The property the cleanup protects: each load is a private copy, so a
         # value set on one is not observable through the other.
-        first = load_script("ci/deploy_assurance.py", module_name=PROBE)
-        second = load_script("ci/deploy_assurance.py", module_name=PROBE)
+        first = load_script("ci/platform_release_contract.py", module_name=PROBE)
+        second = load_script("ci/platform_release_contract.py", module_name=PROBE)
         self.assertIsNot(first, second)
 
 

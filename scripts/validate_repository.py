@@ -38,12 +38,7 @@ from validate_release_transition import (
     classify as classify_release_transition,
     contains_secret_document,
 )
-from validate_signature_policy import (
-    CHART_REPOSITORIES,
-    chart_source_errors,
-    flux_sync_errors,
-    flux_system_kustomization_errors,
-)
+from validate_signature_policy import flux_system_kustomization_errors
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -673,8 +668,8 @@ def active_kustomization_resource(text, name):
     ) is not None
 
 
-def site_default_deny_contract_errors(root):
-    """Pin default-deny ownership to the exact direct-site topology."""
+def platform_prerequisite_contract_errors(root):
+    """Pin the platform-service default deny and resource inventory."""
 
     errors = []
 
@@ -716,21 +711,6 @@ def site_default_deny_contract_errors(root):
             or len(prerequisite_resources) != 2:
         errors.append("platform prerequisites Kustomization inventory is not exact")
 
-    for namespace in ("naranjo-online", "lidersea-com"):
-        site_root = root / "kubernetes/websites" / namespace
-        if not exact_default_deny(site_root / "default-deny.yaml", namespace):
-            errors.append("exact site-owned ingress+egress default-deny missing for " + namespace)
-        site_index = site_root / "kustomization.yaml"
-        site_resources = re.findall(
-            r"(?m)^\s*-\s+([A-Za-z0-9_.-]+)\s*$",
-            read(site_index) if site_index.is_file() else "",
-        )
-        if set(site_resources) != {"default-deny.yaml", "source.yaml", "release.yaml"} \
-                or len(site_resources) != 3:
-            errors.append(
-                "direct site Kustomization inventory must be default-deny, source, release: "
-                + namespace
-            )
     return errors
 
 
@@ -1004,33 +984,6 @@ def check_media(root):
     if repository_total > MAX_PUBLIC_REPOSITORY_BYTES:
         errors.append("public repository tree exceeds the aggregate byte ceiling")
 
-    # Every GitRepository honors the root .sourceignore unless spec.ignore
-    # overrides it. Keep the artifact allowlist explicit so source-controller
-    # never stores application/media/history that reconciliation cannot use.
-    sourceignore = root / ".sourceignore"
-    source_required = (
-        "/*",
-        "!/.sourceignore",
-        "!/kubernetes/",
-        "/kubernetes/*",
-        "!/kubernetes/websites/",
-        "/kubernetes/websites/*",
-        "!/kubernetes/websites/naranjo-online/",
-        "!/kubernetes/websites/naranjo-online/**",
-        "!/kubernetes/websites/lidersea-com/",
-        "!/kubernetes/websites/lidersea-com/**",
-    )
-    if not sourceignore.is_file():
-        errors.append("Flux source artifact boundary is missing: .sourceignore")
-    else:
-        source_text = read(sourceignore)
-        source_lines = tuple(
-            line.strip() for line in source_text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-        if source_lines != source_required:
-            errors.append("Flux source artifact allowlist is not the exact two-site boundary")
-
     for path in live_kubernetes_files(root):
         text = read(path)
         rel = relative(path, root)
@@ -1056,9 +1009,8 @@ def check_media(root):
                     + rel
                 )
             if re.search(r"(?m)^kind:\s*GitRepository\s*$", document):
-                # A per-source override is allowed only as a second, narrower
-                # boundary paired with sparse checkout. Broad re-inclusion would
-                # overrule the root .sourceignore and recreate whole-repo artifacts.
+                # A per-source override is allowed only with sparse checkout.
+                # Broad re-inclusion would recreate whole-repository artifacts.
                 has_ignore = re.search(r"(?m)^\s*ignore:\s*(?:\||>)?\s*$", document)
                 if has_ignore and not re.search(r"(?m)^\s*sparseCheckout:\s*$", document):
                     errors.append("GitRepository ignore override lacks sparse checkout in " + rel)
@@ -2349,7 +2301,7 @@ def check_kubernetes(root):
                     "Flux per-controller authorization",
                 )
             )
-        errors.extend(site_default_deny_contract_errors(root))
+        errors.extend(platform_prerequisite_contract_errors(root))
         # The per-site ingress policies (ingress-to-<site>) ship inside
         # the standalone site charts and arrive through the remote sources;
         # the platform keeps requiring its own egress side toward each site.
@@ -2372,34 +2324,8 @@ def check_kubernetes(root):
     return errors
 
 
-def chart_source_contract_errors(root):
-    """Bind each site's published chart source to its closed identity tuple.
-
-    The OCIRepository body must equal the exact reviewed contract: immutable
-    manifest digest, audit-only release annotation, registry path, layer media
-    type, and this site's keyless publisher subject and issuer. The site
-    publisher's own release gate still governs what it may publish; Flux does
-    not select a mutable SemVer range here.
-    """
-
-    errors = []
-    for slug in sorted(CHART_REPOSITORIES):
-        source = root / "kubernetes" / "websites" / slug / "source.yaml"
-        if source.is_symlink() or not source.is_file():
-            errors.append("{} chart source is missing or symbolic".format(slug))
-            continue
-        try:
-            text = read(source)
-        except (OSError, UnicodeError):
-            errors.append("{} chart source is unavailable".format(slug))
-            continue
-        if chart_source_errors(text, slug):
-            errors.append("{} chart source is non-canonical".format(slug))
-    return errors
-
-
 def signed_chart_source_errors(root):
-    """Validate exact Flux source, sync, and per-site chart identity contracts."""
+    """Validate the exact Flux controller installation inventory."""
 
     errors = []
     authoritative_files = (
@@ -2407,11 +2333,6 @@ def signed_chart_source_errors(root):
             "kubernetes/flux-system/kustomization.yaml",
             flux_system_kustomization_errors,
             "Flux bootstrap Kustomization",
-        ),
-        (
-            "kubernetes/flux-system/gotk-sync.yaml.in",
-            flux_sync_errors,
-            "Flux root synchronization",
         ),
     )
     for relative_path, validator, label in authoritative_files:
@@ -2426,18 +2347,7 @@ def signed_chart_source_errors(root):
             continue
         if validator(text):
             errors.append(label + " is non-canonical")
-    errors.extend(chart_source_contract_errors(root))
     return errors
-
-
-def site_release_values_errors(domain, release_state):
-    """Require the sole platform value allowed for a site chart."""
-
-    if release_state.values == {("deploymentReady",): "true"}:
-        return []
-    return [
-        "{} HelmRelease values must contain exactly deploymentReady=true".format(domain)
-    ]
 
 
 def _plain_yaml_scalar(value):
@@ -2598,21 +2508,6 @@ def check_release(root):
             "flux-system API-server egress still carries the unresolved control-plane sentinel"
         )
 
-    for domain, slug, _ in SITE_RELEASE_CONTRACTS:
-        try:
-            release_state = load_helm_release(slug, root)
-        except (CanonicalYamlError, OSError, UnicodeError):
-            errors.append("{} release state is unavailable or non-canonical".format(domain))
-            continue
-        errors.extend(site_release_values_errors(domain, release_state))
-        if release_state.suspended:
-            errors.append("HelmRelease remains suspended: " + slug)
-        try:
-            if load_parent_suspension(slug, root):
-                errors.append("parent Kustomization remains suspended: " + slug)
-        except (CanonicalYamlError, OSError, UnicodeError):
-            errors.append("{} parent release state is unavailable or non-canonical".format(domain))
-
     try:
         public_release = load_helm_release("cloudflare-public", root)
         if public_release.suspended:
@@ -2661,18 +2556,6 @@ def _allowed_transition_release_errors(plan):
     """Return only full-release failures made inert by the classified phase."""
 
     allowed = set()
-    phases = {
-        "naranjo-online": plan.naranjo_online,
-        "lidersea-com": plan.lidersea_com,
-    }
-    for _, slug, _ in SITE_RELEASE_CONTRACTS:
-        phase = phases[slug]
-        if phase == "active":
-            continue
-        allowed.update({
-            "HelmRelease remains suspended: " + slug,
-            "parent Kustomization remains suspended: " + slug,
-        })
     # The flux-system API-server allow points at RFC 5737 documentation space
     # until an operator substitutes the real endpoint from private custody. The
     # SAME validator mandates that sentinel (`check_kubernetes` fails when it is
@@ -2700,8 +2583,6 @@ def _allowed_transition_release_errors(plan):
 
 def _transition_release_error_is_allowed(error, plan, allowed):
     if error in allowed:
-        return True
-    if not plan.any_website_active and error.startswith("reviewed website capacity "):
         return True
     return False
 

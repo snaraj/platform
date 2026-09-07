@@ -50,7 +50,6 @@ PINNED_CRON_INVENTORY = {
     # Hourly on purpose (issue #273): the watchdog's whole value is loud,
     # prompt detection of silent delivery drift, and its job is a single
     # sub-minute API sweep on the free public-repo tier.
-    "deploy-assurance.yml": ("23 * * * *",),
     "scheduled-security.yml": ("19 10 * * 6",),
     # Daily read-only release metadata audit; no build, artifact or deployment.
     "software-currency.yml": ("41 10 * * *",),
@@ -363,7 +362,6 @@ class ActionsZeroSpendExposureTests(unittest.TestCase):
         names = {path.name for path in workflow_files(WORKFLOW_ROOT)}
         self.assertEqual(set(PINNED_CRON_INVENTORY), {
             "codeql.yml",
-            "deploy-assurance.yml",
             "scheduled-security.yml",
             "software-currency.yml",
         })

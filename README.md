@@ -7,8 +7,8 @@
 [![Platform release](https://img.shields.io/github/v/release/snaraj/platform?sort=semver)](https://github.com/snaraj/platform/releases)
 
 A Kubernetes homelab platform for running services on privately operated
-hardware. It brings host and cluster configuration, application delivery,
-network boundaries, and recovery procedures into a reviewable codebase.
+hardware. It brings host and cluster configuration, installed security
+controls, network boundaries, and recovery procedures into a reviewable codebase.
 
 The current platform uses upstream Kubernetes with kubeadm and containerd on
 Raspberry Pi 5 hardware, Flux for GitOps, and Cloudflare for the public edge.
@@ -21,8 +21,8 @@ infrastructure and operational controls underneath every service.
 | Area | Responsibility |
 | --- | --- |
 | Host and cluster lifecycle | Reviewed bootstrap, pinned components, host prerequisites, runtime configuration, and recovery procedures |
-| Workload operation | Declarative composition, namespace boundaries, service accounts, resource limits, and reconciliation |
-| Delivery | Signed artifacts, immutable digest selection, receipted promotions, protected changes, and release history |
+| Workload operation | Namespace boundaries, service accounts, resource limits, and reconciliation authority |
+| Delivery | Protected platform changes and immutable source-release history |
 | Network and edge | Private administration, constrained workload flows, outbound Tunnel connectors, and audited provider configuration |
 | Assurance | Repository privacy, secret scanning, policy tests, provenance checks, and explicit evidence for operational claims |
 
@@ -33,7 +33,7 @@ flowchart TB
     operator[Owner] -->|private SSH administration| host[Host and cluster lifecycle]
     host --> cluster[Upstream Kubernetes]
     application[Application repositories] -->|signed images and charts| registry[OCI registry]
-    promotion[Reviewed promotion PR] -->|owner merge| desired[Protected GitOps desired state]
+    composition[Protected application composition] -->|owner merge| desired[Protected GitOps desired state]
     desired -->|anonymous read| flux[Flux]
     registry -->|verify chart identity and digest| flux
     flux -->|reconcile selected workloads| cluster
@@ -56,11 +56,11 @@ not provide host redundancy.
 ## Delivery and change control
 
 Application repositories own their source, images, Helm charts, and signing
-identities. The platform consumes their independently verified releases:
+identities. `platform-k8s-infra` consumes their independently verified releases:
 
 1. An application publishes signed OCI artifacts and an immutable release.
-2. Promotion tooling verifies the release, chart, image, provenance, and
-   source bindings, then prepares a Draft PR with the acquisition receipt.
+2. A composition change verifies the release, chart, image, provenance, and
+   source bindings and records the acquisition receipt.
 3. Required CI and the exact-head review checks validate the proposed change.
 4. The owner merges the PR. Flux reads protected `main`, verifies the selected
    chart, and reconciles its digest-bound workload.
@@ -72,9 +72,8 @@ predecessor, and workflow attempts. That immutable source record supports
 audit and recovery. Application reconciliation follows the GitOps change;
 it does not wait for platform source publication.
 
-See [application promotion](docs/runbooks/release-promotion.md) and
-[platform source releases](docs/runbooks/platform-source-releases.md) for the
-contracts and failure handling.
+See [platform source releases](docs/runbooks/platform-source-releases.md) for
+this repository's release contract and failure handling.
 
 ## Security model
 
@@ -120,7 +119,7 @@ signed release history.
 
 ```text
 bootstrap/          host, cluster, Flux, and recovery entry points
-kubernetes/         GitOps composition and workload desired state
+kubernetes/         installed controllers, isolation and platform services
 policies/           static policy and publication controls
 scripts/            delivery, verification, and operational tooling
 tests/              contract tests and allow/deny fixtures
@@ -133,8 +132,9 @@ docs/               architecture, decisions, assurance, and runbooks
 | [platform-k8s-infra](https://github.com/snaraj/platform-k8s-infra) | Application composition, default-deny policies and verified chart selections |
 | Application repositories | Application code, images, Helm charts and signed releases |
 
-The source configured in platform determines which composition the cluster
-consumes. Source changes follow the [transition runbook](docs/runbooks/platform-repository-transition.md),
+The source configured in the cluster determines which protected composition it
+consumes. Source changes follow the
+[application source transition runbook](docs/runbooks/application-source-transition.md),
 with current convergence and rollback evidence.
 
 ## Development and review

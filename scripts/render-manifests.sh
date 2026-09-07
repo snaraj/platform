@@ -59,7 +59,7 @@ done
 
 # The workflow selects a mode once. Reclassifying here and requiring that exact
 # mode closes both direct-invocation mistakes and a state change between the CI
-# selector and renderer. The seven-line record is parsed as data, never sourced.
+# selector and renderer. The four-line record is parsed as data, never sourced.
 mode_name="${MODE#--}"
 release_plan=''
 if ! release_plan="$(
@@ -69,23 +69,14 @@ if ! release_plan="$(
   die "authoritative release state does not permit ${MODE}"
 fi
 mapfile -t release_plan_lines <<<"$release_plan"
-((${#release_plan_lines[@]} == 7)) || die 'release transition plan has an invalid shape'
+((${#release_plan_lines[@]} == 4)) || die 'release transition plan has an invalid shape'
 [[ "${release_plan_lines[0]}" == "mode=${mode_name}" ]] || die 'release transition mode does not match'
-[[ "${release_plan_lines[1]}" =~ ^naranjo-online=(staged|active)$ ]] || \
-  die 'naranjo-online transition phase is invalid'
-naranjo_phase="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[2]}" =~ ^lidersea-com=(staged|active)$ ]] || \
-  die 'lidersea-com transition phase is invalid'
-lidersea_phase="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[3]}" =~ ^cloudflare-public=(initial|staged|active)$ ]] || \
+[[ "${release_plan_lines[1]}" =~ ^cloudflare-public=(initial|staged|active)$ ]] || \
   die 'cloudflare-public transition phase is invalid'
 cloudflare_phase="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[4]}" =~ ^platform-services-suspended=(true|false)$ ]] || \
+[[ "${release_plan_lines[2]}" =~ ^platform-services-suspended=(true|false)$ ]] || \
   die 'platform-services suspension summary is invalid'
-[[ "${release_plan_lines[5]}" =~ ^any-website-active=(true|false)$ ]] || \
-  die 'website safety-envelope summary is invalid'
-any_website_active="${BASH_REMATCH[1]}"
-[[ "${release_plan_lines[6]}" =~ ^any-workload-active=(true|false)$ ]] || \
+[[ "${release_plan_lines[3]}" =~ ^any-workload-active=(true|false)$ ]] || \
   die 'workload activation summary is invalid'
 any_workload_active="${BASH_REMATCH[1]}"
 
@@ -95,23 +86,6 @@ any_workload_active="${BASH_REMATCH[1]}"
 
 python3 -B "${REPO_ROOT}/scripts/validate_signature_policy.py" flux-system-kustomization \
   --file "${REPO_ROOT}/kubernetes/flux-system/kustomization.yaml"
-python3 -B "${REPO_ROOT}/scripts/validate_signature_policy.py" flux-sync \
-  --file "${REPO_ROOT}/kubernetes/flux-system/gotk-sync.yaml.in"
-declare -a SIGNED_CHART_SITES=(
-  naranjo-online
-  lidersea-com
-)
-signature_site=''
-for signature_site in "${SIGNED_CHART_SITES[@]}"; do
-  # Reconcile-time half of the same identity tuple: the site's published chart
-  # source must demand a cosign signature from exactly this site's publisher,
-  # run at that repository's protected `main` branch, before source-controller
-  # will produce an artifact from it.
-  python3 -B "${REPO_ROOT}/scripts/validate_signature_policy.py" chart-source \
-    --file "${REPO_ROOT}/kubernetes/websites/${signature_site}/source.yaml" \
-    --site "$signature_site"
-done
-
 declare -a CHART_ROWS=(
   "cloudflare-public|cloudflare-public|kubernetes/platform/cloudflare-public/chart"
 )
@@ -120,8 +94,6 @@ declare -a KUSTOMIZE_TARGETS=(
   kubernetes/flux-system/egress
   kubernetes/platform/prerequisites
   kubernetes/platform/cloudflare-public/release
-  kubernetes/websites/naranjo-online
-  kubernetes/websites/lidersea-com
 )
 
 rendered_files=()
@@ -204,82 +176,18 @@ expect_release_rejection() {
   fi
 }
 
-# Prove staged versus active site state against the exact values-only contract
-# and the independent exact-site chart-source verification denials.
-assert_site_release_phase() {
-  local manifest="$1"
-  local website="$2"
-  local phase="$3"
-  local suspended="HelmRelease ${website} remains suspended"
-  local invalid_values="HelmRelease ${website} values must contain exactly deploymentReady: true"
-  local unverified="chart source ${website}/${website}-chart does not require cosign verification"
-  local unbound="chart source ${website}/${website}-chart does not bind exactly one keyless publisher identity"
-  local result='' fragment=''
-  local -a required=() forbidden=()
-
-  [[ -s "$manifest" ]] || die "missing rendered site artifact: $(basename -- "$manifest")"
-  case "$phase" in
-    staged)
-      required=("$suspended")
-      forbidden=("$invalid_values" "$unverified" "$unbound")
-      ;;
-    active)
-      conftest test --policy "${REPO_ROOT}/policies/release-conftest" "$manifest"
-      return 0
-      ;;
-    *) die "website ${website} carries an unclassifiable phase: ${phase}" ;;
-  esac
-
-  if result="$(conftest test --policy "${REPO_ROOT}/policies/release-conftest" "$manifest" 2>&1)"; then
-    die "release policy unexpectedly accepted ${phase} site artifact $(basename -- "$manifest")"
-  fi
-  for fragment in "${required[@]}"; do
-    if ! grep -Fq -- "$fragment" <<<"$result"; then
-      printf '%s\n' "$result" >&2
-      die "release policy rejected $(basename -- "$manifest") without proving: ${fragment}"
-    fi
-  done
-  for fragment in "${forbidden[@]}"; do
-    if grep -Fq -- "$fragment" <<<"$result"; then
-      printf '%s\n' "$result" >&2
-      die "${phase} website ${website} still denies: ${fragment}"
-    fi
-  done
-}
-
 if [[ "$MODE" == '--scaffold' ]]; then
-  # These are negative controls, not readiness evidence. They prove the checked-in
-  # desired state remains inert until the separately reviewed GitOps cutover
-  # and its capacity/runtime evidence.
   expect_release_rejection "${REPO_ROOT}/tests/kubernetes/fixtures/release-deny/missing-readiness.yaml" \
     'Deployment readiness-missing is not marked ready'
-  expect_release_rejection "${ARTIFACT_ROOT}/helm-cloudflare-public.yaml" 'cloudflared tunnel token revision remains unresolved'
-  assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-naranjo-online.yaml" \
-    naranjo-online "$naranjo_phase"
-  assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-lidersea-com.yaml" \
-    lidersea-com "$lidersea_phase"
-  expect_release_rejection "${ARTIFACT_ROOT}/kubernetes-platform-cloudflare-public-release.yaml" 'HelmRelease cloudflare-public remains suspended'
+  expect_release_rejection "${ARTIFACT_ROOT}/helm-cloudflare-public.yaml" \
+    'cloudflared tunnel token revision remains unresolved'
+  expect_release_rejection "${ARTIFACT_ROOT}/kubernetes-platform-cloudflare-public-release.yaml" \
+    'HelmRelease cloudflare-public remains suspended'
 elif [[ "$MODE" == '--release' ]]; then
   for rendered in "${rendered_files[@]}"; do
     conftest test --policy "${REPO_ROOT}/policies/release-conftest" "$rendered"
   done
 else
-  # Transition mode validates each authoritative site at its classified phase.
-  # Suspended parent/HelmRelease objects are accepted only because the strict
-  # classifier already proved their exact identity and relationship. The proof
-  # runs over the site's rendered Flux root, which is the desired state this
-  # repository still renders now that each site chart lives in its own
-  # repository and is gated by that repository's own CI.
-  declare -A WEBSITE_PHASES=(
-    [naranjo-online]="$naranjo_phase"
-    [lidersea-com]="$lidersea_phase"
-  )
-  website=''
-  for website in naranjo-online lidersea-com; do
-    assert_site_release_phase "${ARTIFACT_ROOT}/kubernetes-websites-${website}.yaml" \
-      "$website" "${WEBSITE_PHASES[$website]}"
-  done
-
   if [[ "$cloudflare_phase" == 'initial' ]]; then
     expect_release_rejection "${ARTIFACT_ROOT}/helm-cloudflare-public.yaml" \
       'cloudflared tunnel token revision remains unresolved'
@@ -287,18 +195,9 @@ else
     conftest test --policy "${REPO_ROOT}/policies/release-conftest" \
       "${ARTIFACT_ROOT}/helm-cloudflare-public.yaml"
   fi
-
   if [[ "$any_workload_active" == 'true' ]]; then
-    # Every active workload still depends on the reviewed Flux controller
-    # artifact. This validates source; live controller convergence is separate.
     conftest test --policy "${REPO_ROOT}/policies/release-conftest" \
       "${ARTIFACT_ROOT}/kubernetes-flux-system.yaml"
-  fi
-
-  if [[ "$any_website_active" == 'true' ]]; then
-    # A live child or active website parent additionally requires reviewed
-    # capacity. During ordered rollback/resume, desired child suspension is not
-    # proof that Flux has observed it yet.
     conftest test --policy "${REPO_ROOT}/policies/release-conftest" \
       "${ARTIFACT_ROOT}/kubernetes-platform-prerequisites.yaml"
   fi

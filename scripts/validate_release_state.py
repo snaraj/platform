@@ -29,49 +29,6 @@ PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com")
 MAX_RELEASE_YAML_BYTES = 65536
 
 RELEASE_CONTRACTS = {
-    "naranjo-online": {
-        "release": "kubernetes/websites/naranjo-online/release.yaml",
-        # The direct parent is bootstrap-owned and deliberately absent from
-        # the applicable repository manifests. Its exact live spec is proved
-        # by validate_platform_bootstrap.py, not inferred from a YAML template.
-        "parent": None,
-        "bootstrap_parent": True,
-        "parent_name": "naranjo-online-reconciler",
-        "namespace": "naranjo-online",
-        "repository": "ghcr.io/snaraj/naranjo-online",
-        "readiness": "active-via-signature-verified-chart",
-        # Reconciliation cadence, pinned per identity rather than shared: the
-        # owner's 2026-09-03 release-loop decision (issue #309) put both SITE
-        # releases on one minute so a merged chart selection reaches the cluster
-        # inside the loop, while the suspended connector below keeps ten.
-        "interval": "1m0s",
-        # Site charts arrive as signed OCI artifacts selected by exact digest,
-        # so this identity has no in-repository chart path and no Git chart
-        # source; ``chart_ref`` is the OCIRepository beside its release.
-        "chart": None,
-        "source": None,
-        "chart_ref": "naranjo-online-chart",
-        "parent_path": "./kubernetes/websites/naranjo-online",
-        "parent_service_account": "naranjo-online-reconciler",
-    },
-    "lidersea-com": {
-        "release": "kubernetes/websites/lidersea-com/release.yaml",
-        "parent": None,
-        "bootstrap_parent": True,
-        "parent_name": "lidersea-com-reconciler",
-        "namespace": "lidersea-com",
-        "repository": "ghcr.io/snaraj/lidersea-com",
-        "readiness": "active-via-signature-verified-chart",
-        "interval": "1m0s",
-        # Site charts arrive as signed OCI artifacts selected by exact digest,
-        # so this identity has no in-repository chart path and no Git chart
-        # source; ``chart_ref`` is the OCIRepository beside its release.
-        "chart": None,
-        "source": None,
-        "chart_ref": "lidersea-com-chart",
-        "parent_path": "./kubernetes/websites/lidersea-com",
-        "parent_service_account": "lidersea-com-reconciler",
-    },
     "cloudflare-public": {
         "release": "kubernetes/platform/cloudflare-public/release/release.yaml",
         "parent": None,
@@ -585,16 +542,12 @@ def load_helm_release(name: str, root: Path = ROOT) -> HelmReleaseState:
 
 
 def load_parent_suspension(name: str, root: Path = ROOT) -> bool:
-    """Validate the site's closed parent Kustomization and return suspension."""
+    """Return the connector parent state; it has no direct parent manifest."""
 
     contract = RELEASE_CONTRACTS[name]
     if any((root / "kubernetes/reconciliation").glob("*.yaml")):
         raise CanonicalYamlError("retired aggregate reconciliation is present")
     if contract["parent"] is None:
-        # Website parents are permanent bootstrap-owned runtime objects. The
-        # repository transition gate validates only the site desired state;
-        # live parent exactness belongs to the release-selector bootstrap and
-        # convergence witness. Cloudflare has no such parent and remains inert.
         return not bool(contract.get("bootstrap_parent"))
     combined = _read_canonical_text(
         root / str(contract["parent"]), allow_documents=True
@@ -619,21 +572,6 @@ def load_parent_suspension(name: str, root: Path = ROOT) -> bool:
     return False
 
 
-def site_phase(name: str, root: Path = ROOT) -> str:
-    """Return the safe staged/active phase of one values-only site release.
-
-    Chart release identity is deliberately absent here: the sibling
-    OCIRepository owns its exact audit annotation and immutable digest, while
-    this parser closes HelmRelease values to the sole activation scalar.
-    """
-
-    release = load_helm_release(name, root)
-    parent_suspended = load_parent_suspension(name, root)
-    if not release.suspended and parent_suspended:
-        raise CanonicalYamlError("active website release requires an active parent")
-    return "staged" if release.suspended else "active"
-
-
 def all_helm_releases_suspended(root: Path = ROOT) -> bool:
     """Return true only when every exact HelmRelease spec.suspend is true."""
 
@@ -644,12 +582,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    phase = subparsers.add_parser("site-phase")
-    phase.add_argument(
-        "--site",
-        required=True,
-        choices=("naranjo-online", "lidersea-com"),
-    )
     suspended = subparsers.add_parser("all-helm-suspended")
     suspended.set_defaults(command="all-helm-suspended")
     emit = subparsers.add_parser("emit-values")
@@ -658,9 +590,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         root = args.root.resolve()
-        if args.command == "site-phase":
-            print(site_phase(args.site, root))
-        elif args.command == "all-helm-suspended":
+        if args.command == "all-helm-suspended":
             if not all_helm_releases_suspended(root):
                 return 1
         else:

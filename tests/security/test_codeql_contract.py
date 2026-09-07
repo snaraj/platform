@@ -140,15 +140,13 @@ class CodeQlConfigScopeTests(unittest.TestCase):
 
 
 class CodeQlContractTests(unittest.TestCase):
-    """Analyze both production languages; site repos scan their own code."""
+    """Analyze the remaining production language; app repos own their code."""
 
-    def test_python_and_go_are_the_exact_production_matrix(self):
+    def test_python_is_the_exact_production_matrix(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
             "          - language: python\n"
-            "            build-mode: none\n"
-            "          - language: go\n"
-            "            build-mode: autobuild\n",
+            "            build-mode: none\n",
             workflow,
         )
         self.assertEqual(
@@ -157,7 +155,7 @@ class CodeQlContractTests(unittest.TestCase):
                 for line in workflow.splitlines()
                 if line.strip().startswith("- language:")
             ],
-            ["- language: python", "- language: go"],
+            ["- language: python"],
         )
         self.assertIn("- name: Initialize CodeQL", workflow)
         self.assertIn("- name: Analyze", workflow)
