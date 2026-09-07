@@ -116,7 +116,7 @@ RELEASE_CONTRACTS = {
             "      peerAppName: cloudflare-public",
             "      peerInstance: obsidian-tunnel",
             "      peerNamespace: cloudflare-public",
-            "    publicUrl: https://obsidian.naranjo.online",
+            "    publicUrl: https://obsync.hostname-pending.invalid",
             "    resources:",
             "      limits:",
             "        cpu: 2000m",

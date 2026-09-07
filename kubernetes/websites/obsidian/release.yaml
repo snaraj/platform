@@ -78,7 +78,7 @@ spec:
       peerNamespace: cloudflare-public
     # Shown on the pairing and install pages. It is never derived from a
     # request header, so the hostname the edge publishes has to be stated.
-    publicUrl: https://obsidian.naranjo.online
+    publicUrl: https://obsync.hostname-pending.invalid
     # The envelope this namespace's ResourceQuota is derived from
     # (docs/audits/2026-09-07-obsidian-capacity-evidence.md). Stated here rather
     # than left to the chart default so the quota and the Pod it pays for are

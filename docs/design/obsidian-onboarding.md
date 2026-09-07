@@ -25,7 +25,7 @@ delivery-lane paths and the declared crossings named in its pull-request body.
 | Tunnel connector instance | `obsidian-tunnel` |
 | Token Secret name | `obsidian-tunnel-token` |
 | Server-key Secret | `obsidian-server-key`, key `OBSYNC_SERVER_KEY` |
-| Public hostname | `obsidian.naranjo.online` |
+| Public hostname | owner-chosen, NOT yet selected; the release carries the non-resolving sentinel `obsync.hostname-pending.invalid` until the owner names one |
 | First release | v0.1.0, not yet published |
 
 **The halves are deliberately different words, and this is the single most
@@ -77,7 +77,7 @@ coordinator assigns; it needs no new authority.
 > The third Tunnel is identical in shape to the two above and shares no object,
 > token, DNS record or failure domain with either:
 >
-> 1. exactly one public hostname rule — `obsidian.naranjo.online` routed to
+> 1. exactly one public hostname rule — the owner-chosen hostname routed to
 >    `http://obsync.obsidian.svc.cluster.local:8080`. The Service name is
 >    `obsync` and the namespace is `obsidian`: this workload's artifact family
 >    and its namespace are deliberately different words, and the origin URL
@@ -85,10 +85,11 @@ coordinator assigns; it needs no new authority.
 > 2. a terminal `http_status:404` rule;
 > 3. no private/WARP routing, no wildcard hostname, and no SSH or API hostname.
 >
-> The hostname is one proxied CNAME with automatic TTL on the existing
-> `naranjo.online` Free zone, targeting this Tunnel's own `cfargotunnel.com`
-> name. No new zone and no new Cloudflare product: the zero-spend allowlist of
-> safety invariant 4 and ADR 0006 is untouched.
+> The hostname is one proxied CNAME with automatic TTL on a zone the owner
+> already holds on the Free plan, targeting this Tunnel's own
+> `cfargotunnel.com` name. No new zone and no new Cloudflare product: the
+> zero-spend allowlist of safety invariant 4 and ADR 0006 is untouched. Which
+> zone and which name is the owner's decision and is not yet made.
 >
 > Its runtime credential is its own: one token, held only as a Kubernetes
 > Secret (`obsidian-tunnel-token`), consumed by its connector through
@@ -96,8 +97,8 @@ coordinator assigns; it needs no new authority.
 > independently of the two sites.
 >
 > A hostname on a SHARED zone is the one thing this third Tunnel does not
-> isolate, and it is named rather than glossed: `obsidian.naranjo.online` sits
-> in the same zone as `naranjo.online`, so a zone-level misconfiguration or a
+> isolate, and it is named rather than glossed: if the owner places the
+> hostname in a zone a site already uses, a zone-level misconfiguration or a
 > zone-wide edge rule reaches both. Everything below the zone — Tunnel, token,
 > connector Deployment, NetworkPolicy, namespace, release, DNS record —
 > remains per workload. A separate zone would isolate that last edge too and
@@ -145,7 +146,7 @@ None of this is in Git and none of it can be. In order:
    `cfargotunnel.com` name in local custody, not here.
 2. Create the single hostname rule and the terminal 404 rule exactly as the
    amendment states.
-3. Create the proxied CNAME for `obsidian.naranjo.online` with automatic TTL.
+3. Create the proxied CNAME for the owner-chosen hostname with automatic TTL.
 4. Create the Access application and its two policies.
 5. Create the connector token Secret on the cluster
    (`obsidian-tunnel-token`, key `token`) and, in the same reviewed pull

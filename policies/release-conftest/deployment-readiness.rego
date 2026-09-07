@@ -126,7 +126,7 @@ obsidian_release_values := {
     "peerInstance": "obsidian-tunnel",
     "peerNamespace": "cloudflare-public",
   },
-  "publicUrl": "https://obsidian.naranjo.online",
+  "publicUrl": "https://obsync.hostname-pending.invalid",
   "resources": {
     "limits": {"cpu": "2000m", "memory": "1Gi"},
     "requests": {"cpu": "100m", "memory": "64Mi"},

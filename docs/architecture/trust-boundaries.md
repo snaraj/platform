@@ -8,7 +8,7 @@
 | `naranjo-online` pod | Serve `naranjo.online` on TCP 8080 after connector ingress | All egress, API token, other namespaces, host |
 | `lidersea-com` pod | Serve `lidersea.com` on TCP 8080 after connector ingress | All egress, API token, other namespaces, host |
 | `obsidian` Tunnel connector (onboarded, not deployed) | DNS, its own Cloudflare Tunnel transport, `obsidian` TCP 8080 only | Site services, Pi host, admin route, Kubernetes API, arbitrary egress |
-| `obsidian` pod (onboarded, not deployed) | Serve `obsidian.naranjo.online` on TCP 8080 after connector ingress, behind a Cloudflare Access identity or service-token policy | All egress, API token, other namespaces, host |
+| `obsidian` pod (onboarded, not deployed) | Serve the owner-chosen public hostname (not yet selected) on TCP 8080 after connector ingress, behind a Cloudflare Access identity or service-token policy | All egress, API token, other namespaces, host |
 | naranjo media reader | Read single-link regular delivery derivatives through one rooted, read-only, mount-verified boundary | Originals, staging, metadata, links, nested mounts, writes, directory listing, other host paths |
 | Media operator | Stage, checksum, derive, atomically publish, back up, and restore through the protected path | Public upload API, in-place publication, anonymous writes, runtime transcoding |
 | Legacy archive operator | Preserve and verify an explicitly declared inactive archive through the protected local path | Runtime activation, public/Tunnel route, Kubernetes/Flux/CI access, broad filesystem operations, secret disclosure |
