@@ -8,51 +8,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from .support import load_script, required_tool
+from .support import required_tool
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFTEST = shutil.which("conftest")
-TRANSITION = load_script(
-    "validate_release_transition.py", module_name="kyverno_retirement_transition"
-)
-TRANSITION_FILES = (
-    "kubernetes/websites/naranjo-online/release.yaml",
-    "kubernetes/websites/lidersea-com/release.yaml",
-    "kubernetes/platform/cloudflare-public/release/release.yaml",
-    "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
-)
-
-
 class KyvernoRetirementContractTests(unittest.TestCase):
-    def test_each_direct_site_root_owns_one_exact_default_deny(self):
-        for site in ("naranjo-online", "lidersea-com"):
-            with self.subTest(site=site):
-                policy = ROOT / "kubernetes" / "websites" / site / "default-deny.yaml"
-                self.assertEqual(
-                    policy.read_text(encoding="utf-8"),
-                    "apiVersion: networking.k8s.io/v1\n"
-                    "kind: NetworkPolicy\n"
-                    "metadata:\n"
-                    "  name: default-deny\n"
-                    "  namespace: {}\n"
-                    "spec:\n"
-                    "  podSelector: {{}}\n"
-                    "  policyTypes:\n"
-                    "    - Ingress\n"
-                    "    - Egress\n".format(site),
-                )
-                kustomization = (
-                    ROOT / "kubernetes" / "websites" / site / "kustomization.yaml"
-                ).read_text(encoding="utf-8")
-                self.assertEqual(kustomization.count("  - default-deny.yaml\n"), 1)
-
-        prerequisites = (
-            ROOT / "kubernetes/platform/prerequisites/network-policies.yaml"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("namespace: naranjo-online", prerequisites)
-        self.assertNotIn("namespace: lidersea-com", prerequisites)
-        self.assertEqual(prerequisites.count("name: default-deny\n"), 1)
 
     def test_executable_kyverno_surfaces_are_absent(self):
         retired = (
@@ -84,7 +45,7 @@ class KyvernoRetirementContractTests(unittest.TestCase):
             ROOT / "scripts",
         )
         executable_suffixes = {".env", ".py", ".rego", ".sh", ".yaml", ".yml"}
-        candidates = [ROOT / "Makefile", ROOT / "versions.env", ROOT / ".sourceignore"]
+        candidates = [ROOT / "Makefile", ROOT / "versions.env"]
         for active_root in active_roots:
             candidates.extend(
                 path
@@ -174,46 +135,6 @@ class KyvernoRetirementContractTests(unittest.TestCase):
                 "image-tag-without-digest.yaml", "/usr/bin/false"
             )
 
-    def test_unsafe_release_activation_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            for relative in TRANSITION_FILES:
-                destination = root / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(ROOT / relative, destination)
-            release = root / "kubernetes/websites/naranjo-online/release.yaml"
-            text = release.read_text(encoding="utf-8")
-            trusted = "    name: naranjo-online-chart\n"
-            unsafe = "    name: lidersea-com-chart\n"
-            self.assertEqual(text.count(trusted), 1)
-            release.write_text(text.replace(trusted, unsafe), encoding="utf-8")
-
-            with self.assertRaisesRegex(
-                TRANSITION.STATE.CanonicalYamlError,
-                "release YAML shape is outside the closed contract",
-            ):
-                TRANSITION.STATE.load_helm_release("naranjo-online", root)
-
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-B",
-                    str(ROOT / "scripts/validate_release_transition.py"),
-                    "--root",
-                    str(root),
-                    "plan",
-                    "--expect-mode",
-                    "transition",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(completed.returncode, 1)
-            self.assertEqual(
-                completed.stderr,
-                "ERROR release transition state is unavailable or unsafe\n",
-            )
 
 
 if __name__ == "__main__":

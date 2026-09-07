@@ -11,8 +11,6 @@ set -euo pipefail
 : "${BASE_TAG:?BASE_TAG is required}"
 : "${MAIN_RUN_ID:?MAIN_RUN_ID is required}"
 : "${MAIN_RUN_ATTEMPT:?MAIN_RUN_ATTEMPT is required}"
-: "${SELECTOR_IMAGE_DIGEST:?SELECTOR_IMAGE_DIGEST is required}"
-: "${SELECTOR_BUILD_SHA:?SELECTOR_BUILD_SHA is required}"
 : "${GITHUB_API_URL:?GITHUB_API_URL is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_REPOSITORY_ID:?GITHUB_REPOSITORY_ID is required}"
@@ -75,8 +73,6 @@ epoch="$(python3 -I -B "${epoch_contract}" "${TAG}" \
   --base-tag "${BASE_TAG}" --base-sha "${BASE_SHA}" --source-sha "${SOURCE_SHA}")"
 identity_asset_name="$(jq -er '.asset' <<<"${epoch}")"
 identity_bundle_name="$(jq -er '.bundle' <<<"${epoch}")"
-test "${SELECTOR_IMAGE_DIGEST}" = "$(jq -er '.selector_digest' <<<"${epoch}")"
-test "${SELECTOR_BUILD_SHA}" = "$(jq -er '.selector_source' <<<"${epoch}")"
 transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
 identity_issuer='https://token.actions.githubusercontent.com'
 
@@ -188,24 +184,6 @@ validate_identity_runs() {
     --platform-run-json "${legacy_platform_run_json}" >/dev/null
 }
 
-validate_selector_transition() {
-  local predecessor_digest="$1" predecessor_build_sha="$2"
-  [[ "${predecessor_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-  [[ "${predecessor_build_sha}" =~ ^[0-9a-f]{40}$ ]]
-  [[ "${SELECTOR_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
-  [[ "${SELECTOR_BUILD_SHA}" =~ ^[0-9a-f]{40}$ ]]
-
-  if git diff --quiet "${BASE_SHA}" "${SOURCE_SHA}" -- \
-    cmd/platform-release-selector internal/releaseselector go.mod; then
-    test "${SELECTOR_IMAGE_DIGEST}" = "${predecessor_digest}"
-    test "${SELECTOR_BUILD_SHA}" = "${predecessor_build_sha}"
-  else
-    test "${SELECTOR_IMAGE_DIGEST}" != "${predecessor_digest}"
-    test "${SELECTOR_BUILD_SHA}" = "${SOURCE_SHA}"
-    test "${SELECTOR_BUILD_SHA}" != "${predecessor_build_sha}"
-  fi
-}
-
 run_write_gh() {
   GH_TOKEN="${write_token}" gh "$@"
 }
@@ -246,7 +224,6 @@ write_current_identity() {
   local main_run_attempt="${4:-${MAIN_RUN_ATTEMPT}}"
   local platform_run_id="${5:-${GITHUB_RUN_ID}}"
   local platform_run_attempt="${6:-${GITHUB_RUN_ATTEMPT}}"
-  local selector_digest="${7:-${SELECTOR_IMAGE_DIGEST}}"
   python3 -I -B "${contract}" release-identity \
     --repository . --head "${SOURCE_SHA}" --tag "${TAG}" \
     --base-sha "${BASE_SHA}" --base-tag "${BASE_TAG}" \
@@ -255,8 +232,6 @@ write_current_identity() {
     --main-run-attempt "${main_run_attempt}" \
     --platform-run-id "${platform_run_id}" \
     --platform-run-attempt "${platform_run_attempt}" \
-    --selector-image-digest "${selector_digest}" \
-    --selector-build-sha "${SELECTOR_BUILD_SHA}" \
     --github-repository "${GITHUB_REPOSITORY}" \
     --github-repository-id "${GITHUB_REPOSITORY_ID}" > "${identity_asset}"
 }
@@ -328,8 +303,6 @@ validate_burned_partial() {
     --main-run-json "${legacy_main_run_json}" \
     --platform-run-json "${legacy_platform_run_json}")"
   test "${digest}" = "${burned_selector_digest}"
-  test "${digest}" = "${SELECTOR_IMAGE_DIGEST}"
-  test "${SELECTOR_BUILD_SHA}" = "${burned_source_sha}"
 }
 
 classify_release() {
@@ -349,7 +322,7 @@ classify_release() {
 }
 
 classify_current_release() {
-  local required="$1" status tag_object tree_sha evidence_selector_digest
+  local required="$1" status tag_object tree_sha
   local -a record_args=()
   status="$(get_json "${write_token}" \
     "${api}/releases/tags/${TAG}" "${release_json}")"
@@ -357,13 +330,6 @@ classify_current_release() {
     tag_object="$(jq -er '.object.sha' "${ref_json}")"
     tree_sha="$(git rev-parse "${SOURCE_SHA}^{tree}")"
     download_identity_pair "${release_json}" "${TAG}" || return
-    evidence_selector_digest="$(python3 -I -B "${contract}" \
-      selector-image-from-release --release-json "${release_json}" \
-      --identity "${identity_download}" --bundle "${bundle_download}" \
-      --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
-      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
-      --selector-build-sha "${SELECTOR_BUILD_SHA}")" || return
-    test "${evidence_selector_digest}" = "${SELECTOR_IMAGE_DIGEST}" || return
     # A completed previous attempt must reproduce its successful run records.
     # Only the current publisher's own just-created identity can name a still
     # running attempt, bound to this job's independently verified main-CI input.
@@ -378,19 +344,17 @@ classify_current_release() {
     fi
     record_args=(--release-json "${release_json}" \
       --identity "${identity_download}" --bundle "${bundle_download}" \
-      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
-      --selector-build-sha "${SELECTOR_BUILD_SHA}")
+      --tag-object-sha "${tag_object}" --source-tree-sha "${tree_sha}" "${transport_args[@]}")
   fi
   python3 -I -B "${contract}" identity-release-state \
     --http-status "${status}" --require "${required}" \
-    "${record_args[@]}" "${transport_args[@]}" --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
-    --selector-build-sha "${SELECTOR_BUILD_SHA}"
+    "${record_args[@]}" "${transport_args[@]}" --tag "${TAG}" --source-sha "${SOURCE_SHA}"
 }
 
 classify_predecessor_release() {
   local status tag_object tree_sha legacy_main_run_id legacy_main_run_attempt
   local legacy_platform_run_id legacy_platform_run_attempt
-  local predecessor_build_sha predecessor_selector_digest
+  local predecessor_build_sha
   status="$(get_json "${write_token}" \
     "${api}/releases/tags/${BASE_TAG}" "${release_json}")"
   if [ "${BASE_SHA}" = "${burned_source_sha}" ] && \
@@ -408,18 +372,23 @@ classify_predecessor_release() {
   if [ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]; then
     tree_sha="$(git rev-parse "${BASE_SHA}^{tree}")"
     download_identity_pair "${release_json}" "${BASE_TAG}" || return
-    predecessor_build_sha="$(jq -er '.selector.provenance.source_sha |
-      select(type == "string" and test("^[0-9a-f]{40}$"))' \
-      "${identity_download}")"
-    predecessor_selector_digest="$(python3 -I -B "${contract}" \
-      selector-image-from-release \
-      --release-json "${release_json}" --identity "${identity_download}" \
-      --bundle "${bundle_download}" --tag "${BASE_TAG}" \
-      --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
-      --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
-      --selector-build-sha "${predecessor_build_sha}")"
-    validate_selector_transition \
-      "${predecessor_selector_digest}" "${predecessor_build_sha}"
+    if [ "${BASE_TAG}" = v0.1.77 ]; then
+      predecessor_build_sha="$(jq -er '.selector.provenance.source_sha |
+        select(type == "string" and test("^[0-9a-f]{40}$"))' \
+        "${identity_download}")"
+      python3 -I -B "${contract}" selector-image-from-release \
+        --release-json "${release_json}" --identity "${identity_download}" \
+        --bundle "${bundle_download}" --tag "${BASE_TAG}" \
+        --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
+        --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
+        --selector-build-sha "${predecessor_build_sha}" >/dev/null
+    else
+      python3 -I -B "${contract}" identity-release-record \
+        --release-json "${release_json}" --identity "${identity_download}" \
+        --bundle "${bundle_download}" --tag "${BASE_TAG}" \
+        --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
+        --source-tree-sha "${tree_sha}" "${transport_args[@]}" >/dev/null
+    fi
     validate_identity_runs "${identity_download}"
   else
     # v0.1.40 is the sole immutable zero-asset predecessor. Derive its exact
@@ -789,8 +758,7 @@ publish_current_release() {
       --bundle "${bundle_download}" \
       --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
       --tag-object-sha "${tag_object}" \
-      --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
-      --selector-build-sha "${SELECTOR_BUILD_SHA}" >/dev/null
+      --source-tree-sha "${tree_sha}" "${transport_args[@]}" >/dev/null
 
     jq -n --arg tag "${TAG}" --arg target "${SOURCE_SHA}" \
       --arg name "Platform ${TAG}" --rawfile body "${notes}" \

@@ -58,7 +58,6 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
     required = (
         ': "${MAIN_RUN_ID:?MAIN_RUN_ID is required}"',
         ': "${MAIN_RUN_ATTEMPT:?MAIN_RUN_ATTEMPT is required}"',
-        ': "${SELECTOR_IMAGE_DIGEST:?SELECTOR_IMAGE_DIGEST is required}"',
         'test -z "${IMMUTABLE_SETTINGS_TOKEN-}"',
         'test -z "${ACTIONS_READ_TOKEN-}"',
         'test -z "${CONTENTS_READ_TOKEN-}"',
@@ -81,19 +80,10 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         'identity_bundle_name="$(jq -er \'.bundle\' <<<"${epoch}")"' ,
         '(.assets | length == $count)',
         '(([.assets[].name] | sort) == ($expected | sort))',
-        'selector-image-from-release --release-json "${release_json}"',
+        "selector-image-from-release",
         '--identity "${identity_download}" --bundle "${bundle_download}"',
         '--source-tree-sha "${tree_sha}"',
         "identity-run-records",
-        "validate_selector_transition",
-        '[[ "${SELECTOR_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]',
-        'git diff --quiet "${BASE_SHA}" "${SOURCE_SHA}" --',
-        "cmd/platform-release-selector internal/releaseselector go.mod",
-        'test "${SELECTOR_IMAGE_DIGEST}" = "${predecessor_digest}"',
-        'test "${SELECTOR_IMAGE_DIGEST}" != "${predecessor_digest}"',
-        'test "${SELECTOR_BUILD_SHA}" = "${predecessor_build_sha}"',
-        'test "${SELECTOR_BUILD_SHA}" = "${SOURCE_SHA}"',
-        'test "${SELECTOR_BUILD_SHA}" != "${predecessor_build_sha}"',
         "identity-release-state",
         '--http-status "${status}" --require "${required}"',
         "burned_source_sha='6d85c2b01dd4bd66add4192372b26bcdf1b0a951'",
@@ -133,7 +123,6 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         '--main-run-attempt "${main_run_attempt}"',
         '--platform-run-id "${platform_run_id}"',
         '--platform-run-attempt "${platform_run_attempt}"',
-        '--selector-image-digest "${selector_digest}"',
         'cosign sign-blob --yes',
         '--bundle "${identity_bundle}" "${identity_asset}"',
         'verify_identity_signature "${identity_asset}" "${identity_bundle}"',
@@ -190,7 +179,6 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         "identity-release-state": 1,
         'upload_identity_asset "${release_id}"': 2,
         "validate_platform_predecessor.py": 2,
-        "validate_selector_transition": 2,
         "cosign sign-blob": 1,
         "cosign verify-blob": 1,
         'run_write_gh release create "${recovery_tag}"': 1,
@@ -212,7 +200,6 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         raise ValueError("immutable current release must not trust Markdown body")
     for token in (
         "download_identity_pair",
-        "selector-image-from-release",
         '--bundle "${bundle_download}"',
         '--source-tree-sha "${tree_sha}"',
         "identity-release-state",
@@ -250,8 +237,6 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         'actions/runs/${burned_platform_run_id}/attempts/${burned_run_attempt}',
         "burned-partial-release-record",
         'test "${digest}" = "${burned_selector_digest}"',
-        'test "${digest}" = "${SELECTOR_IMAGE_DIGEST}"',
-        'test "${SELECTOR_BUILD_SHA}" = "${burned_source_sha}"',
     )
     burned_positions = [burned.index(token) for token in burned_order]
     if burned_positions != sorted(burned_positions):
@@ -318,6 +303,8 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         "0.1.42",
         "v0.1.43",
         "0.1.43",
+        "v0.1.77",
+        "0.1.77",
     }
     foreign_versions = set(re.findall(VERSION_LITERAL, transaction)) - allowed_versions
     if foreign_versions:
@@ -2321,9 +2308,6 @@ class MainCIJobsReceiptTests(unittest.TestCase):
         changed["jobs"].pop()
         mutations.append(changed)
         changed = copy.deepcopy(exact)
-        changed["jobs"][1] = copy.deepcopy(changed["jobs"][0])
-        mutations.append(changed)
-        changed = copy.deepcopy(exact)
         changed["jobs"][0]["steps"].append(
             copy.deepcopy(changed["jobs"][0]["steps"][0])
         )
@@ -3039,7 +3023,6 @@ class PublicationTransactionShellTests(unittest.TestCase):
         self.assertNotIn("--body", classifier)
         self.assertNotIn('"${contract}" release-state', classifier)
         self.assertIn("download_identity_pair", classifier)
-        self.assertIn("selector-image-from-release", classifier)
         self.assertIn("identity-release-state", classifier)
         self.assertIn('--identity "${identity_download}"', classifier)
         self.assertIn('--bundle "${bundle_download}"', classifier)
@@ -3047,7 +3030,6 @@ class PublicationTransactionShellTests(unittest.TestCase):
 
         classifier_mutants = (
             classifier.replace("download_identity_pair", ":", 1),
-            classifier.replace("selector-image-from-release", "release-state", 1),
             classifier.replace("identity-release-state", "release-state", 1),
             classifier.replace(
                 '--http-status "${status}" --require "${required}"',
@@ -3059,85 +3041,6 @@ class PublicationTransactionShellTests(unittest.TestCase):
             mutant = script[:start] + mutant_classifier + script[end:]
             with self.subTest(mutant=index), self.assertRaises(ValueError):
                 validate_single_asset_publication_transaction(mutant)
-
-    def test_selector_transition_accepts_only_exact_reuse_or_source_build(self):
-        script = self.script()
-        validate_single_asset_publication_transaction(script)
-        call = (
-            '    validate_selector_transition \\\n'
-            '      "${predecessor_selector_digest}" "${predecessor_build_sha}"'
-        )
-        self.assertIn(call, script)
-        with self.assertRaises(ValueError):
-            validate_single_asset_publication_transaction(
-                script.replace(call, "    :", 1)
-            )
-        start = script.index("validate_selector_transition() {")
-        end = script.index("\n}\n", start) + 3
-        function = script[start:end]
-        digest_a = "sha256:" + "a" * 64
-        digest_b = "sha256:" + "b" * 64
-        source = "a" * 40
-        base = "c" * 40
-        predecessor_build = "b" * 40
-
-        harness = r'''set -euo pipefail
-git() {
-  test "$#" = 8
-  test "$1" = diff
-  test "$2" = --quiet
-  test "$3" = "${BASE_SHA}"
-  test "$4" = "${SOURCE_SHA}"
-  test "$5" = --
-  test "$6" = cmd/platform-release-selector
-  test "$7" = internal/releaseselector
-  test "$8" = go.mod
-  test "${MOCK_CHANGED}" != true
-}
-''' + function + '''
-validate_selector_transition "${PREDECESSOR_DIGEST}" "${PREDECESSOR_BUILD_SHA}"
-'''
-
-        cases = (
-            (False, digest_a, predecessor_build, True),
-            (True, digest_b, source, True),
-            (False, digest_b, predecessor_build, False),
-            (False, digest_a, source, False),
-            (True, digest_a, source, False),
-            (True, digest_b, predecessor_build, False),
-            (True, digest_b, "d" * 40, False),
-            (True, "sha256:short", source, False),
-            (True, digest_b, "short", False),
-        )
-        for changed, digest, build_sha, accepted in cases:
-            with self.subTest(
-                changed=changed, digest=digest, build_sha=build_sha
-            ):
-                environment = os.environ.copy()
-                environment.update(
-                    {
-                        "BASE_SHA": base,
-                        "SOURCE_SHA": source,
-                        "SELECTOR_IMAGE_DIGEST": digest,
-                        "SELECTOR_BUILD_SHA": build_sha,
-                        "PREDECESSOR_DIGEST": digest_a,
-                        "PREDECESSOR_BUILD_SHA": predecessor_build,
-                        "MOCK_CHANGED": str(changed).lower(),
-                    }
-                )
-                completed = subprocess.run(
-                    [self.bash_executable(), "-c", harness],
-                    env=environment,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    timeout=10,
-                )
-                self.assertEqual(completed.returncode == 0, accepted)
-                self.assertEqual(completed.stdout, "")
-                self.assertEqual(completed.stderr, "")
 
     def test_event_tag_and_notes_are_rederived_from_checked_out_ledger(self):
         script = self.script()
@@ -3164,12 +3067,15 @@ validate_selector_transition "${PREDECESSOR_DIGEST}" "${PREDECESSOR_BUILD_SHA}"
             "0.1.42",
             "v0.1.43",
             "0.1.43",
+            "v0.1.77",
+            "0.1.77",
         }
         self.assertEqual(set(re.findall(VERSION_LITERAL, script)) - allowed, set())
         self.assertEqual(script.count("v0.1.40"), 3)
         self.assertEqual(script.count("v0.1.41"), 4)
         self.assertEqual(script.count("v0.1.42"), 1)
         self.assertEqual(script.count("v0.1.43"), 2)
+        self.assertEqual(script.count("v0.1.77"), 1)
         for foreign in ("v0.1.31", "v0.1.34", "v9.9.9"):
             with self.subTest(foreign=foreign), self.assertRaises(ValueError):
                 validate_single_asset_publication_transaction(
@@ -4621,7 +4527,6 @@ class WorkflowStructureTests(unittest.TestCase):
             '--base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${source_sha}"',
             "MAIN_RUN_ID: ${{ github.event.workflow_run.id }}",
             "MAIN_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}",
-            "SELECTOR_IMAGE_DIGEST: ${{ steps.release.outputs.selector_digest }}",
             "bash scripts/ci/publish-platform-release.sh",
         ):
             if required not in publish_job:
@@ -4861,20 +4766,11 @@ class WorkflowStructureTests(unittest.TestCase):
         if transaction.count('test "${release_race_verified}" = true') != 2:
             raise ValueError("both Release races lack terminal exact assertions")
 
-        # Publication retains canonical signature/run/asset verification. The
-        # suspended selector is carried by one frozen tuple; no image builder
-        # or package-writing authority remains on the source release path.
+        # Publication retains canonical signature/run/asset verification and
+        # has no image builder or package-writing authority.
         for forbidden in ("packages:", "docker/", "docker login", "cosign sign --", "cosign attest "):
             if forbidden in publish_job:
                 raise ValueError("retired selector publication authority returned")
-        for required in (
-            'SELECTOR_BUILD_SHA: ${{ steps.release.outputs.selector_source }}',
-            "selector_digest=%s", "selector_source=%s",
-            "$(jq -er '.selector_digest' <<<\"${epoch}\")",
-            "$(jq -er '.selector_source' <<<\"${epoch}\")",
-        ):
-            if required not in publish_job:
-                raise ValueError("frozen selector output wiring changed")
         for required in ('platform_release_epoch.py', '--repository-json "${repository_json}"',
                          '--source-sha "${SOURCE_SHA}"'):
             if required not in transaction or required not in predecessor_wait:
@@ -5090,7 +4986,6 @@ class WorkflowStructureTests(unittest.TestCase):
         transaction_deletions = (
             ': "${MAIN_RUN_ID:?MAIN_RUN_ID is required}"',
             ': "${MAIN_RUN_ATTEMPT:?MAIN_RUN_ATTEMPT is required}"',
-            ': "${SELECTOR_IMAGE_DIGEST:?SELECTOR_IMAGE_DIGEST is required}"',
             'test -z "${IMMUTABLE_SETTINGS_TOKEN-}"',
             'test -z "${ACTIONS_READ_TOKEN-}"',
             'test -z "${CONTENTS_READ_TOKEN-}"',
@@ -5128,7 +5023,6 @@ class WorkflowStructureTests(unittest.TestCase):
             '--main-run-attempt "${main_run_attempt}"',
             '--platform-run-id "${platform_run_id}"',
             '--platform-run-attempt "${platform_run_attempt}"',
-            '--selector-image-digest "${selector_digest}"',
             'cosign sign-blob --yes',
             '--bundle "${identity_bundle}" "${identity_asset}"',
             'verify_identity_signature "${identity_asset}" "${identity_bundle}"',

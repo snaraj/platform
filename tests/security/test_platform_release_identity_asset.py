@@ -1039,42 +1039,6 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
         )
 
 
-class AcquisitionReceiptViewCoherenceTests(unittest.TestCase):
-    """The Markdown receipt is an explanatory view of the canonical JSON
-    record, and nothing checked it: a digest edited in the .md alone
-    left every gate green (PR #283 round-1 review carry-forward). The
-    JSON schema is closed by the release contract, so the layer
-    inspection hashes the .md legitimately adds are pinned here by
-    value instead of widening that schema."""
-
-    RECEIPT_DIR = ROOT / "docs" / "assurance"
-    LAYER_INSPECTION_HASHES = {
-        # naranjo-online Chart.yaml / values.yaml
-        "022e0fa6ff7ca083089f4a2c29b2cba8dd7be6bfdc525148da9a67c77ec3afda",
-        "1a6e06f53bf77120a37994c8eed1491b9005d843ff30dadd381b30389df55b5c",
-        # lidersea-com Chart.yaml / values.yaml
-        "381af60b25e001bf2f8d3d79d67379dca3accb307f885b6e54d5c590e224de6c",
-        "980b76e70e057291b69f12878586aaaf25364110985ffdedc575370980466844",
-    }
-
-    @classmethod
-    def hex_tokens(cls, text: str, width: int) -> set[str]:
-        return set(re.findall(r"\b[0-9a-f]{%d}\b" % width, text))
-
-    def test_markdown_view_agrees_with_the_canonical_record(self) -> None:
-        markdown = (
-            self.RECEIPT_DIR / "195-chart-acquisition-receipt.md"
-        ).read_text(encoding="utf-8")
-        canonical = (
-            self.RECEIPT_DIR / "195-chart-acquisition-receipt.json"
-        ).read_text(encoding="utf-8")
-        self.assertEqual(
-            self.hex_tokens(markdown, 64),
-            self.hex_tokens(canonical, 64) | self.LAYER_INSPECTION_HASHES,
-        )
-        self.assertEqual(
-            self.hex_tokens(markdown, 40), self.hex_tokens(canonical, 40)
-        )
 
 
 if __name__ == "__main__":  # pragma: no cover

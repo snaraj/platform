@@ -47,34 +47,13 @@ class TransitionPlan(NamedTuple):
     """One fully classified, dependency-safe desired-state transition."""
 
     mode: str
-    naranjo_online: str
-    lidersea_com: str
     cloudflare_public: str
     platform_suspended: bool
-    naranjo_parent_suspended: bool
-    lidersea_parent_suspended: bool
-
-    @property
-    def any_website_active(self) -> bool:
-        """Keep production controls while a site is live or directly selected.
-
-        The #189 topology has no suspendable aggregate parent: both direct site
-        Kustomizations always select their exact website paths. A staged
-        HelmRelease therefore still sits inside an active reconciliation and
-        keeps the website signature/capacity envelope mandatory.
-        """
-
-        return (
-            "active" in (self.naranjo_online, self.lidersea_com)
-            or not self.naranjo_parent_suspended
-            or not self.lidersea_parent_suspended
-        )
 
     @property
     def any_workload_active(self) -> bool:
         return (
-            self.any_website_active
-            or self.cloudflare_public == "active"
+            self.cloudflare_public == "active"
             or not self.platform_suspended
         )
 
@@ -180,24 +159,6 @@ def _require_secretless_public_release(root: Path) -> None:
         )
 
 
-def _website_phase(name: str, root: Path, parent_suspended: bool) -> str:
-    """Classify one site while preserving deterministic gate ordering.
-
-    An active HelmRelease requires an active parent. A suspended HelmRelease
-    may safely sit below either parent state: that is the required intermediate
-    while rollback suspends the inner controller before its parent, and while
-    resume reactivates the parent before the inner controller.
-    """
-
-    release = STATE.load_helm_release(name, root)
-    if not release.suspended and parent_suspended:
-        raise STATE.CanonicalYamlError(
-            "active website release requires an active parent"
-        )
-
-    return "staged" if release.suspended else "active"
-
-
 def _cloudflare_phase(root: Path, platform_suspended: bool) -> str:
     """Classify the connector while allowing its parent to serve sites first."""
 
@@ -232,36 +193,18 @@ def classify(root: Path = ROOT) -> TransitionPlan:
 
     root = root.resolve()
     platform_suspended = STATE.load_parent_suspension("cloudflare-public", root)
-    naranjo_parent_suspended = STATE.load_parent_suspension(
-        "naranjo-online", root
-    )
-    lidersea_parent_suspended = STATE.load_parent_suspension(
-        "lidersea-com", root
-    )
-    naranjo_phase = _website_phase(
-        "naranjo-online", root, naranjo_parent_suspended
-    )
-    lidersea_phase = _website_phase(
-        "lidersea-com", root, lidersea_parent_suspended
-    )
     cloudflare_phase = _cloudflare_phase(root, platform_suspended)
 
     # The direct website loop is independent of any retired admission-controller
     # premise.
 
     if (
-        naranjo_phase == "staged"
-        and lidersea_phase == "staged"
-        and cloudflare_phase == "initial"
+        cloudflare_phase == "initial"
         and platform_suspended
-        and naranjo_parent_suspended
-        and lidersea_parent_suspended
     ):
         mode = "scaffold"
     elif (
-        naranjo_phase == "active"
-        and lidersea_phase == "active"
-        and cloudflare_phase == "active"
+        cloudflare_phase == "active"
         and not platform_suspended
     ):
         mode = "release"
@@ -270,12 +213,8 @@ def classify(root: Path = ROOT) -> TransitionPlan:
 
     return TransitionPlan(
         mode,
-        naranjo_phase,
-        lidersea_phase,
         cloudflare_phase,
         platform_suspended,
-        naranjo_parent_suspended,
-        lidersea_parent_suspended,
     )
 
 
@@ -283,17 +222,10 @@ def _print_plan(plan: TransitionPlan) -> None:
     """Emit a fixed, non-executable record for the Bash renderer."""
 
     print("mode={}".format(plan.mode))
-    print("naranjo-online={}".format(plan.naranjo_online))
-    print("lidersea-com={}".format(plan.lidersea_com))
     print("cloudflare-public={}".format(plan.cloudflare_public))
     print(
         "platform-services-suspended={}".format(
             "true" if plan.platform_suspended else "false"
-        )
-    )
-    print(
-        "any-website-active={}".format(
-            "true" if plan.any_website_active else "false"
         )
     )
     print(

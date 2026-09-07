@@ -18,8 +18,6 @@ from .support import load_script
 MODULE = load_script("validate_repository.py")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVATION_FIXTURE_FILES = (
-    "kubernetes/websites/naranjo-online/release.yaml",
-    "kubernetes/websites/lidersea-com/release.yaml",
     "kubernetes/platform/cloudflare-public/release/release.yaml",
     "kubernetes/platform/cloudflare-public/release/kustomization.yaml",
 )
@@ -51,34 +49,16 @@ def init_git_repository(root):
     )
 
 
-SITE_BASELINE_FILES = (
-    "kubernetes/websites/naranjo-online/release.yaml",
-    "kubernetes/websites/lidersea-com/release.yaml",
-)
 # The single release failure the validator both MANDATES elsewhere and refuses
 # here; spelled once so the two directions below cannot drift apart.
 FLUX_SENTINEL_RELEASE_ERROR = (
     "flux-system API-server egress still carries the unresolved control-plane sentinel"
 )
-def normalize_site_scaffold_baseline(root):
-    """Suspend site HelmReleases without changing the direct sync topology."""
-
-    for relative in SITE_BASELINE_FILES:
-        path = root / relative
-        text = path.read_text(encoding="utf-8")
-        path.write_bytes(
-            text.replace("  suspend: false\n", "  suspend: true\n").encode(
-                "utf-8"
-            )
-        )
-
-
 def copy_activation_fixture(root):
     for relative in ACTIVATION_FIXTURE_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, destination)
-    normalize_site_scaffold_baseline(root)
 
 
 def replace_once(root, relative, before, after):
@@ -107,55 +87,6 @@ def resolve_connector_revisions(root, revision="rev-reviewed-test"):
             before, "        tokenRevision: {}\n".format(revision)
         ).encode("utf-8")
     )
-
-
-def write_site_release(
-    root, slug, *, suspended=True, deployment_ready=True, extra_values=""
-):
-    """Write the exact values-only HelmRelease used by strict tests."""
-
-    release = root / "kubernetes" / "websites" / slug / "release.yaml"
-    release.parent.mkdir(parents=True, exist_ok=True)
-    release.write_bytes((
-        "apiVersion: helm.toolkit.fluxcd.io/v2\n"
-        "kind: HelmRelease\n"
-        "metadata:\n"
-        "  name: {slug}\n"
-        "  namespace: {slug}\n"
-        "  labels:\n"
-        "    app.kubernetes.io/managed-by: fluxcd\n"
-        "  annotations:\n"
-        "    platform.snaraj.dev/readiness: {readiness}\n"
-        "spec:\n"
-        "  suspend: {suspended}\n"
-        # Site releases reconcile every minute since issue #309.
-        "  interval: 1m0s\n"
-        "  maxHistory: 2\n"
-        "  releaseName: {slug}\n"
-        "  serviceAccountName: helm-reconciler\n"
-        "  driftDetection:\n"
-        "    mode: enabled\n"
-        "  chartRef:\n"
-        "    kind: OCIRepository\n"
-        "    name: {slug}-chart\n"
-        "  install:\n"
-        "    remediation:\n"
-        "      retries: 0\n"
-        "  upgrade:\n"
-        "    cleanupOnFail: true\n"
-        "    remediation:\n"
-        "      retries: 0\n"
-        "      strategy: rollback\n"
-        "  values:\n"
-        "    deploymentReady: {deployment_ready}\n"
-        "{extra_values}".format(
-            slug=slug,
-            readiness=MODULE.RELEASE_CONTRACTS[slug]["readiness"],
-            suspended=str(suspended).lower(),
-            deployment_ready=str(deployment_ready).lower(),
-            extra_values=extra_values,
-        )).encode("utf-8"))
-    return release
 
 
 class RepositoryPolicyTests(unittest.TestCase):
@@ -860,7 +791,7 @@ class RepositoryPolicyTests(unittest.TestCase):
             self.assertTrue(any("binaryData is forbidden" in error for error in errors))
             self.assertTrue(any("media-shaped Kubernetes data key" in error for error in errors))
 
-    def test_media_gate_requires_narrow_flux_artifacts_without_override(self):
+    def test_media_gate_rejects_broad_git_source_override(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             source = root / "kubernetes" / "site"
@@ -872,7 +803,6 @@ class RepositoryPolicyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             errors = MODULE.check_media(root)
-            self.assertTrue(any(".sourceignore" in error for error in errors))
             self.assertTrue(any("ignore override" in error for error in errors))
 
     def test_rejects_forbidden_layout(self):
@@ -1013,63 +943,27 @@ class RepositoryPolicyTests(unittest.TestCase):
             "resources:\n  - network-policies.yaml # egress\n", "network-policies.yaml"
         ))
 
-    def test_site_default_denies_are_owned_by_the_two_direct_roots(self):
+    def test_platform_prerequisite_inventory_is_exact(self):
         relative_files = (
             "kubernetes/platform/prerequisites/network-policies.yaml",
             "kubernetes/platform/prerequisites/kustomization.yaml",
-            "kubernetes/websites/naranjo-online/default-deny.yaml",
-            "kubernetes/websites/naranjo-online/kustomization.yaml",
-            "kubernetes/websites/lidersea-com/default-deny.yaml",
-            "kubernetes/websites/lidersea-com/kustomization.yaml",
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             for relative in relative_files:
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(
-                    (REPO_ROOT / relative).read_text(encoding="utf-8"),
-                    encoding="utf-8",
-                )
-            self.assertEqual(MODULE.site_default_deny_contract_errors(root), [])
-
-            mutations = (
-                (
-                    "kubernetes/websites/naranjo-online/kustomization.yaml",
-                    "  - default-deny.yaml\n",
-                    "",
-                    "direct site Kustomization inventory",
+                target.write_bytes((REPO_ROOT / relative).read_bytes())
+            self.assertEqual(MODULE.platform_prerequisite_contract_errors(root), [])
+            index = root / relative_files[1]
+            index.write_text(
+                index.read_text(encoding="utf-8").replace(
+                    "  - network-policies.yaml\n", ""
                 ),
-                (
-                    "kubernetes/websites/lidersea-com/kustomization.yaml",
-                    "  - release.yaml\n",
-                    "  - release.yaml\n  - app-policy.yaml\n",
-                    "direct site Kustomization inventory",
-                ),
-                (
-                    "kubernetes/websites/naranjo-online/default-deny.yaml",
-                    "namespace: naranjo-online",
-                    "namespace: cloudflare-public",
-                    "site-owned ingress+egress default-deny",
-                ),
-                (
-                    "kubernetes/platform/prerequisites/network-policies.yaml",
-                    "namespace: cloudflare-public",
-                    "namespace: naranjo-online",
-                    "prerequisites must retain exactly",
-                ),
+                encoding="utf-8",
             )
-            for relative, old, new, fragment in mutations:
-                path = root / relative
-                original = path.read_text(encoding="utf-8")
-                self.assertIn(old, original)
-                path.write_text(original.replace(old, new, 1), encoding="utf-8")
-                with self.subTest(mutation=relative + fragment):
-                    self.assertTrue(any(
-                        fragment in error
-                        for error in MODULE.site_default_deny_contract_errors(root)
-                    ))
-                path.write_text(original, encoding="utf-8")
+            self.assertTrue(MODULE.platform_prerequisite_contract_errors(root))
+
 
     def test_rejects_mutable_image_and_public_service(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1272,66 +1166,9 @@ class RepositoryPolicyTests(unittest.TestCase):
                 MODULE.reviewed_capacity_errors(root),
             )
 
-    def test_activation_gate_observes_every_site_live_release_signal(self):
-        """Unsuspension for either site invokes the shared gate."""
 
-        for domain, slug, _ in MODULE.SITE_RELEASE_CONTRACTS:
-            with self.subTest(domain=domain):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory).resolve()
-                    release = write_site_release(root, slug)
-                    self.assertTrue(MODULE.load_helm_release(slug, root).suspended)
-                    self.assertFalse(MODULE.activation_requested(root))
-                    release.write_bytes(
-                        release.read_bytes().replace(
-                            b"  suspend: true\n", b"  suspend: false\n"
-                        )
-                    )
-                    self.assertTrue(MODULE.activation_requested(root))
 
-    def test_suspended_values_only_release_is_staging_not_activation(self):
-        """An exact reviewed release stays inert until reconciliation resumes."""
 
-        for _, slug, _ in MODULE.SITE_RELEASE_CONTRACTS:
-            with self.subTest(slug=slug):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory).resolve()
-                    write_site_release(root, slug)
-                    self.assertTrue(MODULE.load_helm_release(slug, root).suspended)
-                    self.assertFalse(MODULE.activation_requested(root))
-
-    def test_transition_filters_only_errors_for_proven_inert_releases(self):
-        """A direct reconciler keeps its suspended child's safety envelope."""
-
-        # A detached git housekeeping process can still be writing under the
-        # fixture's object store when this context exits, which intermittently
-        # fails cleanup with "Directory not empty: 'pack'" on CI runners. The
-        # assertions above the cleanup are unaffected; ignore cleanup races.
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
-            root = Path(directory).resolve()
-            copy_activation_fixture(root)
-            synthetic = [
-                "HelmRelease remains suspended: naranjo-online",
-                "unrelated release failure",
-            ]
-            with mock.patch.object(MODULE, "check_release", return_value=synthetic):
-                self.assertEqual(
-                    MODULE.check_activation(root),
-                    ["unrelated release failure"],
-                )
-
-    def test_direct_staged_website_retains_capacity(self):
-        """Desired child suspension is not observation while its direct sync is live."""
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            copy_activation_fixture(root)
-            synthetic = [
-                "HelmRelease remains suspended: naranjo-online",
-                "reviewed website capacity quota missing or duplicated: naranjo-online",
-            ]
-            with mock.patch.object(MODULE, "check_release", return_value=synthetic):
-                self.assertEqual(MODULE.check_activation(root), synthetic[1:])
 
     def test_half_configured_connector_fails_before_filtering(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1367,40 +1204,8 @@ class RepositoryPolicyTests(unittest.TestCase):
                 ["release transition state is unavailable or unsafe"],
             )
 
-    def test_staged_connector_never_filters_a_real_release_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            copy_activation_fixture(root)
-            resolve_connector_revisions(root)
-            error = "public tunnel release state is unavailable or non-canonical"
-            with mock.patch.object(MODULE, "check_release", return_value=[error]):
-                self.assertEqual(MODULE.check_activation(root), [error])
 
 
-    def test_transition_filters_the_mandated_flux_control_plane_sentinel(self):
-        """The one error this validator simultaneously requires and refuses.
-
-        ``check_kubernetes`` FAILS when the flux-system API-server allow has
-        lost its RFC 5737 sentinel, and ``check_release`` fails while the
-        sentinel is still there. Both are correct — the sentinel is the
-        committed desired state, and a full release claim while it stands would
-        claim a control plane the repository has never described — but a tree
-        cannot satisfy both at once, so the transition path must filter it.
-
-        Nothing else is filtered with it: the unrelated release failure below is
-        the control, and it must still survive.
-        """
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            copy_activation_fixture(root)
-            shared_error = "unrelated release failure"
-            with mock.patch.object(
-                MODULE,
-                "check_release",
-                return_value=[FLUX_SENTINEL_RELEASE_ERROR, shared_error],
-            ):
-                self.assertEqual(MODULE.check_activation(root), [shared_error])
 
     def test_release_mode_never_filters_the_flux_control_plane_sentinel(self):
         """The filter is transition-only; a real release claim still fails.
@@ -1444,7 +1249,8 @@ class RepositoryPolicyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            release = write_site_release(root, "naranjo-online")
+            copy_activation_fixture(root)
+            release = root / "kubernetes/platform/cloudflare-public/release/release.yaml"
             release.write_bytes(
                 release.read_bytes().replace(
                     b"spec:\n  suspend: true\n",
@@ -1453,30 +1259,6 @@ class RepositoryPolicyTests(unittest.TestCase):
             )
             self.assertTrue(MODULE.activation_requested(root))
 
-    def test_release_values_are_exact_readiness_only(self):
-        valid = types.SimpleNamespace(values={("deploymentReady",): "true"})
-        self.assertEqual(MODULE.site_release_values_errors("example.invalid", valid), [])
-
-        invalid_values = (
-            {},
-            {("deploymentReady",): "false"},
-            {
-                ("deploymentReady",): "true",
-                ("image", "digest"): "sha256:" + ("a" * 64),
-            },
-            {("deploymentReady",): "true", ("unexpected",): "value"},
-        )
-        for values in invalid_values:
-            with self.subTest(values=values):
-                self.assertEqual(
-                    MODULE.site_release_values_errors(
-                        "example.invalid", types.SimpleNamespace(values=values)
-                    ),
-                    [
-                        "example.invalid HelmRelease values must contain exactly "
-                        "deploymentReady=true"
-                    ],
-                )
 
 
 class ServiceAccountSubjectScanTests(unittest.TestCase):

@@ -1,6 +1,6 @@
-# Disaster recovery — Draft / unverified
+# Disaster recovery
 
-Initial targets are six-hour Kubernetes-state RPO and four-hour RTO. They are
+Targets are six-hour Kubernetes-state RPO and four-hour RTO. They remain
 aspirational until a timed restore drill succeeds.
 
 ## Required protected material

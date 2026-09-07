@@ -156,6 +156,9 @@ validate_snapshot_files() {
     count=$((count + 1))
   done
   shopt -u nullglob dotglob
+  if [[ "${enforce_retention}" == yes && "${count}" -eq 0 ]]; then
+    die 'snapshot retention is empty'
+  fi
   if [[ "${enforce_retention}" == yes && "${count}" -gt 14 ]]; then
     die "snapshot retention exceeds 14 files: ${count}"
   fi

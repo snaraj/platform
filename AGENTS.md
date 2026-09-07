@@ -174,18 +174,11 @@ and dependency-governed Draft capacity is recorded durably in
   `scripts/install-flux-controllers.sh`; existing-controller recovery and source
   restoration require separately reviewed platform procedures. Generation,
   review or a merged source change grants no live-cluster mutation authority.
-- `bootstrap/flux/release-selector/platform-release-identity.v2.schema.json` —
-  DECLARED CROSSING for issue #330 under the owner's 2026-09-05 authorization
-  to rename and split the platform repositories and improve the release system.
-  This adds the v2 source identity schema; it grants no installed-selector
-  mutation, package rotation, or edit to the frozen v1 schema.
-- `cmd/platform-release-selector/**` and `internal/releaseselector/**` —
-  PLATFORM (owner authorization 2026-08-28 for issue #242). These are the
-  bootstrap-owned credentialless selector and its immutable image inputs.
-  Delivery-owned CI may materialize and validate the final image, but a
-  selector behavior or packaging change remains an authority-boundary change:
-  it requires independent security review and the owner-attended live digest
-  rotation tracked by issue #222; it never grants selector self-update.
+- `bootstrap/flux/release-selector/platform-release-identity.v1.schema.json`,
+  `platform-release-identity.v2.schema.json`, and
+  `platform-release-identity.v3.schema.json` — DELIVERY-owned immutable source
+  identity schemas. Historical v1/v2 bytes and verification remain frozen; new
+  source releases use the closed v3 shape.
 - `policies/conftest/**` and `policies/release-conftest/**` — DELIVERY.
   The enumeration is exact, not shorthand for `policies/**`: these subtrees are the
   executable expression of the gates this lane already owns. Every other
@@ -202,48 +195,13 @@ and dependency-governed Draft capacity is recorded durably in
   history and secret-scan requirements remain intact.
 - `kubernetes/flux-system/**` — DELIVERY: the GitOps desired state this
   lane authors, and what the reviewed-state model above pins.
-- `kubernetes/websites/*/release.yaml` — the former DELIVERY grant applied
-  only to output from `scripts/promote-image.sh`. Issue #195 retires that
-  script fail-closed and removes the image override, so the grant has no
-  remaining write shape and must not be read as authority to recreate one.
-  Each site release now supplies exactly `deploymentReady: true`; its signed
-  chart is the sole image authority. Outside `kubernetes/flux-system/**`, the
-  `cloudflare-public` row below is the only current part of `kubernetes/**`
-  assigned to delivery. `kubernetes/reconciliation/**`, the rest of
-  `kubernetes/platform/**`, and the remaining `kubernetes/websites/**` files
-  stay unruled — reach them only through the rule below.
-  The delivery lane set `spec.maxHistory` on both site releases under issue
-  #198 as a DECLARED CROSSING, not a lane transfer. Retention is load-bearing
-  for reliability rather than release identity: helm-controller's unset
-  five-revision default exceeded the measured namespace Secret budget, wedged
-  a site release permanently, and blocked every subsequent deploy. Record the
-  owner or platform (peer) ruling here when it arrives, including whether
-  release-retention fields belong to this lane.
-  Issue #309 is a further DECLARED CROSSING on the same terms, on the owner's
-  explicit 2026-09-03 release-loop instruction, which names these two files and
-  the value: `spec.interval` on both site HelmRelease objects moves from
-  `10m0s` to `1m0s`. Reconciliation cadence is not release identity — no
-  digest, signature, chart binding or fail-closed property moves with it — and
-  the shorter bound is a poll of already-verified state, adding no credential,
-  no inbound path and no object. `scripts/validate_release_state.py` now pins
-  the value PER release identity, so the connector release is untouched and a
-  widened site interval is a gate failure. This grants no standing claim on
-  these manifests; record the owner or platform (peer) ruling here when it
-  arrives, including whether reconciliation-cadence fields belong to this lane.
-  **Owner ruling 2026-08-28:** the exact version-neutral
-  `app.kubernetes.io/managed-by: fluxcd` label on both site HelmRelease
-  objects is DELIVERY-owned for issue #240. It supplies the ordinary
-  post-bootstrap #189 reconciliation witness and a stable offline inventory
-  marker without changing either release spec. This ruling grants no standing
-  ownership of other metadata or fields in these manifests.
 - `kubernetes/platform/cloudflare-public/**` — DELIVERY, DERIVED from the
   Cloudflare/edge re-cut recorded in the paragraph above, not granted
   here: that re-cut names only `infrastructure/cloudflare/**` and the
   Cloudflare ADRs, and this tree is the same edge surface's in-cluster
   half — the public Tunnel connector chart and its suspended release, the
   cluster end of the tunnel whose provider-side configuration this lane
-  already owns, serving the sites this lane promotes through the row
-  above. PR #87 already writes it under this reading. Amend this row if
+  already owns. PR #87 already writes it under this reading. Amend this row if
   the owner or the platform (peer) lane rules otherwise.
 - `kubernetes/platform/admission/**` and
   `kubernetes/platform/admission-install/**` — RETIRED and absent under the
@@ -252,57 +210,6 @@ and dependency-governed Draft capacity is recorded durably in
   authorization. A material trust-boundary expansion, including another
   independent tenant or untrusted/third-party workload, triggers a new
   threat model and ADR; it is not standing install authority.
-- `kubernetes/websites/*/source.yaml` — DELIVERY for selection digest moves
-  (owner ruling 2026-09-03, source
-  [PR #303 comment 5530765637](https://github.com/snaraj/website-infrastructure/pull/303#issuecomment-5530765637)).
-  The owner's words there, exactly: "Digest now moves under
-  kubernetes/websites/*/source.yaml. Do not blcok on this anymore." The ruling
-  is that narrow, and nothing here reads it wider: moving a selection's
-  tag/digest pair forward or back in these files is delivery work and is no
-  longer a per-PR declared crossing. It still requires the exact acquisition
-  receipt issue #195 pinned; it covers no other field of these manifests and
-  no other path under `kubernetes/websites/**`.
-  Issue #309 therefore reaches `spec.interval` on both site `OCIRepository`
-  objects as a DECLARED CROSSING, not under that ruling: on the owner's
-  explicit 2026-09-03 release-loop instruction, which names these two files and
-  the value, it moves from `10m0s` to `1m0s`. Nothing about the identity tuple
-  moves with it — the digest, the cosign `matchOIDCIdentity`, the layer
-  selector and the anonymous-read posture are byte-identical — and the shorter
-  bound is a poll of an already signature-verified reference, so it adds no
-  credential, no inbound path and no object; a Flux `Receiver` would have added
-  all three and is excluded. `scripts/validate_signature_policy.py` states the
-  value as one exact literal, so widening it is a gate failure rather than an
-  edit. This grants no standing claim on any other field; record the owner or
-  platform (peer) ruling here when it arrives.
-  History, kept because it is the reasoning the ruling settles: the row above
-  assigns `kubernetes/websites/*/release.yaml` to delivery
-  through the promotion surface and leaves the remaining
-  `kubernetes/websites/**` files unruled; these per-site chart
-  `OCIRepository` objects are among them. Each one carries a cosign
-  `matchOIDCIdentity` that the delivery-lane validators
-  (`scripts/validate_signature_policy.py`,
-  `policies/conftest/kubernetes.rego`) already assert byte for byte, so
-  the manifest and the gate that pins it cannot be changed from different
-  lanes without one of them going stale. The delivery lane touched these
-  two files under issue #185 to re-point that identity: a DECLARED
-  CROSSING under the rule below, not a lane transfer, and it grants no
-  standing claim on the tree. Issue #195 is a second DECLARED CROSSING: it
-  replaces mutable SemVer selection with one separately receipted audit-tag
-  and exact OCI manifest-digest pair per site, while retiring the former
-  HelmRelease promotion override. Future forward or rollback selection changes
-  require a new exact acquisition receipt and remain crossings until the owner
-  or platform (peer) records a lane ruling here. Issue #252 is the first such
-  forward selection and is DECLARED as a crossing on exactly those terms: it
-  recaptured the receipt and moved both sites to their published releases
-  without touching a fail-closed property, a signature contract, or
-  `release.yaml`. It is a worked precedent for the shape, not a ruling; the
-  linked comment at the head of this row is the ruling that answered it.
-  The owner's 2026-09-01 decoupling ruling (issue #275) rebinds only the
-  CONSUMPTION side: the `flux-system` GitRepository follows protected `main`
-  rather than a selector-advanced platform tag, so a merged forward
-  selection deploys with no platform release involved. The selection
-  grammar above — receipted audit-tag and exact manifest-digest pairs — is
-  unchanged by that ruling.
 - `docs/adr/0016-tag-driven-flux-release-sync.md` — NOT transferred,
   ruling PENDING. The lane split above assigns "the remaining ADRs" to
   the platform lane, and "Lane discipline in docs" says the delivery lane
@@ -401,34 +308,6 @@ Delivery-lane requirements, explicit and numbered:
    `Owner-PR-Updates` restriction permits only owner-account PR merges, without
    bypassing the core checks; the controls runbook defines its exact shape.
 
-**Repository rename compatibility (issue #330).** The closed epoch policy in
-`scripts/ci/platform_release_epoch.py` permits one terminal-v1 publication from
-its exact verified checkpoint, then requires v2 under the new repository name
-on the same immutable GitHub object. The annotated ledger remains the tag
-allocator. Historical v1 payloads, signatures, and schema remain frozen; the
-first v2 predecessor must be the exact signed terminal-v1 edge. Source publisher
-identity and legacy selector identity are distinct. Selector build inputs and
-lineage remain frozen; the publisher holds no package-write authority. Follow
-`docs/runbooks/platform-repository-transition.md` for the separate rename,
-settings revalidation, first-v2 publication, and eventual GitOps extraction.
-No source release proves live installation or convergence.
-
-**Promoter feature freeze — DISCHARGED.** The condition was one real promotion
-run and reviewed: PR #287 was cut by hand and merged 2026-09-01, and #303 was
-cut by the tool, reviewed and closed 2026-09-03. Promoter changes are ordinary
-work again, at the security tier every path in that tool earns.
-
-**Generated promotion validation.** A deterministic promotion validates the
-candidate through `make check-gitleaks` and `make check-kubernetes` before
-signing, then the unchanged `make pre-push-security` gate on the exact signed
-outgoing commit before publication. That publication gate includes the isolated
-repository validators, full outgoing-history validation and range secret scan.
-The complete unittest and coverage battery runs in required hosted CI before
-merge; it is not repeated locally by the promoter. This exception applies only
-to generated promotions, whose exact surface and receipt are independently
-re-derived. Changes to the promoter, validators, workflows or this contract
-retain the full author gate and independent security review.
-
 **Retired provider implementation (issue #338).** The owner authorized removal
 of unused OpenTofu roots, dedicated validators/tests, tool pins and CI steps.
 This is a scoped exception to preserving obsolete checks and measured source,
@@ -450,19 +329,12 @@ READMEs describe enduring purpose and routine use. Setup, recovery commands and
 source-transition procedures belong in runbooks or adjacent procedure files;
 prelaunch status and one-time project history do not belong in READMEs.
 
-**Application source handoff (issue #340).** The owner's 2026-09-06 platform
-commission authorizes the bounded live source handoff and retirement of the
-legacy selector, including its exact nine installed objects, under the reviewed
-operator procedure. Independently reviewed, hash-bound private operation code
-implements that contract without adding disposable executables to this public
-repository. The procedure must be merged before live handoff. This grants no
-merge authority. The completed tag-to-main
-tool, its dedicated tests and stale recovery instructions are removed; no
-selector-resume path is carried into recovery. Application objects, controllers,
-tenant RBAC and artifact selections remain unchanged. Keep application manifests
-and frozen selector source until observed convergence and runtime retirement;
-their later removal is a separate reviewed change. Neither a source release nor
-offline transition validation proves that the cluster has consumed the new source.
+**Application source ownership.** Application composition lives in
+`snaraj/platform-k8s-infra`; this repository retains the installed controllers,
+tenant RBAC, isolation controls, and the reviewed recovery contract. The retired
+selector and its nine installed objects must not be recreated or restored by
+ordinary recovery. Neither a source release nor offline validation proves live
+cluster convergence.
 
 ## Adversarial review protocol
 
@@ -666,44 +538,6 @@ authority: the owner alone merges.
   repository owner's behalf`. Treat older model-specific umbrella descriptions
   as coordinator/server-metadata cleanup across all repositories; keep the
   per-model label as provenance.
-  The receipted release-promotion automation (`scripts/promote_releases.py`,
-  issue #286, runbook `docs/runbooks/release-promotion.md`) is NOT an agent:
-  its pull requests carry `promoter` in place of the agent pair, its commit
-  and pull-request bodies end with `- Promoter`, and it runs under the
-  owner's own keyring credential and signing key. Its standing authority is
-  exactly: open Draft promotion pull requests from a receipted acquisition,
-  labelled `release`, `security`, `delivery-lane` and `promoter` — the
-  `security` tier because a promotion advances a signed chart digest and the
-  identity pins that gate it — and arm `requires-review`. That set is exact:
-  the Ready evaluator accepts it whole and denies `promoter` beside an
-  acting-model label, `agent-authored`, another tier, or a missing member.
-  **A promotion pull request's receipt is EARNED, not requested** (owner
-  release-loop commission 2026-09-03, issue #309). On a later tick, for a
-  promotion pull request that is open, Draft and still wears the
-  `requires-review` the promoter armed at the cut — it never re-arms that
-  label; a person who removes it withdraws the request — the promoter proves
-  five things: no App comment already binds that head; the head commit is
-  signed by the owner's registered key under the owner's identity; every path
-  the head changes is one its own `apply_promotion` writes; re-running the
-  issue-195 acquisition ceremony against the registry, the site's immutable
-  Release and its protected `main` re-renders that surface byte for byte; and
-  the pull request body and commit message re-compose from those records.
-  Only then does the `snaraj-agent-reviews[bot]` App post the exact-head
-  verdict, which a proof failure makes REQUEST-CHANGES. The receipt also binds
-  the digest of the body it audited, and the Ready rule withholds on a body
-  edited afterwards at the same head. So a promotion pull request no longer
-  carries `cybersecurity-review-requested`: the security lane reviews every change to
-  the promoter's CODE — a normal agent pull request, where the risk lives —
-  rather than re-reading a value a machine has already re-derived. The receipt
-  is review evidence and nothing else: NO TOOL FLIPS READY, promoter included,
-  the coordinator flips, and the owner alone merges.
-  A promotion pull request is never repaired in place by an
-  agent (owner direction 2026-09-03, source
-  [PR #303 comment 5530907119](https://github.com/snaraj/website-infrastructure/pull/303#issuecomment-5530907119)):
-  a defect in one is fixed in the promoter's own code through a normal agent
-  pull request, after which the promotion pull request is superseded and the
-  promoter re-cuts it — otherwise the repair produces a hybrid carrying two
-  lanes' labels, commits and signatures that this contract does not define.
   Adversarial-review verdicts carry the same identity as
   `- <Agent> (adversarial reviewer)`. These repositories are worked by
   several frontier models in parallel lanes; labels plus signatures keep

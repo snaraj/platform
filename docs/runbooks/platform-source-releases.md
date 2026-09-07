@@ -66,8 +66,7 @@ window once and revalidates the exact predecessor tag and Release before every
 mutation boundary; renewed pending, absent, mutable, or foreign state fails.
 
 `v0.1.41` and `v0.1.42` are closed pre-Flux publication incidents. Their exact
-annotated tags remain immutable ledger boundaries and are never selected by
-bootstrap or the runtime selector. The sole `v0.1.42` to `v0.1.43` edge may
+annotated tags remain immutable ledger boundaries. The sole `v0.1.42` to `v0.1.43` edge may
 observe the predecessor Release as absent. In the write job only, the publisher
 enumerates the complete authenticated Release inventory, accepts either the
 exact known signed two-asset `v0.1.42` draft or its clean absence, validates its
@@ -77,6 +76,13 @@ It proves both draft absence and the unchanged annotated tag before creating
 `v0.1.43`. The successor still requires fresh protected-main CI, a new exact
 annotated tag, two signed identity assets, and an immutable published Release.
 Every later edge returns to the ordinary complete-predecessor rule.
+
+Historical v1 and v2 identity assets remain immutable and are verified under
+their original schemas and publisher subjects. `v0.1.77` is the terminal v2
+release. Its exact successor begins v3, whose signed identity records only the
+platform source, repository object, predecessor, tag, immutable Release and
+successful workflow attempts. Application selections live in
+`snaraj/platform-k8s-infra`; v3 therefore carries no selector or site payload.
 
 An exact existing tag at the source is an idempotent replay. A lightweight,
 skipped, reversed, moved, foreign, or non-ancestral tag; a missing earlier tag;

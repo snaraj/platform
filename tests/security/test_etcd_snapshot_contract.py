@@ -55,6 +55,54 @@ class EtcdSnapshotContractTests(unittest.TestCase):
         self.assertIn("apply mode requires root", self.snapshot)
         self.assertNotIn("set -x", self.snapshot)
 
+    def test_retention_check_requires_at_least_one_verified_snapshot(self):
+        if not BASH:
+            self.skipTest("Bash is unavailable")
+        match = re.search(
+            r"(?ms)^validate_snapshot_files\(\) \{.*?^\}\n",
+            self.snapshot,
+        )
+        self.assertIsNotNone(match)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            snapshot_dir = root / "snapshots"
+            tools = root / "tools"
+            snapshot_dir.mkdir()
+            tools.mkdir()
+            (tools / "stat").write_text(
+                "#!/bin/sh\ncase \"$2\" in %u) echo 0;; %a) echo 600;; esac\n",
+                encoding="utf-8",
+            )
+            (tools / "stat").chmod(0o755)
+            verifier = tools / "etcdutl"
+            verifier.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            verifier.chmod(0o755)
+            harness = (
+                "set -euo pipefail\n"
+                "die() { printf 'DENY:%s\\n' \"$1\" >&2; return 1; }\n"
+                + match.group(0)
+                + "snapshot_dir=$1\netcdutl_path=$2\nvalidate_snapshot_files yes\n"
+            )
+            empty = subprocess.run(
+                [required_tool(BASH, BASH_REQUIRED), "-c", harness, "retention", str(snapshot_dir), str(verifier)],
+                env={"PATH": str(tools) + os.pathsep + os.environ.get("PATH", "")},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertIn("snapshot retention is empty", empty.stderr)
+
+            (snapshot_dir / "snapshot-20260907T000000Z.db").write_bytes(b"fixture")
+            populated = subprocess.run(
+                [required_tool(BASH, BASH_REQUIRED), "-c", harness, "retention", str(snapshot_dir), str(verifier)],
+                env={"PATH": str(tools) + os.pathsep + os.environ.get("PATH", "")},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(populated.returncode, 0, populated.stderr)
+
     def test_installer_is_offline_and_rejects_unsafe_archives(self):
         for fragment in (
             "ETCD_TOOLS_ARM64_SHA256 is unresolved or malformed",

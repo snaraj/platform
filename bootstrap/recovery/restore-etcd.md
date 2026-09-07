@@ -1,4 +1,4 @@
-# Stacked-etcd restore — Draft / unverified
+# Stacked-etcd restore
 
 Upstream Kubernetes and etcd restore semantics are version-sensitive. Retrieve
 the official guidance for the pinned Kubernetes/etcd releases at execution time
@@ -7,7 +7,7 @@ inputs include a hash-verified snapshot, compatible containerd/Kubernetes/etcd
 tools, protected `/etc/kubernetes` PKI and configuration, and the API encryption
 configuration/key material. Protect these independently from the snapshot.
 
-An etcd snapshot never contains bytes from the proposed local media filesystem.
+An etcd snapshot never contains bytes from the local media filesystem.
 Do not infer media recovery from a healthy API restore. Keep the data volume
 offline or read-only, restore originals/publication metadata from their separate
 encrypted backup when needed, verify checksums, and re-establish the reviewed
@@ -35,6 +35,6 @@ accepted snapshot encrypted off-device and verify the copy manually; no unit in
 this repository transmits backup data.
 
 Never improvise from a different Kubernetes/etcd release or use `kubeadm reset`
-as restore. Never paste PKI, encryption keys, snapshot content, kubeconfig, age
-identity, or decrypted Secrets into commands that are logged, Git, CI,
-documentation, or chat.
+as restore. Never paste PKI, encryption keys, snapshot content, kubeconfig, or
+decrypted Secrets into commands that are logged, Git, CI, documentation, or
+chat.

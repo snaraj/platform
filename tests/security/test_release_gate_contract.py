@@ -10,7 +10,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_GATE = REPO_ROOT / "scripts" / "release-gate.sh"
-GOTK_SYNC = REPO_ROOT / "kubernetes" / "flux-system" / "gotk-sync.yaml.in"
 FLUX_EVIDENCE_VALIDATOR = REPO_ROOT / "scripts" / "validate_flux_release_evidence.py"
 INVENTORY_VALIDATOR = REPO_ROOT / "scripts" / "validate_runtime_inventory_evidence.py"
 COMMIT = "a" * 40
@@ -28,10 +27,7 @@ CILIUM_OPERATOR_IMAGE = "quay.io/cilium/operator-generic:v1.0.0@sha256:" + "8" *
 CILIUM_IMAGE = "quay.io/cilium/cilium:v1.0.0@sha256:" + "9" * 64
 
 # Pinned as literal strings on purpose (issue #251): these are the exact
-# Kustomization names the synced tree creates in gotk-sync.yaml.in, NOT a
-# value derived from the validator under test, so inventory drift in either
-# the validator or this suite turns the suite red instead of staying
-# self-consistently green.
+# Exact Kustomization names in the installed application-reconciliation interface.
 KUSTOMIZATION_NAMES = (
     "naranjo-online-reconciler",
     "lidersea-com-reconciler",
@@ -813,24 +809,6 @@ class ReleaseGateContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("bound to exact local HEAD", result.stdout)
 
-    def test_kustomization_inventory_matches_the_synced_tree(self):
-        """Cross-bind the pinned identities to what the tree actually creates.
-
-        gotk-sync.yaml.in is the reviewed source of the live Kustomization
-        objects, so the literal names this suite feeds the validator must
-        equal the names that file defines — a rename or an added object in
-        either place turns this red instead of leaving the validator and its
-        fixtures agreeing on a name the cluster never carries (issue #251).
-        """
-
-        tree_names = set()
-        for document in GOTK_SYNC.read_text(encoding="utf-8").split("\n---\n"):
-            if not re.search(r"^kind: Kustomization$", document, re.MULTILINE):
-                continue
-            match = re.search(r"^  name: (\S+)$", document, re.MULTILINE)
-            self.assertIsNotNone(match, document)
-            tree_names.add(match.group(1))
-        self.assertEqual(tree_names, set(KUSTOMIZATION_NAMES))
 
     def test_pre_activation_suffixless_kustomization_name_fails_closed(self):
         """The retired suffixless identities must be refused, not tolerated.

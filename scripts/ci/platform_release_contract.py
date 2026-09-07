@@ -108,16 +108,6 @@ CODEQL_EXACT_STEPS = {
         ("Post Check out repository", "success"),
         ("Complete job", "success"),
     ),
-    "analyze (go, autobuild)": (
-        ("Set up job", "success"),
-        ("Check out repository", "success"),
-        ("Initialize CodeQL", "success"),
-        ("Analyze", "success"),
-        ("Post Analyze", "success"),
-        ("Post Initialize CodeQL", "success"),
-        ("Post Check out repository", "success"),
-        ("Complete job", "success"),
-    ),
 }
 RECOVERY_BASE_SHA = "c63f357fbc77d55f6e60050f687cceb8723eda6c"
 RECOVERY_SOURCE_SHA = "51c5f44f9cf1d35f68c6e9613e73ad50ef2e644e"
@@ -897,8 +887,8 @@ def render_release_identity(
     main_run_attempt: int,
     platform_run_id: int,
     platform_run_attempt: int,
-    selector_image_digest: str,
-    selector_build_sha: str,
+    selector_image_digest: str | None = None,
+    selector_build_sha: str | None = None,
     github_repository: str | None = None,
     github_repository_id: int | None = None,
 ) -> str:
@@ -938,11 +928,6 @@ def render_release_identity(
     for field, value in integer_fields.items():
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise ContractError(f"{field} must be a positive integer")
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", selector_image_digest) is None:
-        raise ContractError("selector image digest must be canonical sha256")
-    selector_build_sha = require_sha(
-        selector_build_sha, "selector image build source SHA"
-    )
     evidence = {
         "changelog": {
             "fragment_path": window.fragment_path,
@@ -958,7 +943,7 @@ def render_release_identity(
             "workflow": WORKFLOW_PATH,
         },
         # A running workflow cannot truthfully put its own future conclusion in
-        # an immutable asset. The selector later GETs this exact attempt and
+        # an immutable asset. A verifier later GETs this exact attempt and
         # requires status=completed and conclusion=success.
         "platform_release": {
             "event": "workflow_run",
@@ -983,23 +968,6 @@ def render_release_identity(
         },
         "repository": selected["repository"],
         "schema": selected["schema"],
-        "selector": {
-            "digest": selector_image_digest,
-            "image": SELECTOR_IMAGE,
-            "provenance": {
-                "attestor_identity": SELECTOR_CERTIFICATE_SUBJECT,
-                "predicate_type": SLSA_PROVENANCE_V1,
-                "source_sha": selector_build_sha,
-                "subject_digest": selector_image_digest,
-            },
-            "signature": {
-                "certificate_identity": SELECTOR_CERTIFICATE_SUBJECT,
-                "oidc_issuer": SELECTOR_CERTIFICATE_ISSUER,
-            },
-        },
-        "sites": _site_identities_from_receipt(
-            _file_bytes(repository, head_sha, RELEASE_IDENTITY_RECEIPT_PATH)
-        ),
         "source": {
             "merge_sha": head_sha,
             "protected_ref": PROTECTED_REF,
@@ -1012,8 +980,31 @@ def render_release_identity(
             "peeled_commit": head_sha,
         },
     }
-    if selected["version"] == 2:
+    if selected["version"] >= 2:
         evidence["repository_id"] = EPOCH.REPOSITORY_ID
+    if selected["version"] < 3:
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", selector_image_digest or "") is None:
+            raise ContractError("selector image digest must be canonical sha256")
+        selector_build_sha = require_sha(
+            selector_build_sha or "", "selector image build source SHA"
+        )
+        evidence["selector"] = {
+            "digest": selector_image_digest,
+            "image": SELECTOR_IMAGE,
+            "provenance": {
+                "attestor_identity": SELECTOR_CERTIFICATE_SUBJECT,
+                "predicate_type": SLSA_PROVENANCE_V1,
+                "source_sha": selector_build_sha,
+                "subject_digest": selector_image_digest,
+            },
+            "signature": {
+                "certificate_identity": SELECTOR_CERTIFICATE_SUBJECT,
+                "oidc_issuer": SELECTOR_CERTIFICATE_ISSUER,
+            },
+        }
+        evidence["sites"] = _site_identities_from_receipt(
+            _file_bytes(repository, head_sha, RELEASE_IDENTITY_RECEIPT_PATH)
+        )
     try:
         EPOCH.validate_identity(evidence)
     except (KeyError, TypeError, ValueError) as error:
@@ -1326,7 +1317,7 @@ def codeql_jobs_ready(
     if total_count == 0 and jobs == []:
         return False
     if total_count != len(CODEQL_EXACT_STEPS) or len(jobs) != len(CODEQL_EXACT_STEPS):
-        raise ContractError("expected exact Python and Go CodeQL jobs for the source SHA")
+        raise ContractError("expected the exact Python CodeQL job for the source SHA")
     by_name: dict[str, Mapping[str, object]] = {}
     for value in jobs:
         job = _object(value, "CodeQL job")
@@ -2469,9 +2460,11 @@ def selector_image_from_release(
 ) -> str:
     """Validate the identity asset and carry its immutable selector digest."""
     expected_sha = require_sha(expected_sha, "selector predecessor SHA")
-    expected_selector_build_sha = require_sha(
-        expected_selector_build_sha, "selector image build source SHA"
-    )
+    selected = EPOCH.identity(expected_tag)
+    if selected["version"] < 3:
+        expected_selector_build_sha = require_sha(
+            expected_selector_build_sha, "selector image build source SHA"
+        )
     if expected_tag_object_sha is not None:
         expected_tag_object_sha = require_sha(
             expected_tag_object_sha, "selector predecessor tag-object SHA"
@@ -2491,8 +2484,7 @@ def selector_image_from_release(
             raise ContractError(f"{label} fields are incomplete or foreign")
         return record
 
-    selected = EPOCH.identity(expected_tag)
-    if set(evidence) != ({
+    expected_fields = {
         "changelog",
         "main_ci",
         "platform_release",
@@ -2500,11 +2492,12 @@ def selector_image_from_release(
         "release",
         "repository",
         "schema",
-        "selector",
-        "sites",
         "source",
         "tag",
-    } | ({"repository_id"} if selected["version"] == 2 else set())):
+    } | ({"repository_id"} if selected["version"] >= 2 else set())
+    if selected["version"] < 3:
+        expected_fields |= {"selector", "sites"}
+    if set(evidence) != expected_fields:
         raise ContractError("selector predecessor top-level fields are foreign")
     if (
         evidence.get("schema") != selected["schema"]
@@ -2659,6 +2652,12 @@ def selector_image_from_release(
             or (with_conclusion and run.get("conclusion") != "success")
         ):
             raise ContractError(f"selector predecessor {key} is foreign")
+    if selected["version"] >= 3:
+        try:
+            EPOCH.validate_identity(evidence)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractError("signed release epoch is foreign") from error
+        return ""
     selector = exact(
         evidence["selector"], {"digest", "image", "provenance", "signature"}, "selector"
     )
@@ -3084,8 +3083,8 @@ def _parser() -> argparse.ArgumentParser:
     identity.add_argument("--main-run-attempt", type=int, required=True)
     identity.add_argument("--platform-run-id", type=int, required=True)
     identity.add_argument("--platform-run-attempt", type=int, required=True)
-    identity.add_argument("--selector-image-digest", required=True)
-    identity.add_argument("--selector-build-sha", required=True)
+    identity.add_argument("--selector-image-digest")
+    identity.add_argument("--selector-build-sha")
     recovery = commands.add_parser("recovery-release")
     recovery.add_argument("--repository", type=Path, required=True)
     recovery.add_argument("--source-sha", required=True)
