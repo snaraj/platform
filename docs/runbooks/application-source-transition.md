@@ -71,21 +71,33 @@ An additional exact server-side Pod ServiceAccount filter must return no items;
 labels cannot prove absence. Any selector Job lineage or selector-account Pod
 stops retirement, regardless of phase; no Pod specifications or status are needed.
 
-Before each authority change, repeat the complete census and require identical
-corresponding resource versions and identities, with the suspended CronJob and
-its empty active-reference list unchanged. Reject changes observed across this
-barrier and dispatch the authority mutation immediately after it. The census is
-an observation, not a lock: UID/resourceVersion compare-and-swap preconditions
-guard each authority mutation against concurrent target changes. Fix namespace,
+Before each authority change, repeat the complete census twice. Every collection
+must carry a nonempty resource version, but collection resource versions are
+snapshot markers and need not be equal. Reduce each collection to the exact item
+identities already described, including each object's resource version and closed
+owner references, and require those projections to match across both rounds.
+Both rounds must also show the same captured CronJob UID and complete body,
+suspended with an empty active-reference list, an empty selector-account census
+and no selector Job or Pod lineage. These matching observations prove the
+required current state at both observations; they do not prove that no transient
+event occurred between them.
+
+Dispatch the authority mutation immediately after its barrier. The census is an
+observation, not a lock: UID/resourceVersion compare-and-swap preconditions guard
+each authority mutation against concurrent target changes. Fix namespace,
 collection limits and the exact ServiceAccount filter in the reviewed operator
 package; never accept a caller-supplied API path or query.
 
 First atomically test the RoleBinding UID, current resourceVersion, whole roleRef
-and subjects, then empty its subjects. Prove that a fresh SubjectAccessReview for
-the selector ServiceAccount with its normal groups denies `patch` on the exact
-GitRepository. Missing responses, transport failures, malformed or differently
-scoped requests and authorization evaluation errors are failures. Keep the
-CronJob suspended and recheck quiescence before the source patch.
+and sole expected subject, then empty its subjects. A named after-read must prove
+the same RoleBinding UID and current object with an empty subject list. Repeat the
+complete two-round current-state barrier after this quarantine. Then prove that a
+fresh SubjectAccessReview for the selector ServiceAccount with its normal groups
+denies `patch` on the exact GitRepository. Missing responses, transport failures,
+malformed or differently scoped requests and authorization evaluation errors are
+failures. Re-read the source and immediately construct and dispatch the whole-spec,
+whole-metadata, UID and current-resource-version compare-and-swap. Keep the
+CronJob suspended throughout.
 
 After source convergence, delete in this order: CronJob, inert RoleBinding, Role,
 ServiceAccount, DNS/public/API NetworkPolicies, admission binding, admission
