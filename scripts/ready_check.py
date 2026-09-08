@@ -34,6 +34,10 @@ REVIEWS_APP_USER_ID = 318424677
 REVIEWS_APP_ID = 4641855
 REQUIRED_CHECKS = ("dependency-review", "repository-and-infrastructure")
 REQUIRED_CHECK_APP = "github-actions"
+REQUIRED_SECURITY_CHECKS = {
+    "analyze (python, none)": "github-actions",
+    "CodeQL": "github-advanced-security",
+}
 ACCEPTABLE_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 # AGENTS.md: every agent-created pull request carries the umbrella label, and
 # one taxonomy label is what tells a reader which review tier the change earns.
@@ -145,6 +149,14 @@ def ready_decision(head, labels, comments, checks, behind_by, state=None, base_r
             blockers.append(f"required check {name} was not produced by {REQUIRED_CHECK_APP}")
         elif found[0].get("status") != "completed" or found[0].get("conclusion") != "success":
             blockers.append(f"required check {name} has not succeeded at this head")
+    for name, app in REQUIRED_SECURITY_CHECKS.items():
+        found = [check for check in checks if check.get("name") == name]
+        if len(found) != 1:
+            blockers.append(f"required security check {name} appears {len(found)} times at this head; exactly one authoritative run is required")
+        elif (found[0].get("app") or {}).get("slug") != app:
+            blockers.append(f"required security check {name} was not produced by {app}")
+        elif found[0].get("status") != "completed" or found[0].get("conclusion") != "success":
+            blockers.append(f"required security check {name} has not succeeded at this head")
     # Every check at the head, required or not, must have FINISHED and ended in
     # a conclusion meaning "nothing went wrong". A queued or in-progress run has
     # no verdict yet, so it cannot be green: AGENTS.md permits the flip only
