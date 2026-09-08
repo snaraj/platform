@@ -1,0 +1,14 @@
+[
+  {"op": "test", "path": "/metadata/uid", "value": "REPLACE-WITH-THE-JOURNALLED-UID"},
+  {"op": "test", "path": "/metadata/resourceVersion", "value": "REPLACE-WITH-THE-CURRENT-RESOURCEVERSION"},
+  {"op": "test", "path": "/spec/ref/branch", "value": "main"},
+  {"op": "test", "path": "/spec/sparseCheckout", "value": [
+    "kubernetes/websites/naranjo-online",
+    "kubernetes/websites/lidersea-com"
+  ]},
+  {"op": "replace", "path": "/spec/sparseCheckout", "value": [
+    "kubernetes/websites/naranjo-online",
+    "kubernetes/websites/lidersea-com",
+    "kubernetes/websites/obsync"
+  ]}
+]

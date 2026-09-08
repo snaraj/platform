@@ -46,6 +46,38 @@ chart_source_namespaces := site_namespaces | {"obsidian"}
 # selection could drift through.
 pending_chart_namespaces := {"obsidian"}
 
+sentinel_chart_digest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# The Helm account each namespace's release impersonates. The two sites share
+# the generic `helm-reconciler`; `obsidian` uses an APPLICATION-SPECIFIC
+# account, because that Role separates creation from every follow-up mutation
+# and pins the mutations by `resourceNames` to the obsync chart's rendered
+# names. A shared generic account could not be narrowed that way without
+# narrowing the sites' too.
+# `cloudflare-public` is listed even though it is not a chart-source namespace:
+# the rule below is scoped to `tenant_namespaces`, which includes it, and a map
+# missing that key would make the rule UNDEFINED there rather than stricter —
+# silently dropping the connector release's account pin.
+# The Helm release name each namespace carries. It equalled the namespace for
+# every tenant until a namespace and its application stopped being the same
+# word: `obsidian` is the owner's namespace and `obsync` is the application, so
+# a rule deriving the release name from the namespace demanded a release named
+# `obsidian` that nothing renders. Stated per namespace, like every other
+# identity on this boundary.
+workload_release_names := {
+  "cloudflare-public": "cloudflare-public",
+  "naranjo-online": "naranjo-online",
+  "lidersea-com": "lidersea-com",
+  "obsidian": "obsync",
+}
+
+helm_reconciler_accounts := {
+  "cloudflare-public": "helm-reconciler",
+  "naranjo-online": "helm-reconciler",
+  "lidersea-com": "helm-reconciler",
+  "obsidian": "obsync-helm-reconciler",
+}
+
 # The namespaces a reviewed hash-bound namespace budget is required for. The
 # quota map is per namespace (see reviewed_namespace_capacity): the sites share
 # one measured envelope, obsync pays for a much larger single stateful Pod.
@@ -634,13 +666,13 @@ reviewed_namespace_capacity := {
     },
   },
   "obsidian": {
-    "evidence": "33e2aab63f9c4c8d7d01f393588fa92aa035015711a24ae167325c05353a464f",
+    "evidence": "f640c8b2ff06e4e97dc1e83e3b42f3e875e3ab57de212e89da32446f4ef373d1",
     "hard": {
-      "pods": "2",
-      "requests.cpu": "200m",
-      "requests.memory": "128Mi",
-      "limits.cpu": "4000m",
-      "limits.memory": "2Gi",
+      "pods": "4",
+      "requests.cpu": "450m",
+      "requests.memory": "384Mi",
+      "limits.cpu": "5000m",
+      "limits.memory": "2560Mi",
     },
   },
 }
@@ -867,7 +899,7 @@ deny contains msg if {
 }
 
 valid_helm_readback_rule(rule) if {
-  input.metadata.name == "helm-reconciler"
+  input.metadata.name == helm_reconciler_accounts[input.metadata.namespace]
   input.metadata.namespace in tenant_namespaces
   rule == {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
 }
@@ -878,10 +910,39 @@ valid_helm_readback_rule(rule) if {
 # StorageClass, node path or provisioner, which stay bootstrap/operator owned.
 claim_lifecycle_namespaces := {"naranjo-online", "obsidian"}
 
+# The exact claims each application-specific account may mutate. Named rather
+# than derived, so a chart that renamed a volume has to say so here.
+application_claims := {
+  "obsidian": ["obsync-blobs", "obsync-journal"],
+}
+
+# Two admissible shapes, and the difference is the #359 review finding. The
+# shared account grants one namespace-wide verb set. The application-specific
+# account splits CREATION, which cannot carry `resourceNames` because the object
+# does not exist yet, from every follow-up MUTATION, which is pinned to the
+# claims that application's chart renders — so it cannot reach a claim another
+# workload creates in the same namespace.
 valid_claim_lifecycle_rule(rule) if {
   input.metadata.name == "helm-reconciler"
   input.metadata.namespace in claim_lifecycle_namespaces
   rule == {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]}
+}
+
+valid_claim_lifecycle_rule(rule) if {
+  input.metadata.name == helm_reconciler_accounts[input.metadata.namespace]
+  input.metadata.namespace in claim_lifecycle_namespaces
+  rule == {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["list", "watch", "create"]}
+}
+
+valid_claim_lifecycle_rule(rule) if {
+  input.metadata.name == helm_reconciler_accounts[input.metadata.namespace]
+  input.metadata.namespace in claim_lifecycle_namespaces
+  rule == {
+    "apiGroups": [""],
+    "resources": ["persistentvolumeclaims"],
+    "resourceNames": application_claims[input.metadata.namespace],
+    "verbs": ["get", "update", "patch", "delete"],
+  }
 }
 
 deny contains msg if {
@@ -900,7 +961,7 @@ deny contains msg if {
 }
 
 valid_helm_readback_rule(rule) if {
-  input.metadata.name == "helm-reconciler"
+  input.metadata.name == helm_reconciler_accounts[input.metadata.namespace]
   input.metadata.namespace in tenant_namespaces
   rule == {"apiGroups": ["apps"], "resources": ["replicasets"], "verbs": ["get", "list", "watch"]}
 }
@@ -1101,6 +1162,58 @@ deny contains msg if {
 # Site charts are published, signed OCI artifacts. Any Git chart source in a
 # site namespace would reintroduce branch-head tracking with no signature
 # verification at all, so the kind itself is denied there.
+# The single-writer boundary itself, not a half of it. `ReadWriteOnce` excludes
+# other NODES, not other Pods, so on this single-node cluster it prevents no
+# second writer at all; `ReadWriteOncePod` would, but needs a CSI driver the
+# local class does not have. Nor does the server's own journal lock: it refuses
+# COOPERATIVE duplicate starts, but owning a directory is rename authority, so
+# a process with the workload's own uid can rename the journal root aside and
+# lock a different file. Excluding a second Pod is therefore an ADMISSION
+# decision, and these two rendered facts are it: activation cannot proceed on a
+# chart that could run two Pods.
+single_writer_namespaces := {"obsidian"}
+
+deny contains msg if {
+  input.kind == "Deployment"
+  input.metadata.namespace in single_writer_namespaces
+  object.get(input.spec, "replicas", 1) != 1
+  msg := sprintf("Deployment %s/%s must declare exactly one replica; its volumes have one writer", [input.metadata.namespace, input.metadata.name])
+}
+
+deny contains msg if {
+  input.kind == "Deployment"
+  input.metadata.namespace in single_writer_namespaces
+  object.get(object.get(input.spec, "strategy", {}), "type", "") != "Recreate"
+  msg := sprintf("Deployment %s/%s must roll with Recreate so two Pods never run at once", [input.metadata.namespace, input.metadata.name])
+}
+
+# The two arms that make `pending_chart_namespaces` load-bearing. Without them
+# the set was documentation: the sentinel was pinned through
+# `site_chart_releases` instead, so deleting the set changed no outcome.
+#
+# Arm one: a pending workload's release must be SUSPENDED. A pending selection
+# resolves to no artifact, so an unsuspended release produces a permanent
+# reconciliation error and claims a readiness it cannot have.
+deny contains msg if {
+  input.kind == "HelmRelease"
+  input.apiVersion == "helm.toolkit.fluxcd.io/v2"
+  input.metadata.namespace in pending_chart_namespaces
+  object.get(input.spec, "suspend", false) != true
+  msg := sprintf("HelmRelease %s/%s must stay suspended while its chart selection is pending", [input.metadata.namespace, input.metadata.name])
+}
+
+# Arm two, the inverse, so neither side of the set can rot: a workload that is
+# NOT pending may not select the fail-closed sentinel. Promotion moves a
+# namespace out of the set and replaces the digest in the same change, and
+# these two arms are what make a half-landed promotion fail either way.
+deny contains msg if {
+  input.kind == "OCIRepository"
+  input.metadata.namespace in chart_source_namespaces
+  not input.metadata.namespace in pending_chart_namespaces
+  object.get(object.get(input.spec, "ref", {}), "digest", "") == sentinel_chart_digest
+  msg := sprintf("OCIRepository %s/%s selects the pending sentinel digest but is not a pending workload", [input.metadata.namespace, input.metadata.name])
+}
+
 deny contains msg if {
   input.kind == "GitRepository"
   input.metadata.namespace in chart_source_namespaces
@@ -1297,8 +1410,8 @@ deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
   input.metadata.namespace in tenant_namespaces
-  object.get(input.spec, "serviceAccountName", "") != "helm-reconciler"
-  msg := sprintf("HelmRelease %s must use ServiceAccount helm-reconciler", [input.metadata.name])
+  object.get(input.spec, "serviceAccountName", "") != helm_reconciler_accounts[input.metadata.namespace]
+  msg := sprintf("HelmRelease %s must use ServiceAccount %s", [input.metadata.name, helm_reconciler_accounts[input.metadata.namespace]])
 }
 
 # DisableConfigWatchers removes the controller's broad ConfigMap/Secret event
@@ -1423,7 +1536,7 @@ deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
   input.metadata.namespace in tenant_namespaces
-  input.metadata.name != input.metadata.namespace
+  input.metadata.name != workload_release_names[input.metadata.namespace]
   msg := sprintf("HelmRelease identity %s/%s must be canonical", [input.metadata.namespace, input.metadata.name])
 }
 
@@ -1431,7 +1544,7 @@ deny contains msg if {
   input.kind == "HelmRelease"
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
   input.metadata.namespace in tenant_namespaces
-  object.get(input.spec, "releaseName", "") != input.metadata.namespace
+  object.get(input.spec, "releaseName", "") != workload_release_names[input.metadata.namespace]
   msg := sprintf("HelmRelease %s/%s must use canonical releaseName", [input.metadata.namespace, input.metadata.name])
 }
 

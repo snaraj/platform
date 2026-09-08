@@ -42,13 +42,13 @@ reviewed_namespace_capacity := {
     },
   },
   "obsidian": {
-    "evidence": "33e2aab63f9c4c8d7d01f393588fa92aa035015711a24ae167325c05353a464f",
+    "evidence": "f640c8b2ff06e4e97dc1e83e3b42f3e875e3ab57de212e89da32446f4ef373d1",
     "hard": {
-      "pods": "2",
-      "requests.cpu": "200m",
-      "requests.memory": "128Mi",
-      "limits.cpu": "4000m",
-      "limits.memory": "2Gi",
+      "pods": "4",
+      "requests.cpu": "450m",
+      "requests.memory": "384Mi",
+      "limits.cpu": "5000m",
+      "limits.memory": "2560Mi",
     },
   },
 }
@@ -195,11 +195,24 @@ deny contains msg if {
 
 # Each per-workload connector Deployment must carry a resolved tunnel-token
 # revision; an unresolved revision on ANY connector keeps the connector desired
-# state fail-closed. Derived from the workload set so a connector added to the
-# chart cannot be missing from this check.
+# state fail-closed.
+#
+# The instance is NOT derivable from the namespace, and deriving it was a real
+# hole rather than a style problem: `obsidian` is the owner's namespace while
+# the connector belongs to the obsync APPLICATION, so `<namespace>-tunnel`
+# produced `obsidian-tunnel` — a name no Deployment carries. The rule then
+# denied a Deployment that does not exist and said nothing at all about the
+# unresolved `obsync-tunnel` that does. Stated as the application-to-instance
+# tuple, which is what the chart actually renders.
+connector_instances := {
+  "naranjo-online": "naranjo-online-tunnel",
+  "lidersea-com": "lidersea-com-tunnel",
+  "obsidian": "obsync-tunnel",
+}
+
 cloudflared_connector_deployments := {instance |
   some namespace in chart_source_namespaces
-  instance := sprintf("%s-tunnel", [namespace])
+  instance := connector_instances[namespace]
 }
 
 deny contains msg if {

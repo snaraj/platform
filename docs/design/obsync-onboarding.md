@@ -45,7 +45,26 @@ tooling and may later hold other Obsidian-related workloads that are not
 obsync. Every object inside it that belongs to this application therefore
 carries the application's name — reconciler, chart source, Flux release,
 connector instance, both Secrets, both volumes, the ServiceAccount — so a
-second workload admitted to that namespace later collides with none of them.
+second workload admitted to that namespace later would not collide with any of
+them by NAME.
+
+**That is a naming property and not an isolation property, and the difference
+matters enough to state twice.** Review of this branch made the point exactly:
+naming everything `obsync` says nothing about what a co-resident workload could
+reach. The namespace holds ONE reviewed workload today, and co-residency is a
+future TRUST DECISION rather than something these names already secure. This
+design does not build a multi-tenant admission boundary and does not claim one.
+
+What it does do is refuse to leave the authority generic while saying otherwise.
+The Helm account in this namespace is `obsync-helm-reconciler`, not the shared
+`helm-reconciler` the two sites use, and its Role separates creation — which
+cannot carry `resourceNames` because the object does not exist yet — from every
+follow-up mutation, which is pinned to the chart's rendered names (`obsync`,
+`obsync-blobs`, `obsync-journal`). There is no namespace-wide claim rule. One
+grant stays namespace-wide and is named rather than buried: Helm's release
+storage is version-suffixed (`sh.helm.release.v1.obsync.v1`, `.v2`, ...), so
+those Secret names cannot be known ahead of the releases that produce them.
+Admitting a second workload here would have to answer for exactly that grant.
 
 The practical consequence for a reviewer, and for every validator in this
 change: NOTHING in the `obsidian` namespace may be derived from the namespace
@@ -122,9 +141,14 @@ touched on this branch, so the text is proposed here rather than applied.
 >    property than any policy evaluated after a request arrives.
 >
 > Its runtime credential is its own: one token, held only as a Kubernetes
-> Secret (`obsync-tunnel-token`), consumed by its connector through
-> `secretKeyRef` (`TUNNEL_TOKEN`), never a literal manifest value, and rotated
-> independently of the two sites.
+> Secret (`obsync-tunnel-token`), never a literal manifest value, and rotated
+> independently of the two sites. It reaches the connector as a FILE, not an
+> environment variable: the chart projects the Secret as a read-only volume at
+> mode `0440` and passes `--token-file /etc/cloudflared/token/token`. That is
+> the shape the chart actually renders, and the difference is not cosmetic — an
+> environment variable is readable from `/proc/<pid>/environ` by anything that
+> can see the process and is copied into every child, while a projected file is
+> read once at the path the argument names.
 >
 > No new zone and no new Cloudflare product: WARP and Tunnel are both already
 > in the committed allowlist and both are Free-tier, so the zero-spend posture

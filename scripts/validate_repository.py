@@ -181,6 +181,18 @@ WORKLOAD_APPLICATIONS = {
 }
 DIRECT_WORKLOAD_NAMESPACES = tuple(WORKLOAD_APPLICATIONS)
 
+# The Helm account each namespace's release impersonates. The two sites share
+# the generic `helm-reconciler`; `obsidian` uses an APPLICATION-SPECIFIC account
+# whose Role separates creation (which cannot carry `resourceNames`) from every
+# follow-up mutation (which does, pinned to the obsync chart's rendered names).
+# Narrowing the shared account would have narrowed the sites' too, so the third
+# workload gets its own rather than a widened common one.
+WORKLOAD_HELM_ACCOUNTS = {
+    "naranjo-online": "helm-reconciler",
+    "lidersea-com": "helm-reconciler",
+    "obsidian": "obsync-helm-reconciler",
+}
+
 # The namespaces whose Helm chart creates its own PersistentVolumeClaims, and
 # therefore the only helm-reconcilers that may hold claim lifecycle at all.
 # Claim lifecycle confers NO authority over the backing PersistentVolume,
@@ -227,11 +239,11 @@ REVIEWED_NAMESPACE_CAPACITY = {
     "obsidian": (
         Path("docs/audits/2026-09-07-obsync-capacity-evidence.md"),
         {
-            "pods": "2",
-            "requests.cpu": "200m",
-            "requests.memory": "128Mi",
-            "limits.cpu": "4000m",
-            "limits.memory": "2Gi",
+            "pods": "4",
+            "requests.cpu": "450m",
+            "requests.memory": "384Mi",
+            "limits.cpu": "5000m",
+            "limits.memory": "2560Mi",
         },
     ),
 }
@@ -240,7 +252,7 @@ REVIEWED_NAMESPACE_CAPACITY = {
 # every ServiceAccount, Role, RoleBinding, rule, and subject in access.yaml.
 # Update it only after reviewing that complete authorization file.
 FLUX_ACCESS_CONTRACT_SHA256 = (
-    "7cffb11cbca86cabb988429d082cc3d9305f2e55143e2cc71dd4dfd419256ed4"
+    "d152f203a7415261e37a29431d3e1f536b598e13437d7a51ba259a3a6ce1f6c6"
 )
 
 # The same coupling for the six cluster-scoped per-controller objects, which
@@ -1611,7 +1623,11 @@ FLUX_CONTROLLER_ROLE_NAMESPACES = {
     "flux-controller-runtime": ("flux-system",),
     "flux-controller-impersonation": ("flux-system",) + DIRECT_WORKLOAD_NAMESPACES,
     "flux-release-reconciler": DIRECT_WORKLOAD_NAMESPACES,
-    "helm-reconciler": DIRECT_WORKLOAD_NAMESPACES,
+    "helm-reconciler": tuple(
+        namespace for namespace, account in WORKLOAD_HELM_ACCOUNTS.items()
+        if account == "helm-reconciler"
+    ),
+    "obsync-helm-reconciler": ("obsidian",),
 }
 
 RBAC_READ_VERBS = ("get", "list", "watch")
@@ -1919,9 +1935,9 @@ def flux_rbac_contract_errors(root):
             ("ServiceAccount", "flux-system", WORKLOAD_APPLICATIONS[site] + "-reconciler"),
             ("Role", site, "flux-release-reconciler"),
             ("RoleBinding", site, WORKLOAD_APPLICATIONS[site] + "-reconciler"),
-            ("ServiceAccount", site, "helm-reconciler"),
-            ("Role", site, "helm-reconciler"),
-            ("RoleBinding", site, "helm-reconciler"),
+            ("ServiceAccount", site, WORKLOAD_HELM_ACCOUNTS[site]),
+            ("Role", site, WORKLOAD_HELM_ACCOUNTS[site]),
+            ("RoleBinding", site, WORKLOAD_HELM_ACCOUNTS[site]),
         })
 
     def expected_rule(groups, resources, verbs, names=()):
@@ -1962,7 +1978,7 @@ def flux_rbac_contract_errors(root):
         expected_role_rules[(site, "flux-controller-impersonation")] = (
             expected_rule(
                 ("",), ("serviceaccounts",), ("impersonate",),
-                ("helm-reconciler",),
+                (WORKLOAD_HELM_ACCOUNTS[site],),
             ),
         )
         expected_role_rules[(site, "flux-release-reconciler")] = (
@@ -1985,20 +2001,57 @@ def flux_rbac_contract_errors(root):
                 ("get", "update", "patch"), ("default-deny",),
             ),
         )
-        helm_rules = [
-            expected_rule(
-                ("",),
-                ("configmaps", "secrets", "services", "serviceaccounts"),
-                full,
-            ),
-            expected_rule(("",), ("pods",), readback),
-            expected_rule(("apps",), ("deployments",), full),
-            expected_rule(("apps",), ("replicasets",), readback),
-            expected_rule(("networking.k8s.io",), ("networkpolicies",), full),
-        ]
-        if site in PVC_LIFECYCLE_NAMESPACES:
-            helm_rules.append(expected_rule(("",), ("persistentvolumeclaims",), full))
-        expected_role_rules[(site, "helm-reconciler")] = tuple(helm_rules)
+        account = WORKLOAD_HELM_ACCOUNTS[site]
+        if account == "helm-reconciler":
+            helm_rules = [
+                expected_rule(
+                    ("",),
+                    ("configmaps", "secrets", "services", "serviceaccounts"),
+                    full,
+                ),
+                expected_rule(("",), ("pods",), readback),
+                expected_rule(("apps",), ("deployments",), full),
+                expected_rule(("apps",), ("replicasets",), readback),
+                expected_rule(("networking.k8s.io",), ("networkpolicies",), full),
+            ]
+            if site in PVC_LIFECYCLE_NAMESPACES:
+                helm_rules.append(
+                    expected_rule(("",), ("persistentvolumeclaims",), full)
+                )
+        else:
+            # The application-specific shape. Creation is unnamed because the
+            # object does not exist yet; every follow-up mutation is pinned to
+            # the chart's rendered names, so this account cannot update or
+            # delete an object another workload creates in the namespace. The
+            # one namespace-wide grant is Secrets, because Helm's release
+            # storage is version-suffixed and cannot be named ahead of time.
+            create = ("list", "watch", "create")
+            mutate = ("get", "update", "patch", "delete")
+            rendered = WORKLOAD_APPLICATIONS[site]
+            helm_rules = [
+                expected_rule(("",), ("secrets",), full),
+                expected_rule(
+                    ("",), ("configmaps", "services", "serviceaccounts"), create
+                ),
+                expected_rule(
+                    ("",), ("configmaps", "services", "serviceaccounts"),
+                    mutate, (rendered,),
+                ),
+                expected_rule(("",), ("persistentvolumeclaims",), create),
+                expected_rule(
+                    ("",), ("persistentvolumeclaims",), mutate,
+                    tuple(rendered + suffix for suffix in ("-blobs", "-journal")),
+                ),
+                expected_rule(("",), ("pods",), readback),
+                expected_rule(("apps",), ("deployments",), create),
+                expected_rule(("apps",), ("deployments",), mutate, (rendered,)),
+                expected_rule(("apps",), ("replicasets",), readback),
+                expected_rule(("networking.k8s.io",), ("networkpolicies",), create),
+                expected_rule(
+                    ("networking.k8s.io",), ("networkpolicies",), mutate, (rendered,)
+                ),
+            ]
+        expected_role_rules[(site, account)] = tuple(helm_rules)
 
     expected_bindings = {
         ("flux-system", "flux-controller-runtime"): (
@@ -2017,8 +2070,9 @@ def flux_rbac_contract_errors(root):
         expected_bindings[(site, application + "-reconciler")] = (
             "flux-release-reconciler", (("flux-system", application + "-reconciler"),),
         )
-        expected_bindings[(site, "helm-reconciler")] = (
-            "helm-reconciler", ((site, "helm-reconciler"),),
+        helm_account = WORKLOAD_HELM_ACCOUNTS[site]
+        expected_bindings[(site, helm_account)] = (
+            helm_account, ((site, helm_account),),
         )
 
     seen_identities = []
@@ -2081,18 +2135,46 @@ def flux_rbac_contract_errors(root):
         for block in blocks:
             resources = tuple(_rbac_rule_list(block, "resources"))
             if "persistentvolumeclaims" in resources:
-                is_exact_claim_rule = (
-                    name == "helm-reconciler"
-                    and namespace in PVC_LIFECYCLE_NAMESPACES
+                # Two admissible shapes, and the difference is the point of the
+                # #359 review finding. The shared `helm-reconciler` grants one
+                # namespace-wide verb set; the application-specific account
+                # splits creation (which cannot carry `resourceNames`) from
+                # mutation (which must), so a claim another workload creates in
+                # the same namespace is out of its reach entirely.
+                entitled = (
+                    namespace in PVC_LIFECYCLE_NAMESPACES
+                    and name == WORKLOAD_HELM_ACCOUNTS.get(namespace)
                     and tuple(_rbac_rule_list(block, "apiGroups")) == ("",)
                     and resources == ("persistentvolumeclaims",)
-                    and tuple(_rbac_rule_list(block, "verbs"))
-                    == RBAC_READ_VERBS + ("create", "update", "patch", "delete")
-                    and _rbac_rule_fields(block)
-                    == {"apiGroups", "resources", "verbs"}
                 )
-                if is_exact_claim_rule:
-                    exact_pvc_rule_namespaces.append(namespace)
+                verbs = tuple(_rbac_rule_list(block, "verbs"))
+                fields = _rbac_rule_fields(block)
+                names = tuple(_rbac_rule_list(block, "resourceNames"))
+                claims = tuple(
+                    WORKLOAD_APPLICATIONS.get(namespace, "") + suffix
+                    for suffix in ("-blobs", "-journal")
+                )
+                shared_shape = (
+                    verbs == RBAC_READ_VERBS + ("create", "update", "patch", "delete")
+                    and fields == {"apiGroups", "resources", "verbs"}
+                    and name == "helm-reconciler"
+                )
+                creation_shape = (
+                    verbs == ("list", "watch", "create")
+                    and fields == {"apiGroups", "resources", "verbs"}
+                )
+                mutation_shape = (
+                    verbs == ("get", "update", "patch", "delete")
+                    and fields == {"apiGroups", "resources", "verbs", "resourceNames"}
+                    and names == claims
+                )
+                if entitled and (shared_shape or creation_shape or mutation_shape):
+                    # A split pair contributes its namespace once, on the arm
+                    # that is name-bound: counting both halves would let a
+                    # namespace satisfy the exactness check with two creation
+                    # rules and no bounded mutation at all.
+                    if shared_shape or mutation_shape:
+                        exact_pvc_rule_namespaces.append(namespace)
                 else:
                     errors.append(
                         "PVC lifecycle must be only the exact namespaced "
@@ -2118,7 +2200,8 @@ def flux_rbac_contract_errors(root):
                         namespace, name
                     )
                 )
-        if name == "helm-reconciler" and namespace in DIRECT_WORKLOAD_NAMESPACES:
+        if (namespace in DIRECT_WORKLOAD_NAMESPACES
+                and name == WORKLOAD_HELM_ACCOUNTS.get(namespace)):
             exact_rule_fields = ("apiGroups", "resources", "verbs")
             expected_readback = {
                 (("",), ("pods",), RBAC_READ_VERBS, exact_rule_fields),

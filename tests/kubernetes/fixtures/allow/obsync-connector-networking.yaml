@@ -76,11 +76,11 @@ metadata:
   namespace: obsidian
   annotations:
     platform.snaraj.dev/readiness: reviewed-pi-capacity
-    platform.snaraj.dev/capacity-evidence-sha256: 33e2aab63f9c4c8d7d01f393588fa92aa035015711a24ae167325c05353a464f
+    platform.snaraj.dev/capacity-evidence-sha256: f640c8b2ff06e4e97dc1e83e3b42f3e875e3ab57de212e89da32446f4ef373d1
 spec:
   hard:
-    pods: "2"
-    requests.cpu: 200m
-    requests.memory: 128Mi
-    limits.cpu: 4000m
-    limits.memory: 2Gi
+    pods: "4"
+    requests.cpu: 450m
+    requests.memory: 384Mi
+    limits.cpu: 5000m
+    limits.memory: 2560Mi

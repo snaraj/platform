@@ -205,7 +205,7 @@ rules:
   - apiGroups: [""]
     resources: [serviceaccounts]
     verbs: [impersonate]
-    resourceNames: [helm-reconciler]
+    resourceNames: [obsync-helm-reconciler]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -422,7 +422,7 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: helm-reconciler
+  name: obsync-helm-reconciler
   namespace: obsidian
 automountServiceAccountToken: false
 ---
@@ -507,43 +507,82 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: helm-reconciler
+  name: obsync-helm-reconciler
   namespace: obsidian
+# APPLICATION-SPECIFIC authority, unlike the two site Roles above, and the
+# difference is deliberate rather than stylistic. Those grant one namespace-wide
+# verb set per resource; this one separates CREATION, which cannot carry
+# `resourceNames` because the object does not exist yet, from every FOLLOW-UP
+# mutation, which can and does. The obsync chart's rendered names are known and
+# fixed — Deployment, Service, ServiceAccount and NetworkPolicy all `obsync`,
+# and the two claims `obsync-blobs` and `obsync-journal` — so nothing here needs
+# unbounded update or delete.
+#
+# This is NOT multi-tenant isolation and must not be read as any: the namespace
+# holds exactly one reviewed workload today, and a second co-resident workload
+# would be a new trust decision, not something these names already secure
+# (docs/design/obsync-onboarding.md).
 rules:
+  # The one grant that stays namespace-wide, named here so the exception is
+  # legible rather than buried. Helm's release storage is version-suffixed
+  # (`sh.helm.release.v1.obsync.v1`, `.v2`, ...), so the Secret names are not
+  # knowable ahead of the releases that produce them and cannot be pinned with
+  # `resourceNames`. This is the "creation cannot be name-restricted" case, and
+  # it is bounded by the namespace and by nothing narrower.
   - apiGroups: [""]
-    resources: [configmaps, secrets, services, serviceaccounts]
+    resources: [secrets]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Issue #348: the obsync chart owns two claims in this namespace (blobs and
-  # journal). Claim lifecycle does not confer authority over the backing PV,
-  # StorageClass, node path, or provisioner: those stay bootstrap/operator
-  # owned (docs/runbooks/storage-admission.md) and this account can neither
-  # create nor retarget them.
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts]
+    verbs: [list, watch, create]
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
+  # Issue #348: the obsync chart owns exactly two claims in this namespace, and
+  # they are named. Claim lifecycle confers no authority over the backing PV,
+  # StorageClass, node path or provisioner: those stay bootstrap/operator owned
+  # (docs/runbooks/storage-admission.md) and this account can neither create nor
+  # retarget them. Mutation is pinned to the two names, so this Role cannot
+  # reach a claim some other workload creates here later.
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [list, watch, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    resourceNames: [obsync-blobs, obsync-journal]
+    verbs: [get, update, patch, delete]
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [deployments]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [list, watch, create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
   - apiGroups: [apps]
     resources: [replicasets]
     verbs: [get, list, watch]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [list, watch, create]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: helm-reconciler
+  name: obsync-helm-reconciler
   namespace: obsidian
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: helm-reconciler
+  name: obsync-helm-reconciler
 subjects:
   - kind: ServiceAccount
-    name: helm-reconciler
+    name: obsync-helm-reconciler
     namespace: obsidian

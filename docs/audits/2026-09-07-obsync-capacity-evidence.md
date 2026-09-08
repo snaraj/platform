@@ -64,12 +64,27 @@ owns and the Pod it pays for stay one reviewable pair across the two:
 | Per-Pod limits | `cpu=2`, `memory=1Gi` |
 | Volumes | 2 x `ReadWriteOnce` (`local-pie-ssd`) |
 
-Three constraints follow, and all three are load-bearing for section 3.
+Four constraints follow, and all four are load-bearing for section 3.
 
-**Two Pods can never run at once.** The blob and journal volumes are
-`ReadWriteOnce` and the journal has exactly one writer, so a second Pod could
-neither bind them nor be allowed to. `Recreate` is the only correct rollout
-here, not a tuning preference, and there is no surge slot to pay for.
+**`ReadWriteOnce` does NOT stop a second Pod, and an earlier revision of this
+document said it did.** RWO excludes other NODES, not other Pods: on this
+single-node cluster two Pods scheduled to the same node may both mount the same
+claim read-write and both write the journal. `ReadWriteOncePod` would express
+one-Pod exclusivity but requires a CSI driver the non-CSI local class does not
+have. The correction matters for capacity because the old sentence made the Pod
+ceiling look like a formality; it is not.
+
+Nor does the server's own journal lock close it. That lock refuses
+COOPERATIVE duplicate starts — a rollout surge, an operator running `check` or
+`export` beside a live `serve` — but owning a directory is rename authority, so
+a process with the workload's own uid can rename the journal root aside and
+take an uncontended lock on a different file. What keeps one writer is an
+ADMISSION decision: `replicas: 1` and `strategy: Recreate` in the signed chart,
+which `policies/conftest/kubernetes.rego` asserts over the RENDERED Deployment,
+so activation cannot proceed on a chart that could run two Pods. The lock sits
+under those, not in place of them, and its cross-account repair is a candidate
+head (`snaraj/obsync` `ef01d5d`) still pending an exact-head approval. `Recreate` is therefore the only correct rollout here, not
+a tuning preference, and there is no surge slot to pay for.
 
 **A Pod ceiling of one nevertheless reproduces #198.** Under `Recreate` the
 Deployment waits for the old Pod to be deleted before creating the new one, so
@@ -83,18 +98,54 @@ doubles as the slot an operator debug Pod would need.
 **The ceiling must scale with the Pod ceiling.** Raising `pods` while leaving
 `limits.memory` at one Pod's worth would be cosmetic — the second Pod could not
 schedule whatever `pods` said. This is the exact error the 2026-08-22 review
-found in the pre-#201 site budget, so every quantity below is the Pod ceiling
-times the per-Pod figure.
+found in the pre-#201 site budget, so every quantity below is a Pod count times
+a per-Pod figure.
+
+**The namespace holds a SECOND workload at activation, and the first revision
+of this document omitted it.** The reviewed transport terminates TLS in-cluster
+in a dedicated proxy — a separate workload in this namespace, not a sidecar —
+so the activation topology is application plus proxy, each with its own
+replacement slot. Sizing the namespace for the application alone would have made
+the proxy consume the application's reserved replacement slot silently, which is
+the #198 wedge with an extra step.
 
 ## 3. Reviewed budget
 
+**Every figure in this section is DERIVED, not measured.** Section 0 says why:
+nothing has run here. The application figures are derived from the application
+contract; the proxy figures are a PLACEHOLDER awaiting the boundary lane's own
+sizing, and are marked as such rather than presented as a measurement.
+
+Activation topology, four Pod slots:
+
+| Slot | Basis |
+| --- | --- |
+| application, steady state | 1 replica, `Recreate` |
+| application, replacement overlap | a terminating Pod holds its slot; at a ceiling of one its replacement is denied by quota with no retry able to recover it (#198) |
+| TLS proxy, steady state | PLACEHOLDER — the boundary lane owns the artifact, its replicas and its rollout strategy |
+| TLS proxy, replacement overlap | PLACEHOLDER — reserved so the proxy can never spend the application's slot |
+
+Per-Pod envelopes:
+
+| Workload | requests | limits | Status |
+| --- | --- | --- | --- |
+| obsync | `cpu=100m`, `memory=64Mi` | `cpu=2`, `memory=1Gi` | derived from the application contract |
+| TLS proxy | `cpu=125m`, `memory=128Mi` | `cpu=500m`, `memory=256Mi` | **PLACEHOLDER**, derived from the cloudflared connector as the nearest comparable in-cluster network workload (its own namespace budget divided by its four-Pod ceiling). Replaced by the boundary lane's sizing, in the change that lands the proxy |
+
 | Key | Value | Derivation |
 | --- | --- | --- |
-| `pods` | `2` | terminating slot + replacement |
-| `requests.cpu` | `200m` | 2 x 100m |
-| `requests.memory` | `128Mi` | 2 x 64Mi |
-| `limits.cpu` | `4000m` | 2 x 2 cores |
-| `limits.memory` | `2Gi` | 2 x 1Gi |
+| `pods` | `4` | app + app replacement + proxy + proxy replacement |
+| `requests.cpu` | `450m` | 2 x 100m + 2 x 125m |
+| `requests.memory` | `384Mi` | 2 x 64Mi + 2 x 128Mi |
+| `limits.cpu` | `5000m` | 2 x 2 cores + 2 x 500m |
+| `limits.memory` | `2560Mi` | 2 x 1Gi + 2 x 256Mi |
+
+The connector is NOT in this budget. It runs in `cloudflare-public` and is paid
+for by that namespace's own quota, which already carries a four-Pod ceiling; the
+third connector fits it at one replica with exactly one connector's worth of
+room left, and `tests/security/test_namespace_capacity_contract.py` asserts both
+that fit and the fact that two replicas per connector no longer fit now that
+there are three.
 
 The `container-defaults` LimitRange states the same per-Pod envelope as its
 `default`/`defaultRequest` pair, so a container that omitted its resources
@@ -141,19 +192,28 @@ current scheduled totals:
 
 | Quantity | naranjo-online | lidersea-com | cloudflare-public | obsidian | Total | Safe pool | Utilisation |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `requests.cpu` | 150m | 150m | 500m | 200m | 1000m | 1620m | 62% |
-| `requests.memory` | 192Mi | 192Mi | 512Mi | 128Mi | 1024Mi | 4335Mi | 24% |
+| `requests.cpu` | 150m | 150m | 500m | 450m | 1250m | 1620m | 77% |
+| `requests.memory` | 192Mi | 192Mi | 512Mi | 384Mi | 1280Mi | 4335Mi | 30% |
 
-Both stay inside the reviewed pool with margin. CPU is the tighter of the two
-and is the number to re-check before any further namespace is added: 62% of
-the pool is committed and a second workload of this size would take it past
-80%.
+Both stay inside the reviewed pool, but the margin is now thin and the honest
+figure is the one to act on: CPU commitment rises from 62% to **77%** once the
+proxy slot is reserved. The `cloudflare-public` column is unchanged because the
+third connector fits its existing four-Pod ceiling at one replica; the whole
+increase is this namespace reserving four slots rather than two.
+
+77% is the number to re-check before ANY further namespace or workload, and it
+is close enough to the pool that the proxy's real sizing could move it
+materially: the placeholder above is derived from the connector, and a
+TLS terminator that needs more would have to be paid for by re-deriving this
+table rather than by quietly widening the quota. If the boundary lane's sizing
+comes in above the placeholder, this document and the quota move together in
+that change.
 
 Limits are the deliberately looser half and already overcommit, as the
 2026-08-22 document records and explains. Adding this namespace's `limits.cpu`
-ceiling of 4000m to that document's 6400m projection gives 10400m against
-3250m allocatable (~320%). Limits are ceilings, not reservations, and only
-requests participate in scheduling — but 320% is a materially different posture
+ceiling of 5000m to that document's 6400m projection gives 11400m against
+3250m allocatable (~351%). Limits are ceilings, not reservations, and only
+requests participate in scheduling — but 351% is a materially different posture
 from the ~197% the owner reviewed in August, and section 7 names it as
 something to accept explicitly rather than inherit silently.
 
@@ -166,7 +226,7 @@ envelope. Each item below is owner-owed and none is discharged here:
    requests and limits again. The 2026-08-22 figures are a point-in-time
    reading and this change adds a namespace, which that document names as
    exactly the kind of material change that warrants re-measuring.
-2. **Accept the limits overcommit.** Confirm that ~320% of allocatable in CPU
+2. **Accept the limits overcommit.** Confirm that ~351% of allocatable in CPU
    limits across four namespaces is the intended posture on a single node, or
    direct a lower `limits.cpu` for this namespace.
 3. **Confirm the per-Pod envelope against a real run.** 100m/64Mi requests and

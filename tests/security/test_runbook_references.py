@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -58,6 +59,51 @@ class RunbookReferenceTests(unittest.TestCase):
             "the reference scan found suspiciously few paths; "
             "pattern or doc roots may have rotted",
         )
+
+
+
+
+class OperatorArtifactTests(unittest.TestCase):
+    """A runbook that ships an artifact must ship the one it was reviewed with.
+
+    The obsync application-sync procedure carries an applyable Kustomization
+    under `docs/runbooks/artifacts/`, and the allow fixture that proves it
+    satisfies this repository's own Conftest policy is a COPY of it. Two files
+    with the same bytes and no check between them drift the first time one is
+    edited — and the review that produced this artifact found exactly that class
+    of defect, a runbook whose YAML the head's own policy rejected.
+    """
+
+    ARTIFACT = REPO_ROOT / "docs/runbooks/artifacts/obsync-reconciler.yaml"
+    FIXTURE = REPO_ROOT / "tests/kubernetes/fixtures/allow/obsync-reconciler-artifact.yaml"
+
+    def test_the_reviewed_artifact_and_its_policy_fixture_are_identical(self):
+        self.assertTrue(self.ARTIFACT.is_file(), self.ARTIFACT)
+        self.assertTrue(self.FIXTURE.is_file(), self.FIXTURE)
+        self.assertEqual(
+            self.ARTIFACT.read_bytes(),
+            self.FIXTURE.read_bytes(),
+            "the operator artifact and the fixture proving it passes policy "
+            "must be the same bytes",
+        )
+
+    def test_the_source_path_patch_tests_before_it_replaces(self):
+        """A blind replace would overwrite whatever the source currently says."""
+
+        patch = json.loads(
+            (REPO_ROOT / "docs/runbooks/artifacts/obsync-source-path.patch.json")
+            .read_text(encoding="utf-8")
+        )
+        operations = [entry["op"] for entry in patch]
+        self.assertEqual(operations[-1], "replace")
+        self.assertNotIn("replace", operations[:-1])
+        tested = {entry["path"] for entry in patch if entry["op"] == "test"}
+        for required in ("/metadata/uid", "/metadata/resourceVersion",
+                         "/spec/sparseCheckout"):
+            self.assertIn(required, tested)
+        replacement = patch[-1]["value"]
+        self.assertEqual(len(replacement), len(set(replacement)))
+        self.assertIn("kubernetes/websites/obsync", replacement)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,8 @@
+# The exact denial each hostile variant must produce: five documents, five
+# denials, one field each. A message that disappears is a relaxed reconciler
+# rule, and the reviewed artifact beside this file is the positive control.
+Kustomization obsync-reconciler must not prune during the direct release boundary
+Kustomization obsync-reconciler must orphan inventory on deletion
+Kustomization obsync-reconciler must use path ./kubernetes/websites/obsync
+Kustomization obsync-reconciler must use ServiceAccount obsync-reconciler
+Kustomization obsync-reconciler must wait for runtime readiness

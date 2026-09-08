@@ -63,55 +63,67 @@ one path and nothing else:
     kubernetes/websites/lidersea-com
     kubernetes/websites/obsync
 
-Apply it as a JSON Patch that tests the source's current `resourceVersion` and
-original UID, tests the complete existing path list, and replaces it with the
-list above. A failed test stops the whole patch; never substitute a merge
-patch. Nothing else about the source changes: the URL, `ref.branch: main`, the
+Apply the reviewed patch,
+[artifacts/obsync-source-path.patch.json](artifacts/obsync-source-path.patch.json),
+after substituting the journalled UID and the current `resourceVersion` into its
+two placeholder `test` operations:
+
+    kubectl patch gitrepository flux-system --namespace flux-system \
+      --type json \
+      --patch-file docs/runbooks/artifacts/obsync-source-path.patch.json
+
+Every `test` operation precedes the single `replace`, which is what makes this
+safe: the patch tests the object's UID, its current `resourceVersion`, the
+branch, and the COMPLETE existing path list before replacing that list, so a
+source that moved under the operator fails the whole patch instead of being
+overwritten. `tests/security/test_runbook_references.py` asserts that shape —
+one trailing `replace`, no earlier one, and those three tests present. A failed
+test stops the entire patch; never substitute a merge patch, which has no test
+operation at all.
+
+Nothing else about the source changes: the URL, `ref.branch: main`, the
 interval, the timeout and the absence of any credential, alternate reference,
-submodule or suspension are all unchanged, and no new path shape is introduced.
+submodule or suspension are all unchanged.
 
 Re-read the source afterwards and require its UID, complete spec and complete
 metadata to match the journal except for that one list.
 
 ## 2. The reconciler, created suspended
 
-Create exactly this object. It is the shape the two existing tenant
-reconcilers carry — same kind, same source reference, same `prune: false`, same
-`deletionPolicy: Orphan`, same one-directory path, its own ServiceAccount —
-with one difference, `suspend: true`:
+Apply the reviewed artifact, byte for byte:
+[artifacts/obsync-reconciler.yaml](artifacts/obsync-reconciler.yaml). It is not
+reproduced here, deliberately: a runbook that pastes YAML beside the file it
+ships invites the two to drift, and the first draft of this procedure did
+exactly that — its inline copy carried `wait: false`, which this repository's
+own Conftest policy REFUSES for every approved reconciler. The artifact is now
+proven against that policy on every run:
+`tests/kubernetes/fixtures/allow/obsync-reconciler-artifact.yaml` is the same
+bytes, `tests/security/test_runbook_references.py` asserts they stay the same
+bytes, and
+`tests/kubernetes/fixtures/deny/obsync-reconciler-artifact-bypasses.yaml` is
+five hostile one-field variants, each refused.
 
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: obsync-reconciler
-  namespace: flux-system
-spec:
-  suspend: true
-  interval: 1m0s
-  retryInterval: 2m0s
-  timeout: 3m0s
-  path: ./kubernetes/websites/obsync
-  prune: false
-  force: false
-  deletionPolicy: Orphan
-  wait: false
-  serviceAccountName: obsync-reconciler
-  targetNamespace: obsidian
-  sourceRef:
-    kind: GitRepository
-    name: flux-system
-```
+Its shape is the shape the two existing tenant reconcilers carry — same kind,
+same source reference, same `prune: false`, same `deletionPolicy: Orphan`, same
+one-directory path, its own ServiceAccount, `wait: true` — with one difference,
+`suspend: true`.
 
 `prune: false` and `deletionPolicy: Orphan` are not defaults being restated:
 they are why removing this object later cannot delete a tenant's live
 resources. `serviceAccountName` is what confines everything this reconciler
 applies to the authority `access.yaml` grants in `obsidian`; without it the
-apply would run as kustomize-controller itself. `wait: false` keeps a suspended
-release from holding the reconciliation open.
+apply would run as kustomize-controller itself.
 
-Create it with a create-only apply that refuses an existing object of the same
-name, and prove afterwards that no fourth Kustomization appeared.
+Apply it CREATE-ONLY, so an existing object of the same name is never
+overwritten by this procedure:
+
+    kubectl create --filename docs/runbooks/artifacts/obsync-reconciler.yaml \
+      --output name
+
+`kubectl create` fails with `AlreadyExists` rather than adopting; never
+substitute `apply`, which would silently take ownership of an object this
+procedure did not create. Afterwards, prove the inventory is exactly four
+Kustomizations in `flux-system` and that no fifth appeared.
 
 ## 3. What stays suspended, and what flips it live
 
@@ -143,6 +155,31 @@ After both, require: current observed generation and Ready on the source and
 all three Kustomizations, all applying the same revision; SourceVerified on the
 chart source with the exact attempted digest; Helm readiness; and the tenant
 and controller boundaries unchanged. Static gates are not live evidence.
+
+## 3b. Host directories, and the two commands that refuse while it serves
+
+The volumes the claims bind to are an operator ceremony, and the server's own
+posture constrains how their directories are prepared. It refuses a volume
+directory that is writable by its group or by others unless sticky, and requires
+the configured path to be its own resolved form — no symlink, no `.`, no `..`.
+Create them accordingly:
+
+    /mnt/local-pie-ssd/obsidian/obsync-blobs
+    /mnt/local-pie-ssd/obsidian/obsync-journal
+
+each owned `65532:65532`, mode `0700`, with root-owned parents that are not
+group- or world-writable (sticky is acceptable), and no symlink anywhere on
+either path. The chart sets no `fsGroup`: group sharing is not the mechanism
+here, directory ownership is. That ownership keeps OTHER accounts off the path;
+it grants the workload's own uid nothing, so a second Pod of this workload is
+excluded by `replicas: 1` and `strategy: Recreate` — asserted over the rendered
+Deployment — rather than by the filesystem.
+
+`obsyncd check` and `obsyncd export` take the same exclusive journal lock the
+server does, so they REFUSE while `serve` is running, with
+`reason=journal_locked`. Any step in this procedure or in recovery that runs
+either one stops the server first and restarts it afterwards; treating the
+refusal as a fault would be the wrong reading.
 
 ## 4. Recovery
 

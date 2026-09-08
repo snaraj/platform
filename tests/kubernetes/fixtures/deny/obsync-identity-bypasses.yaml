@@ -180,3 +180,84 @@ spec:
         allowPrivilegeEscalation: false
         capabilities: {drop: [ALL]}
         readOnlyRootFilesystem: true
+---
+# A pending workload's release left UNSUSPENDED. Its chart selection resolves to
+# no artifact, so this claims a readiness it cannot have and would reconcile
+# into a permanent error. Every other field is canonical on purpose, so exactly
+# one arm fires: this is the arm that makes `pending_chart_namespaces`
+# load-bearing, and deleting that set makes this denial disappear.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: obsync
+  namespace: obsidian
+  labels:
+    app.kubernetes.io/managed-by: fluxcd
+spec:
+  suspend: false
+  interval: 1m0s
+  maxHistory: 2
+  releaseName: obsync
+  serviceAccountName: obsync-helm-reconciler
+  driftDetection:
+    mode: enabled
+  chartRef:
+    kind: OCIRepository
+    name: obsync-chart
+  install:
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 0
+      strategy: rollback
+---
+# The inverse arm: a workload that is NOT pending selecting the sentinel. It
+# would install nothing while reading as a normal selection.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.80"
+  name: naranjo-online-chart
+  namespace: naranjo-online
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/naranjo-online
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/naranjo\.online/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+# The rendered half of the single-writer boundary: a second replica. RWO would
+# not stop it — that access mode excludes other NODES — so this is one of the
+# two facts the platform can actually assert about the chart it reconciles.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync
+  namespace: obsidian
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+---
+# The other half: a surge strategy, which briefly runs the new Pod beside the
+# old one on the same journal volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync
+  namespace: obsidian
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
