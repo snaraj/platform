@@ -34,7 +34,10 @@ REVIEWS_APP_USER_ID = 318424677
 REVIEWS_APP_ID = 4641855
 REQUIRED_CHECKS = ("dependency-review", "repository-and-infrastructure")
 REQUIRED_CHECK_APP = "github-actions"
-REQUIRED_SECURITY_CHECKS = {"analyze (python, none)": "github-actions"}
+REQUIRED_SECURITY_CHECKS = {
+    "analyze (python, none)": "github-actions",
+    "CodeQL": "github-advanced-security",
+}
 ACCEPTABLE_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 # AGENTS.md: every agent-created pull request carries the umbrella label, and
 # one taxonomy label is what tells a reader which review tier the change earns.

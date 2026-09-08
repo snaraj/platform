@@ -1,1 +1,3 @@
-Require the retained Python CodeQL analysis to succeed before a pull request can be marked Ready.
+### Changed
+
+- Require both the retained Python CodeQL analysis and its aggregate security result to succeed before a pull request can be marked Ready.
