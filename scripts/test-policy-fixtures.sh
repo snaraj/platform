@@ -55,6 +55,10 @@ policy="${repo_root}/policies/conftest"
 
 command -v conftest >/dev/null 2>&1 || { printf 'conftest is required\n' >&2; exit 2; }
 
+# Native policy tests complement the whole-manifest corpus: the obsync claim
+# boundary asserts each field change against its own denial attribution.
+conftest verify --policy "$policy"
+
 # Every fixture is read by REDIRECTION rather than passed as a filename. `--`
 # is not a portable option terminator: BSD `sed` treats it as a file, printing
 # "sed: --: No such file or directory" and exiting non-zero -- and inside a

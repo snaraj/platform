@@ -203,6 +203,15 @@ and dependency-governed Draft capacity is recorded durably in
   cluster end of the tunnel whose provider-side configuration this lane
   already owns. PR #87 already writes it under this reading. Amend this row if
   the owner or the platform (peer) lane rules otherwise.
+- `kubernetes/platform/obsync-tls-proxy/**` — DELIVERY for the dedicated
+  obsync TLS boundary (issue #362), under the owner's boundary implementation
+  commission and the peer scope ruling in
+  [obsync #9 comment 5579317063](https://github.com/snaraj/obsync/pull/9#issuecomment-5579317063).
+  The exact crossing also covers its `OBSYNC_TLS_PROXY_IMAGE` pin, the
+  test-only `OBSYNC_TLS_TEST_BACKEND_IMAGE` pin, and the
+  existing obsync capacity document/hash binding, not other platform pins or
+  budgets. This grants no provider change, secret custody, storage activation,
+  new reconciler authority, or live apply path; those remain separately gated.
 - `kubernetes/platform/admission/**` and
   `kubernetes/platform/admission-install/**` — RETIRED and absent under the
   owner's issue #195 decision. No lane may recreate a Kyverno controller,
@@ -534,6 +543,9 @@ authority: the owner alone merges.
   must match the label (delivery-lane bodies ending `- Fable5` ↔ `fable5`,
   `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`;
   Codex-lane titles ending " - Codex 5.6 Sol Ultra" ↔ `5.6-sol`).
+  The model-neutral `codex` label (description "Authored by Codex") pairs with
+  `- Codex` when only that agent identity is asserted; do not fabricate a model
+  variant from a task notification or another worker's identity.
   The umbrella description is model-neutral: `Authored by an AI agent on the
   repository owner's behalf`. Treat older model-specific umbrella descriptions
   as coordinator/server-metadata cleanup across all repositories; keep the

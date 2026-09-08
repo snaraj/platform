@@ -53,10 +53,18 @@ non-source fields. A source Kubernetes adds later is therefore denied until it
 is reviewed. All nested object reads are type checked so null, scalar, list,
 or otherwise malformed values cannot make a Rego deny body disappear.
 
-The workload-volume control is separate and broader: every Pod template may
-use only `emptyDir`, `configMap`, `secret`, `projected`, or
-`downwardAPI`. Claims, CSI, cloud disks, network filesystems, multi-source
-entries, and unknown future fields fail closed.
+The workload-volume control is separate: the global source set remains
+`emptyDir`, `configMap`, `secret`, `projected`, and `downwardAPI`. One positive
+proof admits the signed obsync chart's exact two PVC mount pairs on its named
+Deployment: blobs at `/data/blobs`, journal at `/data/journal`. It binds the
+namespace, Deployment, selector/template identities, account, sole container,
+complete volume list and complete mount list. A proxy, bare Pod, Job, mirror,
+extra container, alternate claim, subPath or malformed source does not inherit
+this exception. CSI, cloud disks, network filesystems, multi-source entries and
+unknown future fields remain denied.
+
+This static exception authorizes neither a PV nor its backing filesystem. All
+runtime discovery and operator-owned storage prerequisites below still apply.
 
 ## Verification
 

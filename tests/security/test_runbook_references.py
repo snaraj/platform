@@ -64,6 +64,19 @@ class RunbookReferenceTests(unittest.TestCase):
             "pattern or doc roots may have rotted",
         )
 
+    def test_obsync_backend_binding_precedes_readiness_and_private_access(self):
+        """Pin the documented order, not a claim of live policy enforcement."""
+        text = (REPO_ROOT / "docs/runbooks/obsync-private-tls.md").read_text()
+        activation = text.split("## Activation order and acceptance\n", 1)[1]
+        steps = re.findall(r"^([1-5])\. ([^\n]+)$", activation, re.MULTILINE)
+        self.assertEqual(steps, [
+            ("1", "Keep the private path disabled."),
+            ("2", "Bind the reviewed application peer."),
+            ("3", "Install and start the reviewed proxy."),
+            ("4", "Require backend-dependent readiness."),
+            ("5", "Enable the separately approved private path."),
+        ])
+
 
 
 
