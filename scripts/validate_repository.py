@@ -5,6 +5,7 @@ import argparse
 import fnmatch
 import hashlib
 import ipaddress
+import json
 import os
 import re
 import stat
@@ -2371,7 +2372,7 @@ def flux_rbac_contract_errors(root):
 
 
 def check_kubernetes(root):
-    errors = []
+    errors = reviewed_source_patch_errors(root)
     forbidden = {
         "public Service": re.compile(r"(?m)^\s*type:\s*(?:NodePort|LoadBalancer)\s*$"),
         "external IP": re.compile(r"(?m)^\s*externalIPs:\s*$"),
@@ -2579,6 +2580,70 @@ def _quota_documents(text):
             lines.append(line)
         quotas.append(_parse_simple_mapping(lines, 0, len(lines), 0))
     return quotas
+
+
+# The operator patch that widens the source's sparse checkout, declared here
+# because a runbook cannot enforce its own artifact. The runbook claims a
+# source-admission boundary — one path added, every prior fact tested first —
+# and a property test that only counted `test` ops before the `replace` let a
+# FOURTH path into the new list and let the `/spec/ref/branch` test be deleted,
+# both silently. So the whole operation list is the contract: parsed as JSON and
+# compared to this literal, in order, values included.
+REVIEWED_SOURCE_PATCH_RUNBOOK = "docs/runbooks/obsync-application-sync.md"
+REVIEWED_SOURCE_PATCH_PATH = "docs/runbooks/artifacts/obsync-source-path.patch.json"
+REVIEWED_SOURCE_PATHS = (
+    "kubernetes/websites/naranjo-online",
+    "kubernetes/websites/lidersea-com",
+)
+REVIEWED_SOURCE_PATCH = (
+    {"op": "test", "path": "/metadata/uid",
+     "value": "REPLACE-WITH-THE-JOURNALLED-UID"},
+    {"op": "test", "path": "/metadata/resourceVersion",
+     "value": "REPLACE-WITH-THE-CURRENT-RESOURCEVERSION"},
+    {"op": "test", "path": "/spec/ref/branch", "value": "main"},
+    {"op": "test", "path": "/spec/sparseCheckout",
+     "value": list(REVIEWED_SOURCE_PATHS)},
+    {"op": "replace", "path": "/spec/sparseCheckout",
+     "value": list(REVIEWED_SOURCE_PATHS) + ["kubernetes/websites/obsync"]},
+)
+
+
+def _unique_json_object(pairs):
+    """A repeated key would silently keep the last one; refuse instead."""
+
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def reviewed_source_patch_errors(root):
+    """The operator's source-path patch is exactly the reviewed operation list.
+
+    Anything else — a fourth path, a missing precondition test, a reordered
+    list, a different op, an extra op — is a different admission decision from
+    the one that was reviewed, and the operator would be applying it from a
+    document this repository vouched for.
+    """
+
+    if not (root / REVIEWED_SOURCE_PATCH_RUNBOOK).is_file():
+        # Nothing instructs an operator to apply it, so there is no admission
+        # boundary to enforce. Synthetic trees in the test suite are this case;
+        # the real tree carries both, and the runbook-reference battery already
+        # requires every path a runbook cites in backticks to exist.
+        return []
+    try:
+        document = json.loads(
+            read(root / REVIEWED_SOURCE_PATCH_PATH),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, ValueError, UnicodeError, UnsafePublicPathError):
+        return ["reviewed source-path patch is unreadable"]
+    if document != [dict(operation) for operation in REVIEWED_SOURCE_PATCH]:
+        return ["reviewed source-path patch is not the reviewed operation list"]
+    return []
 
 
 def reviewed_capacity_errors(root):
