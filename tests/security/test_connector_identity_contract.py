@@ -1,9 +1,11 @@
 """Hostile Conftest and Helm checks for per-site connector isolation."""
 
 import json
+import pathlib
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,12 +15,17 @@ from .support import required_tool
 ROOT = Path(__file__).resolve().parents[2]
 CONFTEST = shutil.which("conftest")
 CONFTEST_POLICY = ROOT / "policies/conftest"
+RELEASE_POLICY = ROOT / "policies/release-conftest"
 HELM = shutil.which("helm")
 HELM_REQUIRED = "helm is required to render the chart"
 CHART = ROOT / "kubernetes/platform/cloudflare-public/chart"
+# Connector VALUES KEY -> (instance, token Secret). The key is the application,
+# which is why the third row's key and instance share a word its namespace does
+# not: `obsidian` is the owner's namespace, `obsync` is the application.
 CONNECTORS = {
     "naranjo-online": ("naranjo-online-tunnel", "naranjo-online-tunnel-token"),
     "lidersea-com": ("lidersea-com-tunnel", "lidersea-com-tunnel-token"),
+    "obsync": ("obsync-tunnel", "obsync-tunnel-token"),
 }
 CONNECTOR_INSTANCES = tuple(instance for instance, _ in CONNECTORS.values())
 ROTATED_REVISION = "rev-rotation-isolation-probe"
@@ -68,7 +75,7 @@ def document(parsed, kind, name):
         ) from None
 
 
-def conftest_denials(path):
+def conftest_denials(path, policy=None):
     """Return every exact denial, preserving duplicate messages."""
 
     completed = subprocess.run(
@@ -76,7 +83,7 @@ def conftest_denials(path):
             required_tool(CONFTEST, "conftest"),
             "test",
             "--policy",
-            str(CONFTEST_POLICY),
+            str(policy or CONFTEST_POLICY),
             "--output",
             "json",
             "--no-color",
@@ -190,10 +197,115 @@ class ConnectorTokenBindingTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             render("connectors.naranjo-online.secretName=pi-websites-tunnel-token")
 
-    def test_the_connector_inventory_is_exactly_the_two_reviewed_sites(self):
+    def test_the_connector_inventory_is_exactly_the_reviewed_connectors(self):
         parsed = documents(render())
         connectors = {name for kind, name in parsed if kind == "Deployment"}
         self.assertEqual(connectors, set(CONNECTOR_INSTANCES))
+
+    def test_every_required_connector_in_the_schema_is_actually_rendered(self):
+        """The template's explicit list and the schema's required set must agree.
+
+        This is the regression that let a connector exist on paper and nowhere
+        else: `values.schema.json` required an `obsync` entry, the chart carried
+        its values, every value-level check passed — and the Deployment template
+        iterated a hand-written list of two, so nothing was rendered for it and
+        every control that walks rendered connectors was satisfied by looking at
+        the other two. Comparing the two sources directly is the only check that
+        catches a name present in one and absent from the other.
+        """
+
+        schema = json.loads(
+            (CHART / "values.schema.json").read_text(encoding="utf-8")
+        )
+        required = set(schema["properties"]["connectors"]["required"])
+        self.assertEqual(required, set(CONNECTORS))
+        rendered = {name for kind, name in documents(render()) if kind == "Deployment"}
+        self.assertEqual(
+            rendered,
+            {instance for instance, _ in CONNECTORS.values()},
+            "every connector the schema requires must render a Deployment",
+        )
+
+    def test_every_connector_is_reachable_by_the_release_readiness_rule(self):
+        """The hostile case that passed the whole release suite at b503f5e.
+
+        Release readiness derived each connector's Deployment name as
+        `<namespace>-tunnel`. For the two sites that is accidentally correct.
+        For the third it produced `obsidian-tunnel`, a name nothing renders, so
+        the rule denied an object that does not exist and said NOTHING about an
+        unresolved `obsync-tunnel` that does — a hostile connector cleared every
+        check with no denial at all.
+
+        Each connector is asserted separately rather than as a set, because a
+        set assertion is satisfied by the sites alone; and the resolved control
+        beside it proves the rule is not simply denying everything.
+        """
+
+        template = (
+            "apiVersion: apps/v1\n"
+            "kind: Deployment\n"
+            "metadata:\n"
+            "  name: {instance}\n"
+            "  namespace: cloudflare-public\n"
+            "spec:\n"
+            "  template:\n"
+            "    metadata:\n"
+            "      annotations:\n"
+            "        platform.snaraj.dev/tunnel-token-revision: {revision}\n"
+        )
+        directory = tempfile.mkdtemp(prefix="connector-readiness.")
+        self.addCleanup(shutil.rmtree, directory, True)
+        unresolved = "cloudflared tunnel token revision remains unresolved"
+        for instance, _secret in CONNECTORS.values():
+            for revision, expected in (
+                ("not-configured", True),
+                ("UNRESOLVED", True),
+                ("rev-reviewed-probe", False),
+            ):
+                with self.subTest(instance=instance, revision=revision):
+                    path = pathlib.Path(directory) / "{}-{}.yaml".format(instance, revision)
+                    path.write_text(
+                        template.format(instance=instance, revision=revision),
+                        encoding="utf-8",
+                    )
+                    denials = conftest_denials(path, RELEASE_POLICY)
+                    self.assertEqual(
+                        unresolved in denials,
+                        expected,
+                        "{} at {} denials={}".format(instance, revision, denials),
+                    )
+
+    def test_the_token_reaches_the_connector_as_a_file_not_an_environment_variable(self):
+        """The contract the design document must describe, pinned here.
+
+        An earlier revision of `docs/design/obsync-onboarding.md` said the token
+        arrives through `secretKeyRef` as `TUNNEL_TOKEN`. It does not, and the
+        difference is not cosmetic: an environment variable is readable from
+        `/proc/<pid>/environ` by anything that can see the process and is copied
+        into every child, while a projected file is read once at the path the
+        argument names. The chart projects the Secret read-only and passes
+        `--token-file`, and this pins BOTH halves: the rendered connector, and
+        the sentence in the design document that describes it. Pinning only the
+        render left the document free to drift back, which a mutation run
+        proved by reverting the sentence and watching the suite stay green.
+        """
+
+        rendered = render()
+        self.assertIn("--token-file", rendered)
+        self.assertIn("/etc/cloudflared/token/token", rendered)
+        self.assertNotIn("secretKeyRef", rendered)
+        self.assertNotIn("TUNNEL_TOKEN", rendered)
+        for _instance, secret in CONNECTORS.values():
+            with self.subTest(secret=secret):
+                self.assertIn(secret, rendered)
+        # Read-only, and not mode 0444: the token is group-readable at most.
+        self.assertIn("readOnly: true", rendered)
+        design = (ROOT / "docs/design/obsync-onboarding.md").read_text(encoding="utf-8")
+        self.assertIn("--token-file /etc/cloudflared/token/token", design)
+        for wrong in ("secretKeyRef", "TUNNEL_TOKEN"):
+            with self.subTest(wrong=wrong):
+                self.assertNotIn(wrong, design)
+        self.assertIn("defaultMode: 0440", rendered)
 
     def test_the_superseded_single_connector_deployment_is_gone(self):
         parsed = documents(render())

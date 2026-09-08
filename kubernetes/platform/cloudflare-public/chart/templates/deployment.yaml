@@ -1,10 +1,19 @@
 {{- /*
-Explicit site order keeps the rendered document sequence fixed and auditable.
-Each connector's annotation reads ITS OWN tokenRevision, so rotating one
-Tunnel leaves the other Deployment byte-for-byte unchanged (ADR 0015's
+Explicit connector order keeps the rendered document sequence fixed and
+auditable. Each connector's annotation reads ITS OWN tokenRevision, so rotating
+one Tunnel leaves the other Deployments byte-for-byte unchanged (ADR 0015's
 one-Tunnel-at-a-time rotation).
+
+The list is written out rather than derived from `.Values.connectors`, because
+map iteration order is the one thing a rendered-document contract cannot
+depend on. It is therefore ALSO a place a connector can be silently missing:
+the values schema required an `obsync` entry while this list did not name it,
+so its Deployment was never rendered and every check that walks rendered
+connectors passed by looking at two. `test_connector_identity_contract.py`
+pins this list against the schema's required set so the two cannot diverge
+again.
 */ -}}
-{{- range $site := list "naranjo-online" "lidersea-com" }}
+{{- range $site := list "naranjo-online" "lidersea-com" "obsync" }}
 {{- $connector := index $.Values.connectors $site }}
 ---
 apiVersion: apps/v1

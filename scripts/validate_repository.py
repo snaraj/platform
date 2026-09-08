@@ -5,6 +5,7 @@ import argparse
 import fnmatch
 import hashlib
 import ipaddress
+import json
 import os
 import re
 import stat
@@ -145,25 +146,114 @@ SITE_RELEASE_CONTRACTS = (
     ("lidersea.com", "lidersea-com", "release-publisher.yml"),
 )
 
+# Every namespace this repository gives a Flux reconciliation identity to: a
+# ServiceAccount in `flux-system`, impersonation authority, a release
+# reconciler Role and a helm-reconciler Role. The two websites, plus the
+# `obsync` workload the owner admitted on 2026-09-07 (issue #348). It drives
+# the RBAC topology and the connector egress inventory — the reconciliation
+# graph, which a workload joins the moment its authority exists here, before
+# any manifest of its own is reconciled.
+#
+# It is deliberately WIDER than SITE_RELEASE_CONTRACTS above, which drives the
+# RELEASE-ACTIVATION checks (`deploymentReady: true`, no suspension, published
+# chart identity). `obsync` has authority but no activation: its chart
+# selection is the all-zero placeholder digest until snaraj/obsync publishes
+# v0.1.0, so it has no published release identity to check yet and its
+# HelmRelease is suspended. Adding it to the activation tuple before that
+# digest exists would demand a release the registry cannot serve.
+#
+# The composition those reconcilers apply — source, release, default-deny,
+# kustomization — is owned by `platform-k8s-infra`, not by this repository.
+# This tuple therefore states who may act, never what they apply.
+# Namespace -> the APPLICATION that reconciles inside it. Every Flux identity
+# in that namespace is named for the application, not for the namespace: the
+# reconciler is `<application>-reconciler`, the chart source
+# `<application>-chart`, the HelmRelease `<application>`.
+#
+# The two are the same word for the sites, whose namespace is their domain. For
+# `obsidian` they are not, deliberately: the NAMESPACE is the owner's and may
+# later hold other Obsidian-related workloads, while every object below belongs
+# to the obsync APPLICATION inside it. Deriving these names from the namespace
+# would make the second workload in that namespace collide with the first.
+WORKLOAD_APPLICATIONS = {
+    "naranjo-online": "naranjo-online",
+    "lidersea-com": "lidersea-com",
+    "obsidian": "obsync",
+}
+DIRECT_WORKLOAD_NAMESPACES = tuple(WORKLOAD_APPLICATIONS)
+
+# The Helm account each namespace's release impersonates. The two sites share
+# the generic `helm-reconciler`; `obsidian` uses an APPLICATION-SPECIFIC account
+# whose Role separates creation (which cannot carry `resourceNames`) from every
+# follow-up mutation (which does, pinned to the obsync chart's rendered names).
+# Narrowing the shared account would have narrowed the sites' too, so the third
+# workload gets its own rather than a widened common one.
+WORKLOAD_HELM_ACCOUNTS = {
+    "naranjo-online": "helm-reconciler",
+    "lidersea-com": "helm-reconciler",
+    "obsidian": "obsync-helm-reconciler",
+}
+
+# The namespaces whose Helm chart creates its own PersistentVolumeClaims, and
+# therefore the only helm-reconcilers that may hold claim lifecycle at all.
+# Claim lifecycle confers NO authority over the backing PersistentVolume,
+# StorageClass, node path or provisioner: those stay bootstrap/operator owned
+# (docs/runbooks/storage-admission.md) and no manifest in this repository may
+# even declare them.
+PVC_LIFECYCLE_NAMESPACES = ("naranjo-online", "obsidian")
+
 # Owner-reviewed capacity is one closed decision, not merely a syntactically
-# valid ResourceQuota.  Bind every site budget to the exact sanitized audit
-# bytes and exact five-field quota map approved in issue #201.
-REVIEWED_SITE_CAPACITY_EVIDENCE = Path(
-    "docs/audits/2026-08-22-site-capacity-evidence.md"
-)
-REVIEWED_SITE_CAPACITY_HARD = {
-    "pods": "6",
-    "requests.cpu": "150m",
-    "requests.memory": "192Mi",
-    "limits.cpu": "1200m",
-    "limits.memory": "768Mi",
+# valid ResourceQuota. Bind every tenant budget to the exact sanitized audit
+# bytes and exact five-field quota map its own evidence document derives.
+#
+# ONE MAP PER NAMESPACE, not one shared map. The two sites share theirs because
+# they run the identical workload — two replicas of a stateless web server at
+# 25m/32Mi requests and 200m/128Mi limits, measured together in issue #201.
+# `obsync` runs one stateful single-writer server whose per-Pod limit is ten
+# times the site figure on CPU, so a shared map could not state both honestly:
+# sized for the sites it would refuse the obsync Pod outright, and sized for
+# obsync it would hand each site four times the ceiling its evidence supports.
+# The check is exactly as strict per namespace as it was: an exact five-value
+# map bound to the exact bytes of one document, and a namespace with no entry
+# here has no admissible budget at all.
+REVIEWED_NAMESPACE_CAPACITY = {
+    "naranjo-online": (
+        Path("docs/audits/2026-08-22-site-capacity-evidence.md"),
+        {
+            "pods": "6",
+            "requests.cpu": "150m",
+            "requests.memory": "192Mi",
+            "limits.cpu": "1200m",
+            "limits.memory": "768Mi",
+        },
+    ),
+    "lidersea-com": (
+        Path("docs/audits/2026-08-22-site-capacity-evidence.md"),
+        {
+            "pods": "6",
+            "requests.cpu": "150m",
+            "requests.memory": "192Mi",
+            "limits.cpu": "1200m",
+            "limits.memory": "768Mi",
+        },
+    ),
+    "obsidian": (
+        Path("docs/audits/2026-09-07-obsync-capacity-evidence.md"),
+        {
+            "pods": "4",
+            "requests.cpu": "450m",
+            "requests.memory": "384Mi",
+            "limits.cpu": "5000m",
+            "limits.memory": "2560Mi",
+        },
+    ),
 }
 
 # This literal digest couples Trivy's path-scoped AVD-KSV-0056 acceptance to
 # every ServiceAccount, Role, RoleBinding, rule, and subject in access.yaml.
 # Update it only after reviewing that complete authorization file.
 FLUX_ACCESS_CONTRACT_SHA256 = (
-    "9c755188823d4037211be496086376a11241c85f31829628dd6bacb77f513d27"
+    "d152f203a7415261e37a29431d3e1f536b598e13437d7a51ba259a3a6ce1f6c6"
 )
 
 # The same coupling for the six cluster-scoped per-controller objects, which
@@ -1532,11 +1622,13 @@ FLUX_EXECUTION_API_GROUPS = (
 # start; an extra one is unrelated path authority.
 FLUX_CONTROLLER_ROLE_NAMESPACES = {
     "flux-controller-runtime": ("flux-system",),
-    "flux-controller-impersonation": (
-        "flux-system", "naranjo-online", "lidersea-com",
+    "flux-controller-impersonation": ("flux-system",) + DIRECT_WORKLOAD_NAMESPACES,
+    "flux-release-reconciler": DIRECT_WORKLOAD_NAMESPACES,
+    "helm-reconciler": tuple(
+        namespace for namespace, account in WORKLOAD_HELM_ACCOUNTS.items()
+        if account == "helm-reconciler"
     ),
-    "flux-release-reconciler": ("naranjo-online", "lidersea-com"),
-    "helm-reconciler": ("naranjo-online", "lidersea-com"),
+    "obsync-helm-reconciler": ("obsidian",),
 }
 
 RBAC_READ_VERBS = ("get", "list", "watch")
@@ -1831,23 +1923,22 @@ def flux_rbac_contract_errors(root):
     expected_identities = {
         ("ServiceAccount", "flux-system", "default"),
         ("ServiceAccount", "cloudflare-public", "default"),
-        ("ServiceAccount", "naranjo-online", "default"),
-        ("ServiceAccount", "lidersea-com", "default"),
         ("Role", "flux-system", "flux-controller-runtime"),
         ("RoleBinding", "flux-system", "flux-controller-runtime"),
         ("Role", "flux-system", "flux-controller-impersonation"),
         ("RoleBinding", "flux-system", "flux-controller-impersonation"),
     }
-    for site in ("naranjo-online", "lidersea-com"):
+    for site in DIRECT_WORKLOAD_NAMESPACES:
         expected_identities.update({
+            ("ServiceAccount", site, "default"),
             ("Role", site, "flux-controller-impersonation"),
             ("RoleBinding", site, "flux-controller-impersonation"),
-            ("ServiceAccount", "flux-system", site + "-reconciler"),
+            ("ServiceAccount", "flux-system", WORKLOAD_APPLICATIONS[site] + "-reconciler"),
             ("Role", site, "flux-release-reconciler"),
-            ("RoleBinding", site, site + "-reconciler"),
-            ("ServiceAccount", site, "helm-reconciler"),
-            ("Role", site, "helm-reconciler"),
-            ("RoleBinding", site, "helm-reconciler"),
+            ("RoleBinding", site, WORKLOAD_APPLICATIONS[site] + "-reconciler"),
+            ("ServiceAccount", site, WORKLOAD_HELM_ACCOUNTS[site]),
+            ("Role", site, WORKLOAD_HELM_ACCOUNTS[site]),
+            ("RoleBinding", site, WORKLOAD_HELM_ACCOUNTS[site]),
         })
 
     def expected_rule(groups, resources, verbs, names=()):
@@ -1879,15 +1970,16 @@ def flux_rbac_contract_errors(root):
         ("flux-system", "flux-controller-impersonation"): (
             expected_rule(
                 ("",), ("serviceaccounts",), ("impersonate",),
-                ("naranjo-online-reconciler", "lidersea-com-reconciler"),
+                tuple(WORKLOAD_APPLICATIONS[name] + "-reconciler"
+                      for name in DIRECT_WORKLOAD_NAMESPACES),
             ),
         ),
     }
-    for site in ("naranjo-online", "lidersea-com"):
+    for site in DIRECT_WORKLOAD_NAMESPACES:
         expected_role_rules[(site, "flux-controller-impersonation")] = (
             expected_rule(
                 ("",), ("serviceaccounts",), ("impersonate",),
-                ("helm-reconciler",),
+                (WORKLOAD_HELM_ACCOUNTS[site],),
             ),
         )
         expected_role_rules[(site, "flux-release-reconciler")] = (
@@ -1895,13 +1987,13 @@ def flux_rbac_contract_errors(root):
             expected_rule(("source.toolkit.fluxcd.io",), ("ocirepositories",), ("create",)),
             expected_rule(
                 ("source.toolkit.fluxcd.io",), ("ocirepositories",),
-                ("get", "update", "patch"), (site + "-chart",),
+                ("get", "update", "patch"), (WORKLOAD_APPLICATIONS[site] + "-chart",),
             ),
             expected_rule(("helm.toolkit.fluxcd.io",), ("helmreleases",), ("list",)),
             expected_rule(("helm.toolkit.fluxcd.io",), ("helmreleases",), ("create",)),
             expected_rule(
                 ("helm.toolkit.fluxcd.io",), ("helmreleases",),
-                ("get", "update", "patch"), (site,),
+                ("get", "update", "patch"), (WORKLOAD_APPLICATIONS[site],),
             ),
             expected_rule(("networking.k8s.io",), ("networkpolicies",), ("list",)),
             expected_rule(("networking.k8s.io",), ("networkpolicies",), ("create",)),
@@ -1910,20 +2002,57 @@ def flux_rbac_contract_errors(root):
                 ("get", "update", "patch"), ("default-deny",),
             ),
         )
-        helm_rules = [
-            expected_rule(
-                ("",),
-                ("configmaps", "secrets", "services", "serviceaccounts"),
-                full,
-            ),
-            expected_rule(("",), ("pods",), readback),
-            expected_rule(("apps",), ("deployments",), full),
-            expected_rule(("apps",), ("replicasets",), readback),
-            expected_rule(("networking.k8s.io",), ("networkpolicies",), full),
-        ]
-        if site == "naranjo-online":
-            helm_rules.append(expected_rule(("",), ("persistentvolumeclaims",), full))
-        expected_role_rules[(site, "helm-reconciler")] = tuple(helm_rules)
+        account = WORKLOAD_HELM_ACCOUNTS[site]
+        if account == "helm-reconciler":
+            helm_rules = [
+                expected_rule(
+                    ("",),
+                    ("configmaps", "secrets", "services", "serviceaccounts"),
+                    full,
+                ),
+                expected_rule(("",), ("pods",), readback),
+                expected_rule(("apps",), ("deployments",), full),
+                expected_rule(("apps",), ("replicasets",), readback),
+                expected_rule(("networking.k8s.io",), ("networkpolicies",), full),
+            ]
+            if site in PVC_LIFECYCLE_NAMESPACES:
+                helm_rules.append(
+                    expected_rule(("",), ("persistentvolumeclaims",), full)
+                )
+        else:
+            # The application-specific shape. Creation is unnamed because the
+            # object does not exist yet; every follow-up mutation is pinned to
+            # the chart's rendered names, so this account cannot update or
+            # delete an object another workload creates in the namespace. The
+            # one namespace-wide grant is Secrets, because Helm's release
+            # storage is version-suffixed and cannot be named ahead of time.
+            create = ("list", "watch", "create")
+            mutate = ("get", "update", "patch", "delete")
+            rendered = WORKLOAD_APPLICATIONS[site]
+            helm_rules = [
+                expected_rule(("",), ("secrets",), full),
+                expected_rule(
+                    ("",), ("configmaps", "services", "serviceaccounts"), create
+                ),
+                expected_rule(
+                    ("",), ("configmaps", "services", "serviceaccounts"),
+                    mutate, (rendered,),
+                ),
+                expected_rule(("",), ("persistentvolumeclaims",), create),
+                expected_rule(
+                    ("",), ("persistentvolumeclaims",), mutate,
+                    tuple(rendered + suffix for suffix in ("-blobs", "-journal")),
+                ),
+                expected_rule(("",), ("pods",), readback),
+                expected_rule(("apps",), ("deployments",), create),
+                expected_rule(("apps",), ("deployments",), mutate, (rendered,)),
+                expected_rule(("apps",), ("replicasets",), readback),
+                expected_rule(("networking.k8s.io",), ("networkpolicies",), create),
+                expected_rule(
+                    ("networking.k8s.io",), ("networkpolicies",), mutate, (rendered,)
+                ),
+            ]
+        expected_role_rules[(site, account)] = tuple(helm_rules)
 
     expected_bindings = {
         ("flux-system", "flux-controller-runtime"): (
@@ -1934,20 +2063,22 @@ def flux_rbac_contract_errors(root):
             "flux-controller-impersonation", (("flux-system", "kustomize-controller"),),
         ),
     }
-    for site in ("naranjo-online", "lidersea-com"):
+    for site in DIRECT_WORKLOAD_NAMESPACES:
         expected_bindings[(site, "flux-controller-impersonation")] = (
             "flux-controller-impersonation", (("flux-system", "helm-controller"),),
         )
-        expected_bindings[(site, site + "-reconciler")] = (
-            "flux-release-reconciler", (("flux-system", site + "-reconciler"),),
+        application = WORKLOAD_APPLICATIONS[site]
+        expected_bindings[(site, application + "-reconciler")] = (
+            "flux-release-reconciler", (("flux-system", application + "-reconciler"),),
         )
-        expected_bindings[(site, "helm-reconciler")] = (
-            "helm-reconciler", ((site, "helm-reconciler"),),
+        helm_account = WORKLOAD_HELM_ACCOUNTS[site]
+        expected_bindings[(site, helm_account)] = (
+            helm_account, ((site, helm_account),),
         )
 
     seen_identities = []
     seen_roles = set()
-    exact_naranjo_pvc_rules = 0
+    exact_pvc_rule_namespaces = []
     for document in documents:
         kind_match = re.search(r"(?m)^kind:\s*(ServiceAccount|Role|RoleBinding)\s*$", document)
         name_match = re.search(r"(?m)^\s*name:\s*(\S+)\s*$", document)
@@ -2005,22 +2136,52 @@ def flux_rbac_contract_errors(root):
         for block in blocks:
             resources = tuple(_rbac_rule_list(block, "resources"))
             if "persistentvolumeclaims" in resources:
-                is_exact_naranjo_rule = (
-                    name == "helm-reconciler"
-                    and namespace == "naranjo-online"
+                # Two admissible shapes, and the difference is the point of the
+                # #359 review finding. The shared `helm-reconciler` grants one
+                # namespace-wide verb set; the application-specific account
+                # splits creation (which cannot carry `resourceNames`) from
+                # mutation (which must), so a claim another workload creates in
+                # the same namespace is out of its reach entirely.
+                entitled = (
+                    namespace in PVC_LIFECYCLE_NAMESPACES
+                    and name == WORKLOAD_HELM_ACCOUNTS.get(namespace)
                     and tuple(_rbac_rule_list(block, "apiGroups")) == ("",)
                     and resources == ("persistentvolumeclaims",)
-                    and tuple(_rbac_rule_list(block, "verbs"))
-                    == RBAC_READ_VERBS + ("create", "update", "patch", "delete")
-                    and _rbac_rule_fields(block)
-                    == {"apiGroups", "resources", "verbs"}
                 )
-                if is_exact_naranjo_rule:
-                    exact_naranjo_pvc_rules += 1
+                verbs = tuple(_rbac_rule_list(block, "verbs"))
+                fields = _rbac_rule_fields(block)
+                names = tuple(_rbac_rule_list(block, "resourceNames"))
+                claims = tuple(
+                    WORKLOAD_APPLICATIONS.get(namespace, "") + suffix
+                    for suffix in ("-blobs", "-journal")
+                )
+                shared_shape = (
+                    verbs == RBAC_READ_VERBS + ("create", "update", "patch", "delete")
+                    and fields == {"apiGroups", "resources", "verbs"}
+                    and name == "helm-reconciler"
+                )
+                creation_shape = (
+                    verbs == ("list", "watch", "create")
+                    and fields == {"apiGroups", "resources", "verbs"}
+                )
+                mutation_shape = (
+                    verbs == ("get", "update", "patch", "delete")
+                    and fields == {"apiGroups", "resources", "verbs", "resourceNames"}
+                    and names == claims
+                )
+                if entitled and (shared_shape or creation_shape or mutation_shape):
+                    # A split pair contributes its namespace once, on the arm
+                    # that is name-bound: counting both halves would let a
+                    # namespace satisfy the exactness check with two creation
+                    # rules and no bounded mutation at all.
+                    if shared_shape or mutation_shape:
+                        exact_pvc_rule_namespaces.append(namespace)
                 else:
                     errors.append(
                         "PVC lifecycle must be only the exact namespaced "
-                        "naranjo-online/helm-reconciler rule"
+                        "helm-reconciler rule in {}".format(
+                            "/".join(PVC_LIFECYCLE_NAMESPACES)
+                        )
                     )
             # Impersonation without `resourceNames` is impersonation of every
             # account in the namespace, which re-opens the escalation path the
@@ -2040,9 +2201,8 @@ def flux_rbac_contract_errors(root):
                         namespace, name
                     )
                 )
-        if name == "helm-reconciler" and namespace in {
-            "naranjo-online", "lidersea-com",
-        }:
+        if (namespace in DIRECT_WORKLOAD_NAMESPACES
+                and name == WORKLOAD_HELM_ACCOUNTS.get(namespace)):
             exact_rule_fields = ("apiGroups", "resources", "verbs")
             expected_readback = {
                 (("",), ("pods",), RBAC_READ_VERBS, exact_rule_fields),
@@ -2065,15 +2225,19 @@ def flux_rbac_contract_errors(root):
                         namespace, name
                     )
                 )
-    if exact_naranjo_pvc_rules != 1:
+    # One rule each, in exactly the namespaces entitled to it: a list rather
+    # than a count, so two rules in one namespace and none in the other cannot
+    # cancel out.
+    if sorted(exact_pvc_rule_namespaces) != sorted(PVC_LIFECYCLE_NAMESPACES):
         errors.append(
-            "naranjo-online/helm-reconciler must carry exactly one exact PVC "
-            "lifecycle rule"
+            "each of {} must carry exactly one exact helm-reconciler PVC "
+            "lifecycle rule".format("/".join(PVC_LIFECYCLE_NAMESPACES))
         )
     if len(seen_identities) != len(expected_identities) or set(seen_identities) != expected_identities:
         errors.append(
-            "access.yaml inventory must be exactly 8 ServiceAccounts, 8 Roles, "
-            "and 8 RoleBindings for the direct-site topology"
+            "access.yaml inventory must be exactly {count} ServiceAccounts, "
+            "{count} Roles, and {count} RoleBindings for the direct-workload "
+            "topology".format(count=2 + 3 * len(DIRECT_WORKLOAD_NAMESPACES))
         )
     for name, namespaces in sorted(FLUX_CONTROLLER_ROLE_NAMESPACES.items()):
         for namespace in namespaces:
@@ -2208,7 +2372,7 @@ def flux_rbac_contract_errors(root):
 
 
 def check_kubernetes(root):
-    errors = []
+    errors = reviewed_source_patch_errors(root)
     forbidden = {
         "public Service": re.compile(r"(?m)^\s*type:\s*(?:NodePort|LoadBalancer)\s*$"),
         "external IP": re.compile(r"(?m)^\s*externalIPs:\s*$"),
@@ -2276,8 +2440,10 @@ def check_kubernetes(root):
                 "- op: remove", "path: /spec/egress",
             ],
             "flux-system/access.yaml": [
-                "namespace: cloudflare-public", "namespace: naranjo-online",
-                "namespace: lidersea-com",
+                "namespace: cloudflare-public",
+            ] + [
+                "namespace: " + namespace
+                for namespace in DIRECT_WORKLOAD_NAMESPACES
             ],
         }
         for name, fragments in required_fragments.items():
@@ -2307,8 +2473,10 @@ def check_kubernetes(root):
         # the platform keeps requiring its own egress side toward each site.
         required_network_templates = {
             "kubernetes/platform/cloudflare-public/chart/templates/network-policies.yaml": [
-                "cloudflared-dns", "cloudflared-edge", "cloudflared-naranjo-online",
-                "cloudflared-lidersea-com",
+                "cloudflared-dns", "cloudflared-edge",
+            ] + [
+                "cloudflared-" + namespace
+                for namespace in DIRECT_WORKLOAD_NAMESPACES
             ],
         }
         for name, policy_names in required_network_templates.items():
@@ -2414,20 +2582,99 @@ def _quota_documents(text):
     return quotas
 
 
-def reviewed_capacity_errors(root):
-    """Require one hash-bound reviewed namespace budget for each website."""
+# The operator patch that widens the source's sparse checkout, declared here
+# because a runbook cannot enforce its own artifact. The runbook claims a
+# source-admission boundary — one path added, every prior fact tested first —
+# and a property test that only counted `test` ops before the `replace` let a
+# FOURTH path into the new list and let the `/spec/ref/branch` test be deleted,
+# both silently. So the whole operation list is the contract: parsed as JSON and
+# compared to this literal, in order, values included.
+REVIEWED_SOURCE_PATCH_RUNBOOK = "docs/runbooks/obsync-application-sync.md"
+REVIEWED_SOURCE_PATCH_PATH = "docs/runbooks/artifacts/obsync-source-path.patch.json"
+REVIEWED_SOURCE_PATHS = (
+    "kubernetes/websites/naranjo-online",
+    "kubernetes/websites/lidersea-com",
+)
+REVIEWED_SOURCE_PATCH = (
+    {"op": "test", "path": "/metadata/uid",
+     "value": "REPLACE-WITH-THE-JOURNALLED-UID"},
+    {"op": "test", "path": "/metadata/resourceVersion",
+     "value": "REPLACE-WITH-THE-CURRENT-RESOURCEVERSION"},
+    {"op": "test", "path": "/spec/ref/branch", "value": "main"},
+    {"op": "test", "path": "/spec/sparseCheckout",
+     "value": list(REVIEWED_SOURCE_PATHS)},
+    {"op": "replace", "path": "/spec/sparseCheckout",
+     "value": list(REVIEWED_SOURCE_PATHS) + ["kubernetes/websites/obsync"]},
+)
+
+
+def _unique_json_object(pairs):
+    """A repeated key would silently keep the last one; refuse instead."""
+
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def reviewed_source_patch_errors(root):
+    """The operator's source-path patch is exactly the reviewed operation list.
+
+    Anything else — a fourth path, a missing precondition test, a reordered
+    list, a different op, an extra op — is a different admission decision from
+    the one that was reviewed, and the operator would be applying it from a
+    document this repository vouched for.
+    """
+
+    if not (root / REVIEWED_SOURCE_PATCH_RUNBOOK).is_file():
+        # Nothing instructs an operator to apply it, so there is no admission
+        # boundary to enforce. Synthetic trees in the test suite are this case;
+        # the real tree carries both, and the runbook-reference battery already
+        # requires every path a runbook cites in backticks to exist.
+        return []
+    try:
+        document = json.loads(
+            read(root / REVIEWED_SOURCE_PATCH_PATH),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, ValueError, UnicodeError, UnsafePublicPathError):
+        return ["reviewed source-path patch is unreadable"]
+    if document != [dict(operation) for operation in REVIEWED_SOURCE_PATCH]:
+        return ["reviewed source-path patch is not the reviewed operation list"]
+    return []
+
+
+def reviewed_capacity_errors(root, evidence_only=False):
+    """Require one hash-bound reviewed namespace budget for each website.
+
+    `evidence_only` is the subset a SCAFFOLD tree can answer, and it has to run
+    there: `check_activation` returns before `check_release` in scaffold mode,
+    so an edited evidence document with every stored hash untouched passed the
+    PR gate and only a release claim caught it. Nothing in that subset needs a
+    release — the hash is over committed bytes — and the release path runs the
+    identical code with the flag off.
+    """
 
     errors = []
-    evidence_path = root / REVIEWED_SITE_CAPACITY_EVIDENCE
-    try:
-        expected_evidence = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
-    except OSError:
-        expected_evidence = None
-        errors.append("reviewed website capacity evidence document is unavailable")
+    expected_evidence = {}
+    for namespace, (evidence_relative, _) in sorted(REVIEWED_NAMESPACE_CAPACITY.items()):
+        try:
+            expected_evidence[namespace] = hashlib.sha256(
+                (root / evidence_relative).read_bytes()
+            ).hexdigest()
+        except OSError:
+            errors.append(
+                "reviewed capacity evidence document is unavailable: " + namespace
+            )
     prerequisites_index = root / "kubernetes/platform/prerequisites/kustomization.yaml"
     resource_controls = root / "kubernetes/platform/prerequisites/resource-controls.yaml"
-    if not prerequisites_index.is_file() or not active_kustomization_resource(
-        read(prerequisites_index), "resource-controls.yaml"
+    if not evidence_only and (
+        not prerequisites_index.is_file()
+        or not active_kustomization_resource(
+            read(prerequisites_index), "resource-controls.yaml"
+        )
     ):
         errors.append("reviewed website capacity resource-controls are not reconciled")
 
@@ -2436,8 +2683,7 @@ def reviewed_capacity_errors(root):
     except (CanonicalYamlError, OSError, UnicodeError):
         return errors + ["reviewed website capacity quota inventory is non-canonical"]
 
-    expected_namespaces = {slug for _, slug, _ in SITE_RELEASE_CONTRACTS}
-    for namespace in sorted(expected_namespaces):
+    for namespace in sorted(REVIEWED_NAMESPACE_CAPACITY):
         matches = [
             quota for quota in quotas
             if _plain_yaml_scalar(quota.get(("metadata", "namespace"))) == namespace
@@ -2448,12 +2694,13 @@ def reviewed_capacity_errors(root):
             )
             continue
         quota = matches[0]
-        if _plain_yaml_scalar(quota.get(("metadata", "name"))) != "namespace-budget":
-            errors.append("reviewed website capacity quota identity is invalid: " + namespace)
-        if _plain_yaml_scalar(quota.get(
-            ("metadata", "annotations", "capacity_readiness")
-        )) != "reviewed-pi-capacity":
-            errors.append("reviewed website capacity readiness is invalid: " + namespace)
+        if not evidence_only:
+            if _plain_yaml_scalar(quota.get(("metadata", "name"))) != "namespace-budget":
+                errors.append("reviewed website capacity quota identity is invalid: " + namespace)
+            if _plain_yaml_scalar(quota.get(
+                ("metadata", "annotations", "capacity_readiness")
+            )) != "reviewed-pi-capacity":
+                errors.append("reviewed website capacity readiness is invalid: " + namespace)
         evidence = _plain_yaml_scalar(quota.get(
             (
                 "metadata", "annotations",
@@ -2462,19 +2709,22 @@ def reviewed_capacity_errors(root):
         ))
         if not isinstance(evidence, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence):
             errors.append("reviewed website capacity evidence hash is invalid: " + namespace)
-        elif expected_evidence is not None and evidence != expected_evidence:
+        elif namespace in expected_evidence and evidence != expected_evidence[namespace]:
             errors.append(
                 "reviewed website capacity evidence hash does not match document: "
                 + namespace
             )
+        if evidence_only:
+            continue
+        reviewed_hard = REVIEWED_NAMESPACE_CAPACITY[namespace][1]
         hard = {
             path[-1]: _plain_yaml_scalar(value)
             for path, value in quota.items()
             if len(path) == 3 and path[:2] == ("spec", "hard")
         }
-        if set(hard) != set(REVIEWED_SITE_CAPACITY_HARD):
+        if set(hard) != set(reviewed_hard):
             errors.append("reviewed website capacity limits are incomplete: " + namespace)
-        elif hard != REVIEWED_SITE_CAPACITY_HARD:
+        elif hard != reviewed_hard:
             errors.append(
                 "reviewed website capacity limits do not match owner decision: "
                 + namespace
@@ -2613,6 +2863,7 @@ def check_activation(root):
     if plan.mode == "scaffold":
         if activation_signal:
             errors.append("scaffold desired state contains a release activation signal")
+        errors.extend(reviewed_capacity_errors(root, evidence_only=True))
         return errors
     if not plan.any_workload_active and not activation_signal:
         return errors

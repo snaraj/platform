@@ -123,3 +123,69 @@ spec:
         cpu: 25m
         memory: 32Mi
       type: Container
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: obsidian
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    # This annotation equals the SHA-256 of the current bytes at
+    # docs/audits/2026-09-07-obsync-capacity-evidence.md — this namespace's
+    # OWN evidence document, not the two sites'. The sites measure a two-replica
+    # stateless web workload; obsync pays for one stateful single-writer Pod
+    # with a far larger per-Pod limit, so one shared five-value map could not
+    # have stated both honestly. Independently, validate_repository.py,
+    # policies/conftest/kubernetes.rego, and
+    # policies/release-conftest/deployment-readiness.rego require the exact
+    # hard map below FOR THIS NAMESPACE. Audit-byte drift fails the hash check;
+    # drift in a quota value fails the exact-map check.
+    platform.snaraj.dev/capacity-evidence-sha256: 3c65f27901f0887d647d800c94a438e6c753f383d5c6a2250c4c755e1f91d822
+spec:
+  hard:
+    # FOUR slots, and none of them is spare. `ReadWriteOnce` does NOT keep a
+    # second Pod out — it excludes other NODES, and this cluster has one — so
+    # the ceiling is not a formality. What keeps one writer is the server's own
+    # exclusive journal lock plus `replicas: 1` and `strategy: Recreate` in the
+    # signed chart, and `policies/conftest/kubernetes.rego` asserts the two
+    # rendered halves.
+    #
+    #   1 obsync Pod, steady state
+    # + 1 replacement overlap: a Pod stuck Terminating still holds its slot, and
+    #   at a ceiling of one its replacement is denied by quota with no retry
+    #   able to recover it (#198)
+    # + 1 in-cluster TLS proxy Pod, the second workload this namespace holds at
+    #   activation
+    # + 1 replacement overlap for the proxy, reserved so the proxy can never
+    #   spend the application's slot silently
+    pods: "4"
+    # Every quantity is a Pod count times a per-Pod envelope. The obsync figures
+    # are the reviewed values in the HelmRelease `snaraj/platform-k8s-infra`
+    # composes; the proxy figures are a PLACEHOLDER derived from the cloudflared
+    # connector as the nearest comparable in-cluster network workload, awaiting
+    # the boundary lane's own sizing, and the audit document marks them as such.
+    # Raising `pods` alone would be cosmetic: a ceiling equal to one Pod's limits
+    # cannot admit a second Pod whatever `pods` says.
+    #
+    #   requests  2 x 100m + 2 x 125m  = 450m ; 2 x 64Mi + 2 x 128Mi = 384Mi
+    #   limits    2 x 2000m + 2 x 500m = 5000m; 2 x 1Gi  + 2 x 256Mi = 2560Mi
+    requests.cpu: 450m
+    requests.memory: 384Mi
+    limits.cpu: 5000m
+    limits.memory: 2560Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: obsidian
+spec:
+  limits:
+    - default:
+        cpu: "2"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 64Mi
+      type: Container

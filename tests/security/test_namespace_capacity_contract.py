@@ -316,51 +316,50 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
         """
 
         workloads = rendered_connector_workloads(render())
-        self.assertEqual([workload.replicas for workload in workloads], [1, 1])
-        self.assertEqual([workload.surge for workload in workloads], [0, 0])
+        self.assertEqual([workload.replicas for workload in workloads], [1, 1, 1])
+        self.assertEqual([workload.surge for workload in workloads], [0, 0, 0])
 
     @unittest.skipUnless(HELM, "helm is required")
     def test_raising_the_replica_count_is_governed_by_capacity_not_by_a_constant(self):
-        """The schema permits it now; capacity is what has an opinion.
+        """The schema permits it; capacity is what has an opinion — and it changed.
 
         The schema used to pin ``replicaCount`` to the constant 2, which both
         forbade the correct value and would have forbidden any future workload
         needing a different one. It is now ``minimum: 1``, so this override
-        RENDERS — and what governs it is the budget.
+        RENDERS, and the budget is what governs it.
 
-        Stated exactly, because the honest answer is more interesting than
-        "it fails": with the surge-free strategy this change also reconciles,
-        two replicas per connector FIT — and fit EXACTLY, consuming the whole
-        namespace CPU and memory budget with nothing left. It is the pairing
-        with the former ``maxSurge: 1``, which is what merged ``main`` carries,
-        that the rule refuses. So the trap was never the replica count alone.
+        With TWO connectors, two replicas each fit exactly, consuming the whole
+        namespace budget with nothing left; only the former ``maxSurge: 1``
+        made it fail. Issue #348 adds a third connector, and that headroom is
+        now spent: three connectors at two replicas need 3000m against a 2000m
+        ceiling, so it no longer fits even surge-free. That is the honest
+        answer and it is asserted rather than glossed — the arithmetic moved
+        because the inventory did, which is exactly what a capacity rule is
+        for.
         """
 
         workloads = rendered_connector_workloads(render("replicaCount=2"))
-        self.assertEqual([workload.replicas for workload in workloads], [2, 2])
+        self.assertEqual([workload.replicas for workload in workloads], [2, 2, 2])
         quota = Quota(CONNECTOR_NAMESPACE, committed_quota(CONNECTOR_NAMESPACE))
 
-        # Fits — and leaves nothing: exactly the quota, in both dimensions.
-        check_namespace_fits(quota, workloads)
-        self.assertEqual(
+        # Steady state alone is now over budget, before any rollout headroom.
+        with self.assertRaises(CapacityError) as raised:
+            check_namespace_fits(quota, workloads)
+        self.assertIn(CONNECTOR_NAMESPACE, str(raised.exception))
+        self.assertGreater(
             sum(workload.replicas * workload.cpu for workload in workloads),
             quota.cpu,
         )
-        self.assertEqual(
-            sum(workload.replicas * workload.memory for workload in workloads),
-            quota.memory,
-        )
 
-        # THE MERGED-MAIN CONFIGURATION, and the regression this all exists
-        # for: the same two replicas with the surge strategy this change
-        # replaces. The rollout needs a Pod the budget cannot pay for.
-        surging = [
-            Workload(workload.name, workload.replicas, 1, "500m", "256Mi")
-            for workload in workloads
-        ]
-        with self.assertRaises(CapacityError) as raised:
-            check_namespace_fits(quota, surging)
-        self.assertIn("rolling", str(raised.exception))
+        # And the committed one-replica inventory still fits, with exactly one
+        # connector's worth of room left. Without this the test above would be
+        # satisfied by a budget that fits nothing at all.
+        committed = rendered_connector_workloads(render())
+        check_namespace_fits(quota, committed)
+        self.assertEqual(
+            quota.cpu - sum(w.replicas * w.cpu for w in committed),
+            next(w.cpu for w in committed),
+        )
 
     @unittest.skipUnless(HELM, "helm is required")
     def test_a_zero_replica_count_is_still_refused_by_the_schema(self):

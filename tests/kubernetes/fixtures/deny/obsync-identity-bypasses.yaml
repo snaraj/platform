@@ -1,0 +1,263 @@
+# Every plausible widening of the obsync workload's identity tuple (issue
+# #348). obsync is the third tuple on a boundary that previously carried two,
+# so each document below is the shape the SITE tuples already refuse, aimed at
+# the third workload.
+#
+# The connector-egress arm that substitutes the APPLICATION for the in-cluster
+# TLS proxy has its own focused file,
+# deny/connector-egress-obsync-app-not-proxy.yaml, because it is the single
+# most plausible mistake here. The first document below is the other widening
+# of the same leg: a namespace-only peer.
+#
+# A peer with a namespaceSelector and NO podSelector reaches EVERY Pod in the
+# target namespace. It is the shape that looks tighter than it is — the
+# namespace is named exactly, so the rule reads scoped — and it would admit the
+# connector to the application's plain HTTP listener alongside the proxy,
+# defeating the whole point of terminating TLS in a separate workload.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: obsync-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: obsidian
+      ports:
+        - port: 8443
+          protocol: TCP
+---
+# The obsync connector reaching a SITE origin. The instance label is its own,
+# so only the origin half of the double-pin can catch this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-obsidian
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: obsync-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: naranjo-online
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naranjo-online
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# A RESOLVED chart digest for a workload whose publisher has cut no release.
+# This is the direction the pending sentinel exists to refuse: the committed
+# selection may be the all-zero sentinel and nothing else until the workload is
+# moved out of the pending set in a reviewed change that records the (tag,
+# digest) pair an acquisition ceremony resolved.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.0"
+  name: obsync-chart
+  namespace: obsidian
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/obsync
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/obsync/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+# The obsync chart source trusting a SITE publisher. The two identity tuples
+# must never couple: a chart signed by naranjo.online's workflow is not this
+# workload's chart however valid that signature is.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.0"
+  name: obsync-chart
+  namespace: obsidian
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/obsync
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/naranjo\.online/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+# The obsync chart source pulling a SITE chart repository.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.0"
+  name: obsync-chart
+  namespace: obsidian
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/naranjo-online
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/obsync/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+# The obsidian namespace budget wearing the SITES' reviewed five-value map and
+# their evidence hash. Both are individually approved values; neither is this
+# namespace's, and a shared map is exactly what the per-namespace table exists
+# to stop being reachable by copy-paste.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: obsidian
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    platform.snaraj.dev/capacity-evidence-sha256: 955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34
+spec:
+  hard:
+    pods: "6"
+    requests.cpu: 150m
+    requests.memory: 192Mi
+    limits.cpu: 1200m
+    limits.memory: 768Mi
+---
+# An obsync workload running a SITE image. The digest is well formed and the
+# repository is individually approved — for another namespace.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: obsync-with-a-site-image
+  namespace: obsidian
+  labels:
+    app.kubernetes.io/name: obsync
+    app.kubernetes.io/instance: obsync
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: obsync
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: obsync
+      image: ghcr.io/snaraj/naranjo-online:v0.1.80@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
+      resources:
+        requests: {cpu: 100m, memory: 64Mi}
+        limits: {cpu: "2", memory: 1Gi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: [ALL]}
+        readOnlyRootFilesystem: true
+---
+# A pending workload's release left UNSUSPENDED. Its chart selection resolves to
+# no artifact, so this claims a readiness it cannot have and would reconcile
+# into a permanent error. Every other field is canonical on purpose, so exactly
+# one arm fires: this is the arm that makes `pending_chart_namespaces`
+# load-bearing, and deleting that set makes this denial disappear.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: obsync
+  namespace: obsidian
+  labels:
+    app.kubernetes.io/managed-by: fluxcd
+spec:
+  suspend: false
+  interval: 1m0s
+  maxHistory: 2
+  releaseName: obsync
+  serviceAccountName: obsync-helm-reconciler
+  driftDetection:
+    mode: enabled
+  chartRef:
+    kind: OCIRepository
+    name: obsync-chart
+  install:
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 0
+      strategy: rollback
+---
+# The inverse arm: a workload that is NOT pending selecting the sentinel. It
+# would install nothing while reading as a normal selection.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.80"
+  name: naranjo-online-chart
+  namespace: naranjo-online
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/naranjo-online
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/naranjo\.online/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+# The rendered half of the single-writer boundary: a second replica. RWO would
+# not stop it — that access mode excludes other NODES — so this is one of the
+# two facts the platform can actually assert about the chart it reconciles.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync
+  namespace: obsidian
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+---
+# The other half: a surge strategy, which briefly runs the new Pod beside the
+# old one on the same journal volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync
+  namespace: obsidian
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate

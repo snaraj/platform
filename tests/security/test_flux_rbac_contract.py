@@ -176,7 +176,11 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
 
     def test_tenant_helm_readback_rules_are_required_and_cannot_write(self):
         relative = "kubernetes/flux-system/access.yaml"
-        tenants = ("naranjo-online", "lidersea-com")
+        # Every namespace with a helm-reconciler Role, in the order access.yaml
+        # declares them — `mutate_occurrence` addresses them positionally, so a
+        # namespace appended to the file must be appended here too or its rules
+        # are never mutated and its subtests silently prove nothing.
+        tenants = ("naranjo-online", "lidersea-com", "obsidian")
         for tenant_index, namespace in enumerate(tenants):
             for group, resource in (("", "pods"), ("apps", "replicasets")):
                 group_text = '""' if group == "" else group
@@ -226,44 +230,96 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
                         errors,
                     )
 
-    def test_naranjo_pvc_rule_is_required_exact_and_site_local(self):
+    def test_claim_lifecycle_rules_are_required_exact_and_namespace_local(self):
+        """Issues #211 and #348: exactly the claim-owning namespaces, no others.
+
+        The two namespaces hold claim lifecycle in DIFFERENT shapes, and that is
+        the #359 review finding rather than an accident. `naranjo-online` keeps
+        the shared `helm-reconciler` grant: one namespace-wide verb set.
+        `obsidian` uses an application-specific account whose rule pair splits
+        creation, which cannot carry `resourceNames`, from mutation, which is
+        pinned to the two claims the obsync chart renders — so it cannot reach a
+        claim another workload creates in that namespace.
+
+        Each shape is mutated in its own terms. A test that only knew the shared
+        shape would report the split pair as a violation and prove nothing about
+        either.
+        """
+
         relative = "kubernetes/flux-system/access.yaml"
-        rule = (
+        shared = (
             '  - apiGroups: [""]\n'
             "    resources: [persistentvolumeclaims]\n"
             "    verbs: [get, list, watch, create, update, patch, delete]\n"
         )
+        creation = (
+            '  - apiGroups: [""]\n'
+            "    resources: [persistentvolumeclaims]\n"
+            "    verbs: [list, watch, create]\n"
+        )
+        mutation = (
+            '  - apiGroups: [""]\n'
+            "    resources: [persistentvolumeclaims]\n"
+            "    resourceNames: [obsync-blobs, obsync-journal]\n"
+            "    verbs: [get, update, patch, delete]\n"
+        )
+        expected = "exact helm-reconciler PVC lifecycle rule|PVC lifecycle must be only"
+
+        # The shared shape, in the namespace that carries it.
         for label, replacement in (
             ("missing", ""),
-            (
-                "extra verb",
-                rule.replace("patch, delete", "patch, delete, deletecollection"),
-            ),
-            (
-                "combined backing resource",
-                rule.replace(
-                    "resources: [persistentvolumeclaims]",
-                    "resources: [persistentvolumeclaims, persistentvolumes]",
-                ),
-            ),
+            ("extra verb", shared.replace("patch, delete", "patch, delete, deletecollection")),
+            ("combined backing resource", shared.replace(
+                "resources: [persistentvolumeclaims]",
+                "resources: [persistentvolumeclaims, persistentvolumes]")),
         ):
-            with self.subTest(mutation=label):
-                errors = self.mutate(relative, rule, replacement)
-                self.assertTrue(
-                    any("exact PVC lifecycle" in error for error in errors), errors
-                )
+            with self.subTest(shape="shared", mutation=label):
+                errors = self.mutate(relative, shared, replacement)
+                self.assertTrue(any(re.search(expected, e) for e in errors), errors)
 
-        lidersea_role = (
+        # The split pair, in the namespace that carries it. The mutation that
+        # matters most is the one that WIDENS the bounded half back to every
+        # claim in the namespace, because it reads like a simplification.
+        #
+        # `creation half missing` is expected on a DIFFERENT arm and is listed
+        # with its own pattern rather than quietly dropped: deleting a whole
+        # rule is caught by the exact-grant comparison, while the claim-specific
+        # arm speaks to a rule that is present and wrong. Asserting the
+        # claim-specific message there would have been a test written to the
+        # answer instead of to the behaviour.
+        grant = "not the exact direct-site grant"
+        for label, before, replacement, pattern in (
+            ("named mutation missing", mutation, "", expected),
+            ("creation half missing", creation, "", grant),
+            ("resourceNames dropped", mutation,
+             mutation.replace("    resourceNames: [obsync-blobs, obsync-journal]\n", ""),
+             expected),
+            ("foreign claim admitted", mutation,
+             mutation.replace("obsync-journal]", "obsync-journal, someone-elses-claim]"),
+             expected),
+            ("creation half widened to delete", creation,
+             creation.replace("verbs: [list, watch, create]",
+                              "verbs: [list, watch, create, delete]"), expected),
+        ):
+            with self.subTest(shape="split", mutation=label):
+                errors = self.mutate(relative, before, replacement)
+                self.assertTrue(any(re.search(pattern, e) for e in errors), errors)
+
+        # The other direction: a namespace with no claims of its own may not
+        # acquire claim lifecycle by having either shape pasted into its Role.
+        unentitled_role = (
             "kind: Role\n"
             "metadata:\n"
             "  name: helm-reconciler\n"
             "  namespace: lidersea-com\n"
             "rules:\n"
         )
-        errors = self.mutate(relative, lidersea_role, lidersea_role + rule)
-        self.assertTrue(
-            any("PVC lifecycle must be only" in error for error in errors), errors
-        )
+        for label, rule in (("shared shape", shared), ("named shape", mutation)):
+            with self.subTest(unentitled=label):
+                errors = self.mutate(relative, unentitled_role, unentitled_role + rule)
+                self.assertTrue(
+                    any("PVC lifecycle must be only" in error for error in errors), errors
+                )
 
     def test_an_unrestricted_impersonate_grant_is_refused(self):
         errors = self.mutate(

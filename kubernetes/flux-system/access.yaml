@@ -28,6 +28,13 @@ metadata:
   namespace: lidersea-com
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: obsidian
+automountServiceAccountToken: false
+---
 # Controller identity: what the three installed controllers may do AS
 # THEMSELVES. Every object a reconciliation applies is applied by one of the
 # impersonated reconciler accounts further down this file, never by a
@@ -118,6 +125,7 @@ rules:
     resourceNames:
       - naranjo-online-reconciler
       - lidersea-com-reconciler
+      - obsync-reconciler
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -188,6 +196,31 @@ subjects:
     name: helm-controller
     namespace: flux-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-controller-impersonation
+  namespace: obsidian
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [impersonate]
+    resourceNames: [obsync-helm-reconciler]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-controller-impersonation
+  namespace: obsidian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-controller-impersonation
+subjects:
+  - kind: ServiceAccount
+    name: helm-controller
+    namespace: flux-system
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -199,6 +232,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: lidersea-com-reconciler
+  namespace: flux-system
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obsync-reconciler
   namespace: flux-system
 automountServiceAccountToken: false
 ---
@@ -310,6 +350,61 @@ subjects:
     name: lidersea-com-reconciler
     namespace: flux-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-release-reconciler
+  namespace: obsidian
+rules:
+  # Derived independently from this workload's three-object Kustomize root.
+  # The OCIRepository is named for the chart it selects (obsync-chart) and
+  # the HelmRelease for the workload (obsync); neither name is shared with
+  # any other tuple.
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    verbs: [list]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    verbs: [create]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    resourceNames: [obsync-chart]
+    verbs: [get, update, patch]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [list]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [create]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    resourceNames: [obsync]
+    verbs: [get, update, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [default-deny]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: obsync-reconciler
+  namespace: obsidian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-release-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: obsync-reconciler
+    namespace: flux-system
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -322,6 +417,13 @@ kind: ServiceAccount
 metadata:
   name: helm-reconciler
   namespace: lidersea-com
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obsync-helm-reconciler
+  namespace: obsidian
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -401,3 +503,86 @@ subjects:
   - kind: ServiceAccount
     name: helm-reconciler
     namespace: lidersea-com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: obsync-helm-reconciler
+  namespace: obsidian
+# APPLICATION-SPECIFIC authority, unlike the two site Roles above, and the
+# difference is deliberate rather than stylistic. Those grant one namespace-wide
+# verb set per resource; this one separates CREATION, which cannot carry
+# `resourceNames` because the object does not exist yet, from every FOLLOW-UP
+# mutation, which can and does. The obsync chart's rendered names are known and
+# fixed — Deployment, Service, ServiceAccount and NetworkPolicy all `obsync`,
+# and the two claims `obsync-blobs` and `obsync-journal` — so nothing here needs
+# unbounded update or delete.
+#
+# This is NOT multi-tenant isolation and must not be read as any: the namespace
+# holds exactly one reviewed workload today, and a second co-resident workload
+# would be a new trust decision, not something these names already secure
+# (docs/design/obsync-onboarding.md).
+rules:
+  # The one grant that stays namespace-wide, named here so the exception is
+  # legible rather than buried. Helm's release storage is version-suffixed
+  # (`sh.helm.release.v1.obsync.v1`, `.v2`, ...), so the Secret names are not
+  # knowable ahead of the releases that produce them and cannot be pinned with
+  # `resourceNames`. This is the "creation cannot be name-restricted" case, and
+  # it is bounded by the namespace and by nothing narrower.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts]
+    verbs: [list, watch, create]
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
+  # Issue #348: the obsync chart owns exactly two claims in this namespace, and
+  # they are named. Claim lifecycle confers no authority over the backing PV,
+  # StorageClass, node path or provisioner: those stay bootstrap/operator owned
+  # (docs/runbooks/storage-admission.md) and this account can neither create nor
+  # retarget them. Mutation is pinned to the two names, so this Role cannot
+  # reach a claim some other workload creates here later.
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [list, watch, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    resourceNames: [obsync-blobs, obsync-journal]
+    verbs: [get, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list, watch, create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [list, watch, create]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [obsync]
+    verbs: [get, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: obsync-helm-reconciler
+  namespace: obsidian
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: obsync-helm-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: obsync-helm-reconciler
+    namespace: obsidian

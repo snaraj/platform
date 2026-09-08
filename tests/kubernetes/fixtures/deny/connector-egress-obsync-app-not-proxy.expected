@@ -1,0 +1,5 @@
+# One denial per document: substituting the application's identity for the
+# proxy's, and substituting the application's cleartext port for the proxy's
+# TLS port. A message that disappears here is a relaxed origin pin.
+NetworkPolicy cloudflare-public/cloudflared-obsidian is outside the exact DNS, edge, and site egress allowlist
+NetworkPolicy cloudflare-public/cloudflared-obsidian is outside the exact DNS, edge, and site egress allowlist

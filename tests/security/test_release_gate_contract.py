@@ -32,6 +32,7 @@ CILIUM_IMAGE = "quay.io/cilium/cilium:v1.0.0@sha256:" + "9" * 64
 KUSTOMIZATION_NAMES = (
     "naranjo-online-reconciler",
     "lidersea-com-reconciler",
+    "obsync-reconciler",
 )
 SOURCE_IDENTITIES = (
     ("flux-system", "flux-system"),

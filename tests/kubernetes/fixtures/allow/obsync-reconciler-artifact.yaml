@@ -1,0 +1,47 @@
+# The exact operator artifact for docs/runbooks/obsync-application-sync.md §2.
+# Applied by an operator, never reconciled from this repository: after the
+# selector retirement no reviewed root applies an application reconciler, and
+# docs/runbooks/flux-install.md forbids applying the parent flux-system root.
+# It lives under docs/ for that reason — scripts/validate_repository.py walks
+# kubernetes/ for live desired state, so a file here is a reviewed artifact and
+# not a manifest something quietly applies.
+#
+# tests/kubernetes/fixtures/allow/obsync-reconciler-artifact.yaml is these exact
+# bytes under the platform's own Conftest policy, so this artifact cannot drift
+# out of the contract it is supposed to satisfy.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: obsync-reconciler
+  namespace: flux-system
+spec:
+  # Created SUSPENDED. The composition it applies carries the fail-closed
+  # sentinel digest and a suspended HelmRelease, so an unsuspended reconciler
+  # would apply a release that installs nothing and report an error for it.
+  # Lifting this is §3 step 2, after the promotion merges.
+  suspend: true
+  interval: 1m0s
+  retryInterval: 2m0s
+  timeout: 3m0s
+  # Exactly one application directory. The reviewed policy pins this string per
+  # reconciler name, so a path that reached a sibling application would be
+  # refused before it was ever applied.
+  path: ./kubernetes/websites/obsync
+  # `prune: false` and `deletionPolicy: Orphan` are why removing this object
+  # later cannot delete a tenant's live resources. Both are required by policy
+  # rather than chosen here.
+  prune: false
+  force: false
+  deletionPolicy: Orphan
+  # Required by policy for every approved reconciler: the apply is not reported
+  # successful until what it applied is actually ready, so a wedged release is
+  # visible rather than silently "applied".
+  wait: true
+  # The whole surface through which anything is applied. Without it the apply
+  # would run as kustomize-controller itself, which is the escalation path the
+  # impersonation model exists to close.
+  serviceAccountName: obsync-reconciler
+  targetNamespace: obsidian
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
