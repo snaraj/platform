@@ -284,8 +284,10 @@ class ConnectorTokenBindingTests(unittest.TestCase):
         `/proc/<pid>/environ` by anything that can see the process and is copied
         into every child, while a projected file is read once at the path the
         argument names. The chart projects the Secret read-only and passes
-        `--token-file`, and this pins that for every connector so the document
-        cannot drift back.
+        `--token-file`, and this pins BOTH halves: the rendered connector, and
+        the sentence in the design document that describes it. Pinning only the
+        render left the document free to drift back, which a mutation run
+        proved by reverting the sentence and watching the suite stay green.
         """
 
         rendered = render()
@@ -298,6 +300,11 @@ class ConnectorTokenBindingTests(unittest.TestCase):
                 self.assertIn(secret, rendered)
         # Read-only, and not mode 0444: the token is group-readable at most.
         self.assertIn("readOnly: true", rendered)
+        design = (ROOT / "docs/design/obsync-onboarding.md").read_text(encoding="utf-8")
+        self.assertIn("--token-file /etc/cloudflared/token/token", design)
+        for wrong in ("secretKeyRef", "TUNNEL_TOKEN"):
+            with self.subTest(wrong=wrong):
+                self.assertNotIn(wrong, design)
         self.assertIn("defaultMode: 0440", rendered)
 
     def test_the_superseded_single_connector_deployment_is_gone(self):
