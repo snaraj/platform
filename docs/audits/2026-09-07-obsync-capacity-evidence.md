@@ -83,8 +83,9 @@ ADMISSION decision: `replicas: 1` and `strategy: Recreate` in the signed chart,
 which `policies/conftest/kubernetes.rego` asserts over the RENDERED Deployment,
 so activation cannot proceed on a chart that could run two Pods. The lock sits
 under those, not in place of them, and its cross-account repair is a candidate
-head (`snaraj/obsync` `ef01d5d`) still pending an exact-head approval. `Recreate` is therefore the only correct rollout here, not
-a tuning preference, and there is no surge slot to pay for.
+head (`snaraj/obsync` `4e40648`) still pending an exact-head approval.
+`Recreate` is therefore the only correct rollout here, not a tuning
+preference, and there is no surge slot to pay for.
 
 **A Pod ceiling of one nevertheless reproduces #198.** Under `Recreate` the
 Deployment waits for the old Pod to be deleted before creating the new one, so

@@ -42,7 +42,7 @@ reviewed_namespace_capacity := {
     },
   },
   "obsidian": {
-    "evidence": "f640c8b2ff06e4e97dc1e83e3b42f3e875e3ab57de212e89da32446f4ef373d1",
+    "evidence": "df4fe7e8693bbbf802ac8dea65fb8475d824006997eaf3793e6ca17c4db8156b",
     "hard": {
       "pods": "4",
       "requests.cpu": "450m",

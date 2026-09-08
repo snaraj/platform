@@ -170,7 +170,16 @@ Create them accordingly:
 each owned `65532:65532`, mode `0700`, with root-owned parents that are not
 group- or world-writable (sticky is acceptable), and no symlink anywhere on
 either path. The chart sets no `fsGroup`: group sharing is not the mechanism
-here, directory ownership is. That ownership keeps OTHER accounts off the path;
+here, directory ownership is.
+
+**The provisioning precondition, as the server states it.** At startup each
+volume directory must either be presented owned by uid `65532` and writable by
+it, or already hold the server's own `v1` layout from a previous run. Anything
+else is refused with `unwritable`, and that refusal is the correct outcome: a
+directory the server cannot write is a directory whose ownership was not
+prepared, and starting anyway would create the layout somewhere the operator
+did not intend. An `unwritable` at first start therefore means step 3b was not
+completed on that path, not that the server is broken. That ownership keeps OTHER accounts off the path;
 it grants the workload's own uid nothing, so a second Pod of this workload is
 excluded by `replicas: 1` and `strategy: Recreate` — asserted over the rendered
 Deployment — rather than by the filesystem.
