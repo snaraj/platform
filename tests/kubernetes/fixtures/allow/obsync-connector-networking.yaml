@@ -76,7 +76,7 @@ metadata:
   namespace: obsidian
   annotations:
     platform.snaraj.dev/readiness: reviewed-pi-capacity
-    platform.snaraj.dev/capacity-evidence-sha256: cd408ced0719b767ea15426cc40c67fb1189ab79c8d2a091437e0a8b35b0cf1f
+    platform.snaraj.dev/capacity-evidence-sha256: 3c65f27901f0887d647d800c94a438e6c753f383d5c6a2250c4c755e1f91d822
 spec:
   hard:
     pods: "4"

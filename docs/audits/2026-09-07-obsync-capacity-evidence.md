@@ -244,9 +244,17 @@ envelope. Each item below is owner-owed and none is discharged here:
    namespace stays at `deploymentReady: false` indefinitely. Section 5 is not
    a formality: without a bound PersistentVolume the Pod stays `Pending` and
    the quota above is reserving capacity nothing can use.
-5. **Confirm the Pod ceiling of two** is the intended trade. It costs one
-   Pod slot of headroom to remove a wedge class that has already cost this
-   cluster one permanently stuck release.
+5. **Confirm the four-slot Pod budget** is the intended trade. The ceiling is
+   `pods: 4`, and section 5's table above says what each slot is for: the
+   application, the in-cluster TLS proxy, and one replacement slot for each.
+   Two of those four are reserved for workloads that are not running in steady
+   state — they exist so that a Pod stuck `Terminating` cannot deny its own
+   replacement, which is the wedge class that has already cost this cluster one
+   permanently stuck release. What the owner is approving is that headroom
+   trade: the namespace reserves 450m/384Mi of requests against a steady-state
+   need of half that, and it reserves it permanently rather than only during a
+   rollout. The proxy half of it is a PLACEHOLDER derived figure, so the number
+   moves once the boundary lane sizes that workload.
 
 ## 8. What this evidence does not establish
 
