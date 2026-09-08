@@ -112,18 +112,34 @@ exception authorizes no disk preparation, StorageClass/PV creation, volume
 rebinding or substitute OS-filesystem storage. Missing storage evidence is a
 stop, not permission to pick a convenient directory.
 
-Use the approved composition lane for the app; do not add a competing reconciler
-or apply the broad Flux root. Once the app's Service exists and certificate
-custody is established, the operator reviews the five-object render from the
-merged proxy root, checks the live target identities and effective policies,
-and applies only that reviewed artifact under the separately authorized window.
-Absent evidence or a conflicting existing object stops the apply. The root's
-source addition is not permission to replace existing objects blindly.
+Follow this order; a TCP startup check is not backend-dependent readiness:
+
+1. Keep the private path disabled.
+   Use the approved composition lane for the app; do not add a competing
+   reconciler or apply the broad Flux root.
+2. Bind the reviewed application peer.
+   Through the reviewed composition, replace its fail-closed pending peer with
+   the exact proxy selector and backend port. Verify the effective policy union
+   admits only the proxy to the app. This binding must precede proxy readiness:
+   the proxy's `/readyz` request must reach the app to succeed.
+3. Install and start the reviewed proxy.
+   Once the app's Service exists and certificate custody is established, review
+   the five-object render from the merged proxy root, check live target
+   identities and effective policies, and apply only that reviewed artifact in
+   the separately authorized window. Missing evidence or a conflicting existing
+   object stops the apply; source publication never permits blind replacement.
+4. Require backend-dependent readiness.
+   Verify the proxy's HTTPS `/readyz` reaches the ready app, along with the
+   intended certificate and policy checks. Config validation and TCP startup
+   or liveness alone cannot clear this gate. Keep the private path disabled on
+   any failure; never bypass readiness or widen backend access to proceed.
+5. Enable the separately approved private path.
+   Only after the preceding gates pass, enable the intended device path under
+   its own authorization and complete the real-client acceptance below.
 
 NGINX resolves the backend Service at startup: create that Service first.
 Replacing its ClusterIP requires a proxy restart; ordinary app Pod replacement
-behind the stable Service does not. Bind the composition peer selectors only
-after the proxy is healthy; enable the separately approved private path last.
+behind the stable Service does not.
 No provider resource is created or exposed by these manifests.
 
 `make check-obsync-proxy` exercises this exact image and config with disposable
