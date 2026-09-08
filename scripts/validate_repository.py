@@ -2646,8 +2646,16 @@ def reviewed_source_patch_errors(root):
     return []
 
 
-def reviewed_capacity_errors(root):
-    """Require one hash-bound reviewed namespace budget for each website."""
+def reviewed_capacity_errors(root, evidence_only=False):
+    """Require one hash-bound reviewed namespace budget for each website.
+
+    `evidence_only` is the subset a SCAFFOLD tree can answer, and it has to run
+    there: `check_activation` returns before `check_release` in scaffold mode,
+    so an edited evidence document with every stored hash untouched passed the
+    PR gate and only a release claim caught it. Nothing in that subset needs a
+    release — the hash is over committed bytes — and the release path runs the
+    identical code with the flag off.
+    """
 
     errors = []
     expected_evidence = {}
@@ -2662,8 +2670,11 @@ def reviewed_capacity_errors(root):
             )
     prerequisites_index = root / "kubernetes/platform/prerequisites/kustomization.yaml"
     resource_controls = root / "kubernetes/platform/prerequisites/resource-controls.yaml"
-    if not prerequisites_index.is_file() or not active_kustomization_resource(
-        read(prerequisites_index), "resource-controls.yaml"
+    if not evidence_only and (
+        not prerequisites_index.is_file()
+        or not active_kustomization_resource(
+            read(prerequisites_index), "resource-controls.yaml"
+        )
     ):
         errors.append("reviewed website capacity resource-controls are not reconciled")
 
@@ -2683,12 +2694,13 @@ def reviewed_capacity_errors(root):
             )
             continue
         quota = matches[0]
-        if _plain_yaml_scalar(quota.get(("metadata", "name"))) != "namespace-budget":
-            errors.append("reviewed website capacity quota identity is invalid: " + namespace)
-        if _plain_yaml_scalar(quota.get(
-            ("metadata", "annotations", "capacity_readiness")
-        )) != "reviewed-pi-capacity":
-            errors.append("reviewed website capacity readiness is invalid: " + namespace)
+        if not evidence_only:
+            if _plain_yaml_scalar(quota.get(("metadata", "name"))) != "namespace-budget":
+                errors.append("reviewed website capacity quota identity is invalid: " + namespace)
+            if _plain_yaml_scalar(quota.get(
+                ("metadata", "annotations", "capacity_readiness")
+            )) != "reviewed-pi-capacity":
+                errors.append("reviewed website capacity readiness is invalid: " + namespace)
         evidence = _plain_yaml_scalar(quota.get(
             (
                 "metadata", "annotations",
@@ -2702,6 +2714,8 @@ def reviewed_capacity_errors(root):
                 "reviewed website capacity evidence hash does not match document: "
                 + namespace
             )
+        if evidence_only:
+            continue
         reviewed_hard = REVIEWED_NAMESPACE_CAPACITY[namespace][1]
         hard = {
             path[-1]: _plain_yaml_scalar(value)
@@ -2849,6 +2863,7 @@ def check_activation(root):
     if plan.mode == "scaffold":
         if activation_signal:
             errors.append("scaffold desired state contains a release activation signal")
+        errors.extend(reviewed_capacity_errors(root, evidence_only=True))
         return errors
     if not plan.any_workload_active and not activation_signal:
         return errors
