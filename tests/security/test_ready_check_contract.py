@@ -31,8 +31,11 @@ def comment(head=HEAD, verdict="APPROVE", lane="Opus5", login=MODULE.REVIEWS_APP
     return {"user": {"login": login, "id": uid, "type": kind}, "performed_via_github_app": {"id": app}, "body": body}
 
 
-def checks(conclusion="success", app=MODULE.REQUIRED_CHECK_APP, other="neutral"):
-    return [{"name": n, "status": "completed", "conclusion": conclusion, "app": {"slug": app}} for n in MODULE.REQUIRED_CHECKS] + [{"name": "CodeQL", "status": "completed", "conclusion": other, "app": {"slug": "github-code-scanning"}}]
+def checks(conclusion="success", app=MODULE.REQUIRED_CHECK_APP, security="success"):
+    return ([{"name": n, "status": "completed", "conclusion": conclusion, "app": {"slug": app}} for n in MODULE.REQUIRED_CHECKS]
+            + [{"name": n, "status": "completed", "conclusion": security, "app": {"slug": security_app}}
+               for n, security_app in MODULE.REQUIRED_SECURITY_CHECKS.items()]
+            + [{"name": "CodeQL", "status": "completed", "conclusion": "neutral", "app": {"slug": "github-advanced-security"}}])
 
 
 class ReadyRuleTests(unittest.TestCase):
@@ -56,7 +59,7 @@ class ReadyRuleTests(unittest.TestCase):
             "appears 2 times": {"check_runs": checks() + [dict(checks()[0], app={"slug": "mallory-ci"})]},
             "has not succeeded": {"check_runs": checks("failure")},
             "appears 0 times": {"check_runs": []},
-            "CodeQL ended failure": {"check_runs": checks(other="failure")},
+            "CodeQL ended failure": {"check_runs": [dict(checks()[-1], conclusion="failure")] + checks()[:-1]},
             "behind main": {"behind_by": 3},
             "base freshness is unknown": {"behind_by": None},
         }.items():
@@ -69,10 +72,27 @@ class ReadyRuleTests(unittest.TestCase):
         # verdict yet cannot be green, and it can still fail.
         for status in ("queued", "in_progress", "waiting", None):
             with self.subTest(status=status):
-                pending = checks()[:-1] + [{"name": "CodeQL", "status": status, "conclusion": None, "app": {"slug": "github-code-scanning"}}]
+                pending = checks()[:-1] + [{"name": "CodeQL", "status": status, "conclusion": None, "app": {"slug": "github-advanced-security"}}]
                 self.assertIn(f"a check at this head has not finished: CodeQL is {status}", decide(check_runs=pending)[2])
         # The same input, with that one run completed, has no blocker at all.
         self.assertEqual(decide(check_runs=checks())[2], [])
+
+    def test_python_codeql_is_exactly_one_successful_security_check(self):
+        security_name, security_app = next(iter(MODULE.REQUIRED_SECURITY_CHECKS.items()))
+        baseline = checks()
+        security = next(check for check in baseline if check["name"] == security_name)
+        without = [check for check in baseline if check["name"] != security_name]
+        self.assertTrue(any(f"required security check {security_name} appears 0 times" in blocker for blocker in decide(check_runs=without)[2]))
+        foreign_language = without + [dict(security, name="analyze (go, autobuild)")]
+        self.assertTrue(any(f"required security check {security_name} appears 0 times" in blocker for blocker in decide(check_runs=foreign_language)[2]))
+        self.assertTrue(any(f"required security check {security_name} appears 2 times" in blocker for blocker in decide(check_runs=baseline + [security])[2]))
+        foreign = [dict(check, app={"slug": "github-advanced-security"}) if check["name"] == security_name else check for check in baseline]
+        self.assertTrue(any(f"required security check {security_name} was not produced by {security_app}" in blocker for blocker in decide(check_runs=foreign)[2]))
+        for conclusion in ("neutral", "skipped", "failure", "cancelled", None):
+            with self.subTest(conclusion=conclusion):
+                changed = [dict(check, conclusion=conclusion) if check["name"] == security_name else check for check in baseline]
+                self.assertTrue(any(f"required security check {security_name} has not succeeded" in blocker for blocker in decide(check_runs=changed)[2]))
+        self.assertEqual(decide(check_runs=baseline)[2], [])
 
 
 class WrongPullRequestTests(unittest.TestCase):
