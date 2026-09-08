@@ -172,9 +172,11 @@ touched on this branch, so the text is proposed here rather than applied.
 > The two sites terminate TLS at Cloudflare's edge because their traffic
 > arrives over the public Internet. This workload's traffic never does: it
 > travels the WARP tunnel from an enrolled device to `cloudflared` and is
-> handed to the origin inside the cluster's own default-deny boundary. TLS
-> therefore terminates in-cluster, and the connector-to-origin leg is plain
-> HTTP on the same reasoning recorded above for the sites' last hop.
+> handed to an origin inside the cluster's own default-deny boundary. TLS
+> therefore terminates in-cluster, in a dedicated proxy workload rather than at
+> the edge: the connector's origin is that proxy, over TLS, and the proxy
+> reaches the application over plain HTTP on the same reasoning recorded above
+> for the sites' last hop. There is no connector-to-application leg.
 >
 > HSTS ownership is unchanged and is the application's. No Ingress, Gateway,
 > NodePort, LoadBalancer or origin A/AAAA record is introduced (ADR 0008,
@@ -197,7 +199,8 @@ every single request from the owner's own laptop.
 **`trustedProxyCidrs: []`.** Empty is the strict setting rather than the lazy
 one: in `none` mode the server believes a forwarded address only from a listed
 range, so an empty list means it believes only the peer address — the
-`cloudflared` Pod, the sole ingress path the default-deny policy admits.
+in-cluster TLS proxy of section 0, the sole ingress path the default-deny
+policy admits.
 Naming a CIDR there would make an `X-Forwarded-For` header believable from
 anything in that range.
 
@@ -209,14 +212,14 @@ permanently — safety invariant 12 treats the index as public, and a
 placeholder hostname is a habit of carrying the real one later. The private
 name and the private route's address live only in operator inputs.
 
-`ingress.peerNamespace`, `ingress.peerAppName` and `ingress.peerInstance` keep
-the connector triple for now, so the origin's own NetworkPolicy admits exactly
-the connector that fronts it. The security lane's dedicated in-cluster TLS
-proxy — a separate platform workload, NOT a sidecar — becomes that peer
-instead, and the triple moves to it in the same reviewed change that admits
-the proxy. It is not changed in advance of that change: a peer binding pointed
-at a workload that does not exist yet admits nothing and reads as though it
-does.
+`ingress.peerNamespace`, `ingress.peerAppName` and `ingress.peerInstance` name
+the in-cluster TLS proxy of section 0 and never the connector, in the declared
+placeholder form (`obsync-tls-proxy` / `obsync-tls-proxy-pending`) that no Pod
+carries. The rendered ingress policy therefore admits nothing until the
+security lane's own reviewed deployment supplies the proxy's real identity in
+the same change. That is the correct interim state: an absent proxy is a route
+that does not work, and naming the connector "temporarily" would have been a
+route that works and should not.
 
 The composition in `platform-k8s-infra` states all four in the obsync
 `HelmRelease`, and its manifest-shape policy pins those bytes.

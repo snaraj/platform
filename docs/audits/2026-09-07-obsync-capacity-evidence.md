@@ -78,10 +78,14 @@ Nor does the server's own journal lock close it. That lock refuses
 COOPERATIVE duplicate starts — a rollout surge, an operator running `check` or
 `export` beside a live `serve` — but owning a directory is rename authority, so
 a process with the workload's own uid can rename the journal root aside and
-take an uncontended lock on a different file. What keeps one writer is an
-ADMISSION decision: `replicas: 1` and `strategy: Recreate` in the signed chart,
-which `policies/conftest/kubernetes.rego` asserts over the RENDERED Deployment,
-so activation cannot proceed on a chart that could run two Pods. The lock sits
+take an uncontended lock on a different file. What keeps one writer is a
+PRE-MERGE POLICY decision, named precisely because the difference matters:
+`replicas: 1` and `strategy: Recreate` in the signed chart, which
+`policies/conftest/kubernetes.rego` asserts over the RENDERED Deployment before
+a change merges. Nothing on this head runs at live admission — AGENTS.md
+defines Conftest as pre-merge static validation — so what this buys is that a
+chart able to run two Pods cannot reach activation, not that the cluster would
+reject a second Pod at runtime. The lock sits
 under those, not in place of them, and its cross-account repair is a candidate
 head (`snaraj/obsync` `4e40648`) still pending an exact-head approval.
 `Recreate` is therefore the only correct rollout here, not a tuning
