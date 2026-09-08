@@ -93,6 +93,7 @@ declare -a KUSTOMIZE_TARGETS=(
   kubernetes/flux-system/canary
   kubernetes/flux-system/egress
   kubernetes/platform/prerequisites
+  kubernetes/platform/obsync-tls-proxy
   kubernetes/platform/cloudflare-public/release
 )
 

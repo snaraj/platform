@@ -1,0 +1,4 @@
+volume blobs is outside the exact ephemeral/credential volume allowlist for namespace obsidian
+volume blobs uses undiscovered storage source persistentVolumeClaim
+volume journal is outside the exact ephemeral/credential volume allowlist for namespace obsidian
+volume journal uses undiscovered storage source persistentVolumeClaim

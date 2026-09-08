@@ -1,0 +1,45 @@
+# The same otherwise-valid Deployment as the positive control, with one wrong
+# claim. Neither mount gets the exception because the complete pair is wrong.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync
+  namespace: obsidian
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obsync
+      app.kubernetes.io/instance: obsync
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obsync
+        app.kubernetes.io/instance: obsync
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: obsync
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: obsync
+          image: ghcr.io/snaraj/obsync@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          resources:
+            requests: {cpu: 100m, memory: 64Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: blobs, mountPath: /data/blobs}
+            - {name: journal, mountPath: /data/journal}
+      volumes:
+        - name: blobs
+          persistentVolumeClaim: {claimName: another-claim}
+        - name: journal
+          persistentVolumeClaim: {claimName: obsync-journal}

@@ -146,8 +146,10 @@ persistent_volume_non_source_fields := {
 # entry is a name plus exactly one source, the source is whatever is left when
 # the non-source fields are removed, and only sources whose bytes come from the
 # cluster's own API server or the node's ephemeral storage are admitted. Every
-# network filesystem, every cloud disk, every claim/CSI reference, and every
-# source upstream has not invented yet is denied by construction.
+# network filesystem, every cloud disk, every generic claim/CSI reference, and
+# every source upstream has not invented yet is denied by construction. The
+# separate obsync proof below admits only its two reviewed claim/mount pairs;
+# it does not widen this global source set or authorize volume provisioning.
 pod_volume_non_source_fields := {"name"}
 
 admitted_pod_volume_sources := {
@@ -666,7 +668,7 @@ reviewed_namespace_capacity := {
     },
   },
   "obsidian": {
-    "evidence": "3c65f27901f0887d647d800c94a438e6c753f383d5c6a2250c4c755e1f91d822",
+    "evidence": "b929123457f9a95d9643eb0d550f5def7b27e794d4b8e28374ed460c1c9836e7",
     "hard": {
       "pods": "4",
       "requests.cpu": "450m",
@@ -695,6 +697,12 @@ valid_tenant_volume(namespace, volume) if {
       "sizeLimit": "16Mi",
     },
   }
+}
+
+valid_tenant_volume(namespace, volume) if {
+  namespace == "obsidian"
+  obsync_claim_pair_allowed
+  volume in pod_spec.volumes
 }
 
 # Each connector mounts ONLY ITS OWN site's tunnel-token Secret: the expected
@@ -1059,6 +1067,7 @@ deny contains msg if {
   namespace := input.metadata.namespace
   expected := object.union(site_workload_accounts, {"cloudflare-public": "cloudflared"})[namespace]
   object.get(pod_spec, "serviceAccountName", "") != expected
+  not valid_obsync_proxy_pod
   msg := sprintf("%s %s must use only ServiceAccount %s", [input.kind, input.metadata.name, expected])
 }
 
@@ -1914,7 +1923,39 @@ deny contains msg if {
   some volume in object.get(pod_spec, "volumes", [])
   some source in pod_volume_sources(volume)
   not source in admitted_pod_volume_sources
+  not obsync_claim_pair_allowed
   msg := sprintf("volume %s uses undiscovered storage source %s", [pod_volume_name(volume), source])
+}
+
+# A claim is not a host-storage permission. This is an offline assertion over
+# the signed chart's Deployment, not a runtime admission webhook or proof of
+# the filesystem behind a claim. Root it in the Deployment and both selector
+# identities; a proxy, Job, extra container, mirror or altered mount does not
+# inherit the application exception. Exact objects make malformed/unknown
+# fields fail the positive proof rather than disappear from a deny branch.
+obsync_claim_pair_allowed if {
+  input.kind == "Deployment"
+  input.metadata.namespace == "obsidian"
+  input.metadata.name == "obsync"
+  input.spec.selector.matchLabels == {
+    "app.kubernetes.io/name": "obsync",
+    "app.kubernetes.io/instance": "obsync",
+  }
+  input.spec.template.metadata.labels["app.kubernetes.io/name"] == "obsync"
+  input.spec.template.metadata.labels["app.kubernetes.io/instance"] == "obsync"
+  pod_spec.serviceAccountName == "obsync"
+  object.get(pod_spec, "initContainers", []) == []
+  object.get(pod_spec, "ephemeralContainers", []) == []
+  count(pod_spec.containers) == 1
+  pod_spec.containers[0].name == "obsync"
+  pod_spec.containers[0].volumeMounts == [
+    {"name": "blobs", "mountPath": "/data/blobs"},
+    {"name": "journal", "mountPath": "/data/journal"},
+  ]
+  pod_spec.volumes == [
+    {"name": "blobs", "persistentVolumeClaim": {"claimName": "obsync-blobs"}},
+    {"name": "journal", "persistentVolumeClaim": {"claimName": "obsync-journal"}},
+  ]
 }
 
 pod_volume_sources(volume) := {field |
@@ -2092,6 +2133,7 @@ deny contains msg if {
   }[namespace]
   some container in containers
   not regex.match(sprintf("^%s@sha256:[0-9a-f]{64}$", [expected_repository]), container.image)
+  not valid_obsync_proxy_container(container)
   msg := sprintf("container %s must use the canonical image repository for namespace %s", [container.name, namespace])
 }
 
@@ -2196,6 +2238,7 @@ deny contains msg if {
   is_workload
   some container in containers
   not approved_workload_image(container.image)
+  not valid_obsync_proxy_container(container)
   msg := sprintf("container %s image must use an approved registry and full digest", [container.name])
 }
 

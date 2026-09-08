@@ -1,5 +1,9 @@
 # obsidian namespace capacity evidence — 2026-09-07
 
+2026-09-08 amendment: section 9 binds the proxy envelope to the actual proposed
+manifests. Sections 0–8 retain their dated baseline and pre-release status;
+neither that history nor the amendment claims a current live measurement.
+
 Evidence supporting the reviewed `namespace-budget` ResourceQuota and
 `container-defaults` LimitRange for the `obsidian` namespace, the third tenant
 namespace on the single-node cluster (owner ruling 2026-09-07: deploy the
@@ -268,4 +272,31 @@ envelope. Each item below is owner-owed and none is discharged here:
 - **Not a measurement of obsync.** Section 0 says it plainly and it is the
   single most important sentence in this document.
 
-- Fable5.1
+- Fable5.1 (sections 0–8)
+
+## 9. Configured proxy envelope — 2026-09-08 amendment
+
+Issue #362 replaces the proxy placeholder with the manifest under
+`kubernetes/platform/obsync-tls-proxy/`: one NGINX unprivileged container, one
+replica, `Recreate`, requests `125m/128Mi`, limits `500m/256Mi`, and a `16Mi`
+memory-backed runtime directory counted within the container's memory budget.
+These are explicit initial configuration limits, NOT a measured steady-state
+or worst-case footprint. The bounded local synthetic transport smoke does not
+establish sizing on the target node. Measure real sync and sustained uploads
+before accepting this budget for normal use; exhaustion must fail within these
+bounds, never trigger an automatic quota increase.
+
+The five namespace quota quantities in section 3 are unchanged: two app slots
+plus two proxy slots still total four Pods, 450m/384Mi requests and
+5000m/2560Mi limits. The proxy now has its own literal resource declaration;
+it does not inherit the LimitRange's application-sized defaults. The amended
+test reads the rendered proxy's resources and computes both slots against the
+committed quota, so a later manifest increase cannot silently consume the app's
+reservation. This selects the previously proposed envelope; it does not prove
+available capacity, resolve the CPU-overcommit decision, or discharge section 7.
+
+The application has since published v0.1.1. Publication is not activation,
+storage evidence, or live acceptance. All storage and operator prerequisites
+in sections 5 and 7 remain separate gates.
+
+- Codex

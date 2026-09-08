@@ -852,7 +852,10 @@ class FluxEgressDenyFixtureTests(unittest.TestCase):
         # neutered policy exactly like the file-level assertion did.
         # The stub answers allow fixtures the way a passing policy would, so the
         # only behaviour under test is the deny loop's per-reason assertion.
-        allow_arm = "case \"$*\" in *fixtures/allow/*) exit 0 ;; esac\n"
+        allow_arm = (
+            'if [[ "$#" == 3 && "$1" == verify && "$2" == --policy && -d "$3" ]]; then exit 0; fi\n'
+            "case \"$*\" in *fixtures/allow/*) exit 0 ;; esac\n"
+        )
         rejecting = (
             "printf 'FAIL - fixture - main - "
             "NetworkPolicy flux-system/allow-egress must carry no egress rule; "
@@ -969,6 +972,7 @@ class FluxEgressDenyFixtureTests(unittest.TestCase):
         _write_executable(
             base / "bin" / "conftest",
             "#!/usr/bin/env bash\n"
+            'if [[ "$#" == 3 && "$1" == verify && "$2" == --policy && -d "$3" ]]; then exit 0; fi\n'
             "case \"$*\" in *fixtures/allow/*) exit 0 ;; esac\n"
             + stub_body
             + "\n",

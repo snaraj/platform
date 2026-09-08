@@ -219,6 +219,18 @@ jobs:
           python3 -B scripts/validate_admin_ingress_contract.py EXAMPLE bootstrap/pi/ingress-guard/admin-ingress.env.example
       - name: Scan dependencies and full-tree secrets
         run: trivy fs --exit-code 1 --ignore-unfixed --scanners vuln,secret --severity HIGH,CRITICAL .
+      - name: Validate the private obsync TLS transport
+        run: make check-obsync-proxy
+      - name: Scan the pinned obsync proxy image
+        run: |
+          set -euo pipefail
+          proxy_image="$(sed -n 's/^OBSYNC_TLS_PROXY_IMAGE=//p' versions.env)"
+          [[ "$proxy_image" =~ ^docker\.io/nginxinc/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$ ]]
+          docker_config="$(mktemp -d "${RUNNER_TEMP}/proxy-scan-config.XXXXXX")"
+          for platform in linux/amd64 linux/arm64; do
+            DOCKER_CONFIG="$docker_config" trivy image --image-src remote --platform "$platform" \
+              --exit-code 1 --scanners vuln --severity HIGH,CRITICAL "$proxy_image"
+          done
       - name: Scan IaC and configuration
         # Negative fixtures are rejected by Conftest. Separating
         # this pass keeps them inside the full-tree secret scan above.

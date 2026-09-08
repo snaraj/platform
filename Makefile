@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 PYTHON ?= python3
 .DEFAULT_GOAL := help
 
-.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-shell check-determinism check-ingress-guard coverage coverage-refresh
+.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-shell check-determinism check-ingress-guard check-obsync-proxy coverage coverage-refresh
 
 help:
 	@printf '%s\n' \
@@ -18,6 +18,7 @@ help:
 	  'check-kubernetes Render/schema/policy-test Kubernetes desired state' \
 	  'check-determinism Prove two renders of the selected mode are identical' \
 	  'check-ingress-guard Verify the SSH-only admin-ingress guard artifacts' \
+	  'check-obsync-proxy Run isolated Docker TLS/header/upload/stream checks' \
 	  'coverage         Measure suite coverage and enforce floor/drift/badge' \
 	  'coverage-refresh Re-measure and rewrite the committed coverage ledger/badge'
 
@@ -61,6 +62,11 @@ check-determinism:
 check-ingress-guard:
 	@$(PYTHON) scripts/validate_ingress_guard.py repo
 	@$(PYTHON) scripts/validate_admin_ingress_contract.py EXAMPLE bootstrap/pi/ingress-guard/admin-ingress.env.example
+
+# Explicit because Docker is not part of the credential-free static gate.
+# PR CI runs this mandatory target on its disposable hosted runner.
+check-obsync-proxy:
+	@$(PYTHON) -B tests/obsync_proxy_smoke.py
 
 
 # Coverage measurement writes its data outside the checkout (measurement

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsync-tls-proxy
+  namespace: obsidian
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obsync-tls-proxy
+      app.kubernetes.io/instance: obsync-tls-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obsync-tls-proxy
+        app.kubernetes.io/instance: obsync-tls-proxy
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: obsync-tls-proxy
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: docker.io/nginxinc/nginx-unprivileged:1.30.4-alpine@sha256:442753882674b49ae2c1de83ed67896131c0777f56df5005e356e62bc3f7e7ce
+          imagePullPolicy: IfNotPresent
+          command: [nginx]
+          args: [-c, /etc/obsync-proxy/nginx.conf, -g, "daemon off;", -e, /dev/null]
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          startupProbe:
+            tcpSocket: {port: https}
+            periodSeconds: 2
+            failureThreshold: 30
+            timeoutSeconds: 1
+          livenessProbe:
+            tcpSocket: {port: https}
+            periodSeconds: 30
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet: {scheme: HTTPS, path: /readyz, port: https}
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests: {cpu: 125m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - {name: config, mountPath: /etc/obsync-proxy, readOnly: true}
+            - {name: leaf, mountPath: /etc/obsync-tls, readOnly: true}
+            - {name: runtime, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap:
+            name: obsync-tls-proxy-config
+        - name: leaf
+          secret:
+            secretName: obsync-tls-leaf
+            defaultMode: 288
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        - name: runtime
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
