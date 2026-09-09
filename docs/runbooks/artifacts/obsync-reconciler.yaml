@@ -15,10 +15,10 @@ metadata:
   name: obsync-reconciler
   namespace: flux-system
 spec:
-  # Created SUSPENDED. The composition it applies carries the fail-closed
-  # sentinel digest and a suspended HelmRelease, so an unsuspended reconciler
-  # would apply a release that installs nothing and report an error for it.
-  # Lifting this is §3 step 2, after the promotion merges.
+  # Created SUSPENDED. The selected chart retains both claims even at zero
+  # application replicas; suspension prevents premature claim reconciliation.
+  # Keep it until prerequisites are proven and the separate readiness promotion
+  # merges. Lifting this is application-sync §3 step 4, not artifact selection.
   suspend: true
   interval: 1m0s
   retryInterval: 2m0s
