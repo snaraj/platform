@@ -32,7 +32,7 @@ the third of those and applies exactly
 `./kubernetes/websites/obsync` — the default-deny NetworkPolicy, the
 OCIRepository and the HelmRelease that directory contains, and nothing else.
 Below that, helm-controller reconciles the HelmRelease under the namespace's
-own `helm-reconciler` account. The application composition is never applied
+own `obsync-helm-reconciler` account. The application composition is never applied
 from this repository.
 
 ## Preconditions
@@ -40,14 +40,19 @@ from this repository.
 - An owner-authorized operation window and one named actor. This procedure is
   merged before it is run.
 - The `obsidian` namespace, its budget, its LimitRange and the
-  `obsync-reconciler` ServiceAccount and Roles are reconciled and current.
+  `obsync-reconciler` and `obsync-helm-reconciler` accounts and Roles are
+  reconciled and current.
   They are this repository's desired state; verify them live before adding a
   reconciler that impersonates them.
 - The application repository's protected `main` carries the reviewed obsync
   application directory under its own kubernetes/websites tree, together with
-  its manifest-shape pins and its pending declaration. That path is quoted
+  its manifest-shape pins, active declaration and acquisition receipt. The
+  selected chart must implement the zero-replica gate described in section 3;
+  `deploymentReady` remains `false`. That path is quoted
   bare on purpose: it is a path in THAT repository, and this one has no such
-  file to point at. Compare every manifest byte to the reviewed source.
+  file to point at. Compare every manifest byte to the reviewed source. If the
+  entry is still pending, complete the separate reviewed selection first;
+  never unsuspend a sentinel-digest source to make it install.
 - Recovery access and a second operator session, per flux-install.md.
 - Keep the operator journal, live observations and any private binding outside
   Git.
@@ -125,36 +130,63 @@ substitute `apply`, which would silently take ownership of an object this
 procedure did not create. Afterwards, prove the inventory is exactly four
 Kustomizations in `flux-system` and that no fifth appeared.
 
-## 3. What stays suspended, and what flips it live
+## 3. Selection, prerequisites and the separate readiness promotion
 
-Two independent suspensions stand between this procedure and a running
-workload, and they are lifted by two different changes in this order:
+Artifact selection and permission to start a workload are separate changes.
+The selected chart's `deploymentReady: false` must render zero application
+replicas, not merely a readiness annotation. Chart v0.1.4 introduced that
+behavior. At both false and true it renders the same six objects: ServiceAccount,
+Service, NetworkPolicy, two PersistentVolumeClaims and Deployment. False is
+therefore **not a no-resource gate**: reconciling it can create claims and bind
+storage even without an application Pod. The suspended Kustomization is the
+stop before any of those objects reach the cluster.
 
-1. **The HelmRelease is suspended and `deploymentReady: false`**, in the
-   application repository, and its OCIRepository selects the all-zero sentinel
-   digest. That composition's own validator requires exactly that state while
-   the application is pending. It is lifted by ONE reviewed change in that
-   repository that moves the entry from its pending map to its active map,
-   records the acquisition receipt for the real v0.1.0 digest, replaces the
-   sentinel, unsuspends the release and sets `deploymentReady: true` — after
-   the owner ceremonies for the Tunnel token, the server-key Secret and the two
-   volumes have run, and after the storage-admission decision this onboarding
-   names.
-2. **This Kustomization is suspended**, which is what keeps the reconciler from
-   applying a directory whose release cannot install. It is lifted separately,
-   by an operator `spec.suspend: false` patch that tests the object's UID and
-   current `resourceVersion`, taken only after step 1 has merged and the
-   digest, signature and receipt have been independently verified.
+Follow this sequence:
 
-Doing them in the other order is safe but pointless: an unsuspended reconciler
-applying a sentinel-digest source produces a source-controller error and no
-workload. Doing step 1 without step 2 leaves the merged state unreconciled,
-which is the honest state and is visible.
+1. **Select the verified artifact in the application repository.** The reviewed
+   selection moves the pending entry to active, replaces the sentinel digest,
+   records its acquisition receipt, binds the exact private TLS proxy peer and
+   unsuspends the HelmRelease, but retains `deploymentReady: false`. Source
+   review and owner merge prove the selection, not live activation. The source
+   and reconciler ceremonies in sections 1 and 2 follow that merge.
+2. **Keep the new Kustomization suspended while proving prerequisites.** Verify
+   the namespace and both reconciler authority layers, the reviewed
+   [storage admission](storage-admission.md) and recovery evidence, and both
+   operator-owned PersistentVolumes with the intended claim bindings. Prepare
+   the directories as section 3b requires. Verify server-key Secret existence
+   and custody without reading its value, and the separate leaf certificate
+   custody and device-trust prerequisites in
+   [private TLS](obsync-private-tls.md). Keep the CA private key off-cluster.
+   No public Tunnel token, Access application, public DNS name or new provider
+   resource is a prerequisite. Missing evidence leaves this step incomplete.
+3. **Hand off prerequisite evidence for a separate reviewed readiness change.**
+   The composition owner changes only `deploymentReady: false` to `true` and
+   its corresponding manifest-shape pin. Render the acquired chart with the
+   exact selected values in both states: the annotation and replicas change
+   from false/0 to true/1; the six-object set and all other fields remain the
+   same. Do not batch a new artifact selection into this promotion. Reference
+   sanitized evidence only; never put private values into its PR. Review and
+   merge still approve source, not runtime behavior.
+4. **Lift the Kustomization suspension only after that promotion merges.**
+   Independently verify the selected digest, signature and acquisition receipt,
+   the complete reviewed composition and current prerequisites again. Patch
+   only `spec.suspend: false`, with preceding tests of the object's UID and
+   current `resourceVersion`. A mismatch or interrupted request requires a
+   fresh read, never blind retry or adoption of a different object.
+5. **Prove application convergence before the proxy and private path.** Require
+   current observed generation and Ready on the Git source and all three tenant
+   Kustomizations at the same reviewed revision; SourceVerified on the chart
+   source at the selected digest; exact PV/PVC bindings; Helm readiness; one
+   ready application replica; and unchanged tenant/controller authority. Verify
+   the Service and effective proxy-only backend policy before installing the
+   proxy. Follow the private TLS runbook: backend-dependent HTTPS readiness and
+   certificate checks, then the separately approved private path, then actual
+   two-device test-note acceptance. Keep the path disabled on a failed gate.
 
-After both, require: current observed generation and Ready on the source and
-all three Kustomizations, all applying the same revision; SourceVerified on the
-chart source with the exact attempted digest; Helm readiness; and the tenant
-and controller boundaries unchanged. Static gates are not live evidence.
+Source publication, a zero-replica render and synthetic proxy checks are not
+live acceptance. No personal notes are used until the real-device campaign
+passes. A readiness or artifact rollback remains a reviewed composition change;
+never delete claims or data to recover a deployment.
 
 ## 3b. Host directories, and the two commands that refuse while it serves
 
@@ -195,6 +227,8 @@ refusal as a fault would be the wrong reading.
 Per flux-recovery.md, and nothing here is a shortcut around it. On a failed or
 partial run, keep the reconciler suspended and the journal. An interrupted
 write has unknown outcome until a fresh named read resolves it.
+Suspending a Kustomization stops further reconciliation, not an already-running
+application or Helm reconciliation; it is not a workload shutdown or rollback.
 
 - To back out the reconciler: delete it with foreground deletion carrying its
   original UID and current `resourceVersion` as preconditions. `prune: false`
