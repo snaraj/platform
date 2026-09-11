@@ -1,0 +1,45 @@
+# Synthetic desired shape only; no runtime reservation or activation evidence.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-pie-ssd-reserved
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: false
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: obsync-blobs-reserved
+spec:
+  capacity:
+    storage: 250Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-pie-ssd-reserved
+  volumeMode: Filesystem
+  claimRef:
+    namespace: obsidian
+    name: obsync-blobs
+  local:
+    path: /mnt/local-pie-ssd-reserved/obsync-blobs
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [storage-node-placeholder]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: obsync-blobs
+  namespace: obsidian
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-pie-ssd-reserved
+  resources:
+    requests:
+      storage: 250Gi

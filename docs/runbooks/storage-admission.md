@@ -1,4 +1,4 @@
-# Static storage policy and future local-volume posture
+# Static storage policy and qualified local-volume profiles
 
 ## Present-state truth
 
@@ -9,11 +9,10 @@ still fail closed before merge: unknown volume sources, network storage,
 affinity, data-source imports, CSI drivers, and degenerate/null shapes are
 rejected.
 
-The sanitized live inventory currently contains only an older, unbound
-`hostPath` PersistentVolume and no PVC or StorageClass. That object is
-historical runtime residue, not evidence that the reviewed local-volume design
-is active. This repository must not claim storage activation until the
-discovery, binding, restore, and live-validation evidence in ADR 0012 exists.
+Historical discovery receipts are not current storage inventory or evidence
+that a reviewed local-volume profile is active. This repository must not claim
+storage activation until current discovery, binding, restore and live-validation
+evidence for the selected profile exists.
 
 ## Reviewed target posture
 
@@ -29,6 +28,15 @@ Future usage-export storage has one closed design:
 - no CSI driver, dynamic provisioner, volume-attributes class, data-source
   import, mount options, or alternate storage root.
 
+That physical profile remains unchanged. A second, obsync-only source profile
+in [ADR 0017](../adr/0017-reserved-file-storage.md) admits reserved file-backed
+ext4 through `local-pie-ssd-reserved`, with exact two-claim/path binding,
+non-default static provisioning, WFFC, Retain and no expansion. It does not
+admit arbitrary loop storage or another workload. The
+[qualification procedure](reserved-file-storage.md) requires durable
+reservation, identity, ledger, absent-mount and recovery evidence; it supplies
+no presumed installed-kernel trim-prevention mechanism or activation authority.
+
 The Naranjo Helm reconciler may receive PVC lifecycle authority only. It never
 gets PV, StorageClass, node, or host authority. Permanent PV/StorageClass and
 host preparation stay bootstrap/operator owned; tenant reconciliation cannot
@@ -41,9 +49,10 @@ this boundary. Its owner-selected enumeration is:
 
 | Field | Exact value |
 | --- | --- |
-| StorageClass | `local-pie-ssd` |
+| StorageClass | `local-pie-ssd`; `local-pie-ssd-reserved` only through the complete obsync profile |
 | Provisioner | `kubernetes.io/no-provisioner` |
-| Local root | `/mnt/local-pie-ssd` |
+| Physical local root | `/mnt/local-pie-ssd` |
+| Reserved local paths | Exactly `/mnt/local-pie-ssd-reserved/obsync-blobs` and `/mnt/local-pie-ssd-reserved/obsync-journal`, only with their exact reserved class/PV/claim pairs |
 | CSI drivers | empty |
 | VolumeAttributesClass names | empty |
 | PersistentVolume source types | `local`, with `csi` syntactically recognized but denied while the driver set is empty |
@@ -84,12 +93,15 @@ Conftest attribution; a generic rejection by an unrelated rule does not count.
 
 ## Runtime closure still required
 
-Manifest checks cannot prove what a node path really mounts. Activation still
-requires the ADR 0012 evidence: a local physical block device; reviewed
+Manifest checks cannot prove what a node path really mounts. The physical
+profile still requires ADR 0012 evidence: a local physical block device; reviewed
 filesystem and capacity; UUID-bound mount with `nodev,nosuid,noexec`; no
 symlink, bind, nested, network, loop, iSCSI, or NBD escape; backup and restore
 drills; preserved SSH/control-plane headroom; exact PV/PVC binding; and live
-cross-namespace denial tests. Missing evidence remains a NO-GO.
+cross-namespace denial tests. The reserved profile instead requires the full
+ADR 0017 qualification and its separate readiness review; it cannot borrow a
+physical-profile receipt or qualify by changing only the class name. Missing
+evidence remains a NO-GO for either profile.
 
 If live storage diverges, suspend the dependent release and preserve the
 volume. Never format, delete, dynamically reprovision, or broaden reconciler

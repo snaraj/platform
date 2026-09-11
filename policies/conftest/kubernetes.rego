@@ -106,7 +106,7 @@ storage_kinds := {
   "VolumeAttributesClass",
 }
 
-enumerated_storage_classes := {"local-pie-ssd"}
+enumerated_storage_classes := {"local-pie-ssd", "local-pie-ssd-reserved"}
 
 enumerated_storage_provisioners := {"kubernetes.io/no-provisioner"}
 
@@ -1678,6 +1678,7 @@ deny contains msg if {
   "local" in persistent_volume_sources
   path := object.get(storage_sub_object(storage_object_spec, "local"), "path", "")
   not local_path_under_enumerated_root(path)
+  not reserved_file_pv_allowed
   msg := sprintf("PersistentVolume %s uses local path outside the enumerated local root", [storage_object_name])
 }
 
@@ -1838,6 +1839,80 @@ local_path_under_enumerated_root(path) if {
   is_string(path)
   some root in enumerated_local_volume_roots
   startswith(path, sprintf("%s/", [root]))
+}
+
+# SR-17. A second, deliberately separate profile. The physical root above is
+# unchanged. This is static shape admission, never proof of a reservation or
+# permission to activate storage; ADR 0017 requires private runtime evidence.
+deny contains msg if {
+  is_storage_object
+  reserved_file_storage_object
+  not reserved_file_storage_allowed
+  msg := sprintf("%s %s must match the exact reserved-file obsync storage profile", [input.kind, storage_object_name])
+}
+
+reserved_file_storage_object if {
+  input.kind == "StorageClass"
+  storage_object_name == "local-pie-ssd-reserved"
+}
+
+reserved_file_storage_object if {
+  input.kind in {"PersistentVolume", "PersistentVolumeClaim"}
+  object.get(storage_object_spec, "storageClassName", "") == "local-pie-ssd-reserved"
+}
+
+reserved_file_storage_allowed if {
+  input.kind == "StorageClass"
+  input.provisioner == "kubernetes.io/no-provisioner"
+  input.volumeBindingMode == "WaitForFirstConsumer"
+  input.reclaimPolicy == "Retain"
+  object.get(input, "allowVolumeExpansion", false) == false
+  annotations := storage_sub_object(storage_sub_object(input, "metadata"), "annotations")
+  object.get(annotations, "storageclass.kubernetes.io/is-default-class", "false") == "false"
+  object.get(annotations, "storageclass.beta.kubernetes.io/is-default-class", "false") == "false"
+}
+
+reserved_file_claims := {
+  "obsync-blobs": "250Gi",
+  "obsync-journal": "4Gi",
+}
+
+reserved_file_storage_allowed if {
+  input.kind == "PersistentVolumeClaim"
+  input.metadata.namespace == "obsidian"
+  size := reserved_file_claims[storage_object_name]
+  storage_object_spec == {
+    "accessModes": ["ReadWriteOnce"],
+    "storageClassName": "local-pie-ssd-reserved",
+    "resources": {"requests": {"storage": size}},
+  }
+}
+
+reserved_file_storage_allowed if {
+  reserved_file_pv_allowed
+}
+
+reserved_file_pv_allowed if {
+  input.kind == "PersistentVolume"
+  some claim, size in reserved_file_claims
+  storage_object_name == sprintf("%s-reserved", [claim])
+  affinity := storage_sub_object(storage_object_spec, "nodeAffinity")
+  term := affinity.required.nodeSelectorTerms[0].matchExpressions[0]
+  count(term.values) == 1
+  regex.match("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", term.values[0])
+  affinity == {"required": {"nodeSelectorTerms": [{"matchExpressions": [{
+    "key": "kubernetes.io/hostname", "operator": "In", "values": term.values,
+  }]}]}}
+  storage_object_spec == {
+    "capacity": {"storage": size},
+    "accessModes": ["ReadWriteOnce"],
+    "persistentVolumeReclaimPolicy": "Retain",
+    "storageClassName": "local-pie-ssd-reserved",
+    "volumeMode": "Filesystem",
+    "claimRef": {"namespace": "obsidian", "name": claim},
+    "local": {"path": sprintf("/mnt/local-pie-ssd-reserved/%s", [claim])},
+    "nodeAffinity": affinity,
+  }
 }
 
 deny contains msg if {
