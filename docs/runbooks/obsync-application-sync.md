@@ -194,7 +194,7 @@ The volumes the claims bind to are an operator ceremony, and the server's own
 posture constrains how their directories are prepared. It refuses a volume
 directory that is writable by its group or by others unless sticky, and requires
 the configured path to be its own resolved form — no symlink, no `.`, no `..`.
-Create them accordingly:
+For the physical profile, create the mounted workload directories accordingly:
 
     /mnt/local-pie-ssd/obsidian/obsync-blobs
     /mnt/local-pie-ssd/obsidian/obsync-journal
@@ -203,6 +203,13 @@ each owned `65532:65532`, mode `0700`, with root-owned parents that are not
 group- or world-writable (sticky is acceptable), and no symlink anywhere on
 either path. The chart sets no `fsGroup`: group sharing is not the mechanism
 here, directory ownership is.
+
+For the reserved-file profile, use only the two exact mounts and the distinct
+backing/fallback ownership in [ADR 0017](../adr/0017-reserved-file-storage.md).
+Run its [qualification procedure](reserved-file-storage.md) before binding
+claims. Workload ownership applies inside verified mounts; unmounted fallback
+roots remain root-owned, mode 0000 and without a `v1` layout. Never prepare a
+writable fallback on the parent filesystem or treat a class name as mount proof.
 
 **The provisioning precondition, as the server states it.** At startup each
 volume directory must either be presented owned by uid `65532` and writable by

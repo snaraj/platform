@@ -212,6 +212,15 @@ and dependency-governed Draft capacity is recorded durably in
   existing obsync capacity document/hash binding, not other platform pins or
   budgets. This grants no provider change, secret custody, storage activation,
   new reconciler authority, or live apply path; those remain separately gated.
+- `docs/adr/0017-reserved-file-storage.md` — bounded PLATFORM/DELIVERY crossing
+  for [issue #367](https://github.com/snaraj/platform/issues/367). The owner's
+  2026-09-11 instruction selects the existing storage pool and requires future
+  physical/logical and StorageClass portability. The reserved-file profile,
+  evidence validator and exact static admission are the author's implementation
+  choice for that instruction, not a new owner-authored design or a standing
+  lane transfer. This crossing permits that ADR and its delivery-owned
+  procedure, policy and tests only. It leaves ADR 0012, namespace budgets,
+  dependency pins, workload-registry work and all live activation gates intact.
 - `kubernetes/platform/admission/**` and
   `kubernetes/platform/admission-install/**` — RETIRED and absent under the
   owner's issue #195 decision. No lane may recreate a Kyverno controller,

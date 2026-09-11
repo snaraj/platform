@@ -1,0 +1,11 @@
+# proves: SR-17
+# rego-message: must match the exact reserved-file obsync storage profile
+# expect-deny: StorageClass local-pie-ssd-reserved must match the exact reserved-file obsync storage profile
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-pie-ssd-reserved
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: true

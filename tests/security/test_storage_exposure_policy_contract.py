@@ -1,7 +1,7 @@
 """Structural and hostile contract for the self-sufficient storage Rego gate.
 
 The fixture runner proves the verdict of every extant file, while this battery
-prevents the corpus, exact SR-0..SR-16 rule inventory, enumerated local means,
+prevents the corpus, exact SR-0..SR-17 rule inventory, enumerated local means,
 and the two independent Pod-volume arms from being narrowed or deleted. All
 expectations are outside literals parsed with the standard library only.
 """
@@ -22,7 +22,7 @@ FIXTURES = REPO_ROOT / "tests" / "kubernetes" / "fixtures"
 # anchor that makes such a matching narrowing fail. It is also the reason nothing
 # in this battery ever SKIPs: a guard that stands down when its expectation stops
 # matching is a guard that disables itself.
-EXPECTED_RULE_IDS = frozenset("SR-{}".format(index) for index in range(17))
+EXPECTED_RULE_IDS = frozenset("SR-{}".format(index) for index in range(18))
 
 # Exact API surface protected by the storage model. Deriving this expectation
 # from `storage_kinds` would let a kind, its rules, and its fixtures disappear
@@ -233,7 +233,7 @@ class EnumerationLockstep(unittest.TestCase):
 
     def test_enumerated_local_means_remain_exact(self) -> None:
         expected = {
-            "enumerated_storage_classes": {"local-pie-ssd"},
+            "enumerated_storage_classes": {"local-pie-ssd", "local-pie-ssd-reserved"},
             "enumerated_storage_provisioners": {"kubernetes.io/no-provisioner"},
             "enumerated_local_volume_roots": {"/mnt/local-pie-ssd"},
             "enumerated_csi_drivers": set(),

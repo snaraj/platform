@@ -279,7 +279,7 @@ reasons each states itself:
 The chart creates the CLAIMS (`obsync-blobs`, `obsync-journal` — the chart's
 own names, not `obsync-*`). The volumes are the operator ceremony below.
 
-### Proposed operator ceremony, for the platform lane to apply directly
+### Physical-profile operator ceremony, for the platform lane to apply directly
 
 Substitute the real node name at apply time; it is never committed.
 
@@ -340,13 +340,19 @@ also on purpose: `Exists` on `kubernetes.io/hostname` matches every node that
 ever joins, which is the unbounded selection the storage policy exists to
 refuse.
 
-**None of this is authorized by this document.** ADR 0012's activation
+The reserved-file alternative uses the separate exact identities in
+[ADR 0017](../adr/0017-reserved-file-storage.md) and its
+[qualification procedure](../runbooks/reserved-file-storage.md). Do not retarget
+these physical-profile objects or a bound claim by editing a class name.
+
+**None of this is authorized by this document.** ADR 0012's physical-profile activation
 evidence — a local physical block device, reviewed filesystem and capacity, a
 UUID-bound mount with `nodev,nosuid,noexec`, no symlink/bind/nested/network/
 loop/iSCSI/NBD escape, backup and restore drills, preserved SSH and
 control-plane headroom, exact PV/PVC binding, and live cross-namespace denial
 tests — does not exist, and until it does this namespace's storage is a NO-GO
-regardless of what the quota says.
+regardless of what the quota says. The reserved profile has its own mandatory
+evidence and remains disabled until that independent qualification passes.
 
 ## 4. What is landed, and where
 
