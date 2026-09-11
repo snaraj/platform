@@ -114,6 +114,7 @@ def allocation(observation, expected_identity, size):
         physical.append((start, start + length))
         cursor += length
     need(cursor == size, "extent_coverage")
+    return physical
 
 
 def validate(expected_bytes, expected, packet, now=None):
@@ -176,6 +177,7 @@ def validate(expected_bytes, expected, packet, now=None):
     shape(packet["volumes"], "blobs journal")
     filesystem_ids = {expected["poolUuid"]}
     mount_devices = set()
+    physical_by_phase = {phase: [] for phase in PHASES}
     for role, claim_bytes in ROLES.items():
         config = shape(expected["volumes"][role], "backingFile filesystemUuid imageBytes minimumFreeInodes")
         name = "obsync-" + role
@@ -198,7 +200,12 @@ def validate(expected_bytes, expected, packet, now=None):
         }), "backing_ownership")
         phases = shape(volume["phases"], " ".join(PHASES))
         for phase in PHASES:
-            allocation(phases[phase], identity(reservation["identity"]), size)
+            physical = allocation(phases[phase], identity(reservation["identity"]), size)
+            # Separate inodes on this pool cannot reserve the same physical
+            # range. Reuse across observation phases is expected, not aliasing.
+            need(all(end <= low or start >= high for start, end in physical
+                     for low, high in physical_by_phase[phase]), "volume_extent_alias")
+            physical_by_phase[phase].extend(physical)
         need(packet["reservations"][name]["allocatedAfterBytes"] ==
              phases["trimmed"]["allocatedBytes"], "allocation_ledger")
         mount = shape(volume["mount"], "target filesystem uuid sourceDevice sourceMajorMinor backingIdentity flags topology uid gid mode acl usableBytes freeInodes")

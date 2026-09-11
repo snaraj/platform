@@ -245,6 +245,39 @@ class ReservedEvidenceTests(unittest.TestCase):
         ]
         self.check(expected, packet)
 
+    def test_cross_volume_extents_cannot_overlap_in_any_phase(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            for start in (14 * GIB + 1, 20 * GIB, 21 * GIB, 272 * GIB - 1):
+                with self.subTest(phase=phase, start=start):
+                    expected, packet = fixture()
+                    packet["volumes"]["blobs"]["phases"][phase]["extents"][0]["physical"] = 20 * GIB
+                    packet["volumes"]["journal"]["phases"][phase]["extents"][0]["physical"] = start
+                    with self.assertRaisesRegex(ValueError, "^volume_extent_alias$"):
+                        self.check(expected, packet)
+            expected, packet = fixture()
+            packet["volumes"]["blobs"]["phases"][phase]["extents"] = [
+                {"logical": 0, "physical": 20 * GIB, "length": GIB, "state": "written"},
+                {"logical": GIB, "physical": 40 * GIB, "length": 251 * GIB, "state": "unwritten"},
+            ]
+            packet["volumes"]["journal"]["phases"][phase]["extents"][0]["physical"] = 19 * GIB
+            with self.assertRaisesRegex(ValueError, "^volume_extent_alias$"):
+                self.check(expected, packet)
+
+    def test_adjacent_volume_extents_and_cross_phase_reuse_are_allowed(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            for start in (14 * GIB, 272 * GIB):
+                with self.subTest(phase=phase, adjacent=start):
+                    expected, packet = fixture()
+                    packet["volumes"]["blobs"]["phases"][phase]["extents"][0]["physical"] = 20 * GIB
+                    packet["volumes"]["journal"]["phases"][phase]["extents"][0]["physical"] = start
+                    self.check(expected, packet)
+        expected, packet = fixture()
+        # An extent can move between observations; only simultaneous overlap
+        # in the same phase contradicts independent backing reservations.
+        packet["volumes"]["blobs"]["phases"]["formatted"]["extents"][0]["physical"] = 301 * GIB
+        packet["volumes"]["journal"]["phases"]["formatted"]["extents"][0]["physical"] = GIB
+        self.check(expected, packet)
+
     def test_extent_and_ledger_upper_bounds_refuse_otherwise_valid_inputs(self):
         expected, packet = fixture()
         size = 252 * GIB

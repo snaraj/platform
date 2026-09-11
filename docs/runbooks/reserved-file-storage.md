@@ -112,7 +112,9 @@ For each volume, `backing` equals the expected path. `ownership` records uid/gid
 Each binds `identity`, `sizeBytes`, `allocatedBytes` and up to 256 contiguous,
 non-overlapping extents `{logical, physical, length, state}` covering the whole
 file. States are `written` or `unwritten`; fragmented but fully covered files
-are accepted. The final allocated count must match the ledger.
+are accepted. The two roles' physical ranges must also be disjoint within each
+observation phase; ranges from different phases may coincide. The final
+allocated count must match the ledger.
 
 `mount` records `target`, `filesystem`, `uuid`, `sourceDevice`,
 `sourceMajorMinor`, `backingIdentity`, `flags`, `topology`, `uid`, `gid`, `mode`,
