@@ -320,12 +320,41 @@ class RecoverySelectionTests(unittest.TestCase):
     def test_first_unresolved_edge_only_and_fresh_source_ci(self):
         for index in range(3):
             with self.subTest(index=index):
+                self.prove_context.reset_mock()
+                self.prove_ci.reset_mock()
                 value = self.select(index)
+                original = R.E.HISTORICAL_RELEASES[index]
                 self.assertEqual((value["source_sha"], value["tag"]),
-                                 (R.E.HISTORICAL_RELEASES[index]["source_sha"], f"v0.1.{81 + index}"))
-                self.assertEqual(self.prove_ci.call_args.args[3:],
-                                 ((R.E.HISTORICAL_RELEASES[index]["main_run_id"], 1),
-                                  (R.E.HISTORICAL_RELEASES[index]["codeql_run_id"], 1)))
+                                 (original["source_sha"], f"v0.1.{81 + index}"))
+                self.prove_context.assert_called_once_with(ROOT, mock.ANY, bound())
+                self.assertEqual(self.prove_ci.call_args_list, [
+                    mock.call(mock.ANY, SOURCE, TREE, (400, 1), (400, 1)),
+                    mock.call(mock.ANY, original["source_sha"], original["tree_sha"],
+                              (original["main_run_id"], 1), (original["codeql_run_id"], 1)),
+                ])
+
+    def test_initial_and_resumed_selection_refuse_context_and_either_ci_failure(self):
+        value = self.select()
+        for supplied in (None, R.canonical(value)):
+            for refused in ("context", SOURCE, value["source_sha"]):
+                with self.subTest(resumed=supplied is not None, refused=refused):
+                    self.prove_context.reset_mock(side_effect=True)
+                    self.prove_ci.reset_mock(side_effect=True)
+                    if refused == "context":
+                        self.prove_context.side_effect = R.C.ContractError("proof refused")
+                    else:
+                        def reject_ci(_api, source, *_args):
+                            if source == refused:
+                                raise R.C.ContractError("proof refused")
+                        self.prove_ci.side_effect = reject_ci
+                    with mock.patch.object(R, "prove_release", side_effect=[True, False]), \
+                            mock.patch.object(R.C, "discover_transition_window", return_value=self.window(0)), \
+                            self.assertRaisesRegex(R.C.ContractError, "proof refused"):
+                        R.selection(ROOT, API(), bound(), supplied)
+                    if refused == "context":
+                        self.prove_ci.assert_not_called()
+                    elif refused == SOURCE:
+                        self.prove_ci.assert_called_once_with(mock.ANY, SOURCE, TREE, (400, 1), (400, 1))
 
     def test_completed_window_missing_checkpoint_and_running_original_stop(self):
         for complete in (True, False):
@@ -371,8 +400,18 @@ class RecoverySelectionTests(unittest.TestCase):
         with mock.patch.object(R, "prove_release", return_value=True) as releases, \
                 mock.patch.object(R.C, "discover_transition_window", return_value=self.window(0)):
             self.run_tuple.reset_mock()
-            self.assertEqual(R.selection(ROOT, API(), bound(), R.canonical(value)), value)
+            self.prove_context.reset_mock()
+            self.prove_ci.reset_mock()
+            api = API()
+            self.assertEqual(R.selection(ROOT, api, bound(), R.canonical(value)), value)
             self.run_tuple.assert_not_called()
+            self.prove_context.assert_called_once_with(ROOT, api, bound())
+            original = R.E.HISTORICAL_RELEASES[0]
+            self.assertEqual(self.prove_ci.call_args_list, [
+                mock.call(api, SOURCE, TREE, (400, 1), (400, 1)),
+                mock.call(api, original["source_sha"], original["tree_sha"],
+                          (original["main_run_id"], 1), (original["codeql_run_id"], 1)),
+            ])
             releases.assert_called_once_with(ROOT, mock.ANY, "v0.1.80", R.E.TERMINAL_V3_SOURCE)
             for key, bad in (("run_id", 501), ("run_attempt", 2), ("executor_sha", "a" * 40),
                              ("repository_id", True), ("repository", "other/platform"),
