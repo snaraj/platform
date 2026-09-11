@@ -278,6 +278,44 @@ class ReservedEvidenceTests(unittest.TestCase):
         packet["volumes"]["journal"]["phases"]["formatted"]["extents"][0]["physical"] = GIB
         self.check(expected, packet)
 
+    def test_cross_volume_overlap_only_in_a_later_blob_extent_is_refused(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            with self.subTest(phase=phase):
+                expected, packet = fixture()
+                packet["volumes"]["blobs"]["phases"][phase]["extents"] = [
+                    {"logical": 0, "physical": 10 * GIB, "length": 126 * GIB, "state": "written"},
+                    {"logical": 126 * GIB, "physical": 300 * GIB, "length": 126 * GIB, "state": "unwritten"},
+                ]
+                packet["volumes"]["journal"]["phases"][phase]["extents"][0]["physical"] = 301 * GIB
+                with self.assertRaisesRegex(ValueError, "^volume_extent_alias$"):
+                    self.check(expected, packet)
+
+    def test_cross_volume_overlap_only_in_a_later_journal_extent_is_refused(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            with self.subTest(phase=phase):
+                expected, packet = fixture()
+                packet["volumes"]["blobs"]["phases"][phase]["extents"][0]["physical"] = 100 * GIB
+                packet["volumes"]["journal"]["phases"][phase]["extents"] = [
+                    {"logical": 0, "physical": 10 * GIB, "length": 3 * GIB, "state": "written"},
+                    {"logical": 3 * GIB, "physical": 200 * GIB, "length": 3 * GIB, "state": "unwritten"},
+                ]
+                with self.assertRaisesRegex(ValueError, "^volume_extent_alias$"):
+                    self.check(expected, packet)
+
+    def test_disjoint_fragmented_reservations_in_both_volumes_are_allowed(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            with self.subTest(phase=phase):
+                expected, packet = fixture()
+                packet["volumes"]["blobs"]["phases"][phase]["extents"] = [
+                    {"logical": 0, "physical": 10 * GIB, "length": 126 * GIB, "state": "written"},
+                    {"logical": 126 * GIB, "physical": 300 * GIB, "length": 126 * GIB, "state": "unwritten"},
+                ]
+                packet["volumes"]["journal"]["phases"][phase]["extents"] = [
+                    {"logical": 0, "physical": 200 * GIB, "length": 3 * GIB, "state": "written"},
+                    {"logical": 3 * GIB, "physical": 500 * GIB, "length": 3 * GIB, "state": "unwritten"},
+                ]
+                self.check(expected, packet)
+
     def test_extent_and_ledger_upper_bounds_refuse_otherwise_valid_inputs(self):
         expected, packet = fixture()
         size = 252 * GIB
