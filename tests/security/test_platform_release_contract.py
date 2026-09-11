@@ -2063,6 +2063,43 @@ class ImmutableMetadataTests(unittest.TestCase):
 class MainCIJobsReceiptTests(unittest.TestCase):
     SOURCE = "a" * 40
 
+    def test_receipt_accepts_the_actual_main_workflow_step_inventory(self):
+        # Build this input from the workflow, independently of the policy tuple.
+        # Generating both expected and observed steps from MAIN_CI_EXACT_STEPS
+        # previously hid the two successful transport checks from the publisher.
+        workflow = (ROOT / ".github/workflows/pull-request.yml").read_text()
+        repository_job = workflow.split("  repository-and-infrastructure:\n", 1)[1]
+        repository_job = repository_job.split("\n  dependency-review:", 1)[0]
+        names = re.findall(r"^      - name: (.+)$", repository_job, re.MULTILINE)
+        for transport_step in (
+            "Validate the private obsync TLS transport",
+            "Scan the pinned obsync proxy image",
+        ):
+            self.assertEqual(names.count(transport_step), 1)
+        actual = main_ci_jobs_record()
+        actual["jobs"][0]["steps"] = [
+            {"name": "Set up job", "conclusion": "success"},
+            *[
+                {"name": name, "conclusion": (
+                    "skipped" if name == "Scan immutable pull-request history" else "success"
+                )}
+                for name in names
+            ],
+            {"name": "Post Check out repository", "conclusion": "success"},
+            {"name": "Complete job", "conclusion": "success"},
+        ]
+        self.assertEqual(self.build(actual)["status"], "PASS")
+        for step_name in (
+            "Validate the private obsync TLS transport",
+            "Scan the pinned obsync proxy image",
+        ):
+            for changed_name in (step_name + " ", step_name.lower(), "Unknown successful check"):
+                changed = copy.deepcopy(actual)
+                step = next(item for item in changed["jobs"][0]["steps"] if item["name"] == step_name)
+                step["name"] = changed_name
+                with self.subTest(step=step_name, renamed=changed_name), self.assertRaises(MODULE.ContractError):
+                    self.build(changed)
+
     @classmethod
     def build(
         cls,

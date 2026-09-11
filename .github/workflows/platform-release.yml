@@ -80,6 +80,8 @@ jobs:
           test "${event_sha}" = "${COMPLETED_SHA}"
           test "$(git rev-parse HEAD)" = "${COMPLETED_SHA}"
           printf 'source_sha=%s\n' "${event_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Install checksum-verified predecessor verification tools
+        run: ./scripts/ci/install-tools.sh
       - name: Await exact immutable predecessor release
         id: predecessor
         env:

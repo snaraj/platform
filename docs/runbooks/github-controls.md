@@ -20,6 +20,25 @@ credentials. The sole exception in this release lane is the dedicated
 `platform-release` environment and usable only to mint that read-only settings
 token.
 
+The finite issue #369 source recovery uses the same settings environment and
+App scope in a separate no-input `platform-release-recovery.yml` workflow.
+Its preparation and settings jobs additionally need ordinary `actions: read`
+to re-prove original and executor workflow attempts. Its publish job has
+`actions: read`, `contents: write` and `id-token: write`, no environment and no
+App material. The ordinary token reaches only bounded API reads and the exact
+tag/Release transaction; OIDC signs the actual executor identity. Main-only
+first-attempt guards, shared non-canceling concurrency and a canonical
+run-bound selection prevent cross-run settings or source reuse.
+
+The [finite recovery procedure](platform-source-releases.md#finite-historical-source-recovery)
+defines the closed sources, default-target Release payload and original-run
+delivery holds. Source review requires modeled success and HTTP 403/404 denial
+without broader credentials. Actual ordinary-token creation capability is
+proved only by the protected post-merge execution. A refusal stops delivery;
+it never authorizes changing App scope, a manual tag, or a replacement signed
+publisher attempt. Existing immutable-release and no-bypass settings proofs
+remain required before Ready and again in each dispatch.
+
 Posting source to GitHub remains a workstation responsibility. Authenticate Git
 with the dedicated passphrase-protected SSH agent or the OS credential manager/
 passkey; never copy that GitHub authority to the Pi, Flux, or a Cloudflare

@@ -84,6 +84,8 @@ MAIN_CI_REQUIRED_STEPS = (
     "Render and validate Helm and Kubernetes",
     "Prove render determinism and validate the assurance ledger",
     "Scan dependencies and full-tree secrets",
+    "Validate the private obsync TLS transport",
+    "Scan the pinned obsync proxy image",
     "Scan IaC and configuration",
 )
 MAIN_CI_PUSH_SKIPPED_STEPS = ("Scan immutable pull-request history",)
@@ -891,6 +893,9 @@ def render_release_identity(
     selector_build_sha: str | None = None,
     github_repository: str | None = None,
     github_repository_id: int | None = None,
+    execution_sha: str | None = None,
+    execution_main_run_id: int | None = None,
+    execution_main_run_attempt: int | None = None,
 ) -> str:
     """Render the canonical signed platform release identity payload."""
     head_sha = _exact_commit(repository, head_sha, "release-identity head SHA")
@@ -911,10 +916,10 @@ def render_release_identity(
         raise ContractError("release identity is not the derived exact-next edge")
     try:
         selected = EPOCH.identity(tag)
-        if selected["version"] == 2 or github_repository is not None or github_repository_id is not None:
+        if selected["version"] in (2, 4) or github_repository is not None or github_repository_id is not None:
             selected = EPOCH.publication(
                 github_repository, github_repository_id, tag,
-                expected_base_tag, expected_base_sha,
+                expected_base_tag, expected_base_sha, head_sha,
             )
     except ValueError as error:
         raise ContractError(str(error)) from error
@@ -982,6 +987,36 @@ def render_release_identity(
     }
     if selected["version"] >= 2:
         evidence["repository_id"] = EPOCH.REPOSITORY_ID
+    if selected["version"] == 4:
+        execution_sha = _exact_commit(
+            repository, head_sha if execution_sha is None else execution_sha, "executor SHA"
+        )
+        execution_tree = require_sha(
+            _git(repository, "rev-parse", f"{execution_sha}^{{tree}}"), "executor tree SHA"
+        )
+        if execution_sha == head_sha:
+            if execution_main_run_id is None:
+                execution_main_run_id = main_run_id
+            if execution_main_run_attempt is None:
+                execution_main_run_attempt = main_run_attempt
+        if (
+            type(execution_main_run_id) is not int or execution_main_run_id <= 0
+            or type(execution_main_run_attempt) is not int or execution_main_run_attempt <= 0
+        ):
+            raise ContractError("executor main CI requires its exact run and attempt")
+        evidence["execution"] = {
+            "source_sha": execution_sha,
+            "tree_sha": execution_tree,
+            "main_ci": {
+                **evidence["main_ci"], "head_sha": execution_sha,
+                "run_id": execution_main_run_id, "run_attempt": execution_main_run_attempt,
+            },
+        }
+        evidence["platform_release"].update(
+            event=selected["publisher_event"], head_sha=execution_sha,
+            workflow=selected["publisher_workflow"],
+        )
+        evidence["release"]["target_commitish"] = EPOCH.release_target(tag, head_sha)
     if selected["version"] < 3:
         if re.fullmatch(r"sha256:[0-9a-f]{64}", selector_image_digest or "") is None:
             raise ContractError("selector image digest must be canonical sha256")
@@ -2096,6 +2131,10 @@ def validate_draft_release_record(
 ) -> None:
     """Validate the sole short-lived self-ID draft before publication."""
     source_sha = require_sha(source_sha, "draft Release target SHA")
+    try:
+        expected_target = EPOCH.release_target(tag, source_sha)
+    except ValueError as error:
+        raise ContractError("draft Release source policy is foreign") from error
     release_id = release_record.get("id")
     if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
         raise ContractError("draft Release ID is invalid")
@@ -2112,7 +2151,7 @@ def validate_draft_release_record(
         raise ContractError("draft Release server tag is foreign")
     if (
         release_record.get("name") != title
-        or release_record.get("target_commitish") != source_sha
+        or release_record.get("target_commitish") != expected_target
     ):
         raise ContractError("draft Release identity is not exact")
     if release_record.get("body") != body:
@@ -2497,6 +2536,8 @@ def selector_image_from_release(
     } | ({"repository_id"} if selected["version"] >= 2 else set())
     if selected["version"] < 3:
         expected_fields |= {"selector", "sites"}
+    if selected["version"] == 4:
+        expected_fields.add("execution")
     if set(evidence) != expected_fields:
         raise ContractError("selector predecessor top-level fields are foreign")
     if (
@@ -2531,6 +2572,10 @@ def selector_image_from_release(
         },
         "release evidence",
     )
+    try:
+        expected_target = EPOCH.release_target(expected_tag, expected_sha)
+    except ValueError as error:
+        raise ContractError("Release source policy is foreign") from error
     expected_release = {
         "asset_count": 2,
         "draft": False,
@@ -2538,7 +2583,7 @@ def selector_image_from_release(
         "immutable": True,
         "prerelease": False,
         "tag_name": expected_tag,
-        "target_commitish": expected_sha,
+        "target_commitish": expected_target,
     }
     if (
         type(release.get("asset_count")) is not int
@@ -2553,7 +2598,7 @@ def selector_image_from_release(
     if (
         release_record.get("tag_name") != expected_tag
         or release_record.get("name") != f"Platform {expected_tag}"
-        or release_record.get("target_commitish") != expected_sha
+        or release_record.get("target_commitish") != expected_target
         or release_record.get("draft") is not staged
         or release_record.get("prerelease") is not False
         or release_record.get("immutable") is not (not staged)
@@ -2623,9 +2668,17 @@ def selector_image_from_release(
         is None
     ):
         raise ContractError("selector predecessor changelog evidence is foreign")
-    for key, workflow, event, with_conclusion in (
-        ("main_ci", WORKFLOW_PATH, "push", True),
-        ("platform_release", PLATFORM_WORKFLOW_PATH, "workflow_run", False),
+    execution_sha = expected_sha
+    if selected["version"] == 4:
+        try:
+            EPOCH.validate_execution(evidence)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractError("signed publication execution is foreign") from error
+        execution_sha = evidence["execution"]["source_sha"]
+    for key, workflow, event, with_conclusion, run_sha in (
+        ("main_ci", WORKFLOW_PATH, "push", True, expected_sha),
+        ("platform_release", selected.get("publisher_workflow", PLATFORM_WORKFLOW_PATH),
+         selected.get("publisher_event", "workflow_run"), False, execution_sha),
     ):
         fields = {
             "event",
@@ -2640,7 +2693,7 @@ def selector_image_from_release(
         run = exact(evidence[key], fields, key)
         if (
             run.get("event") != event
-            or run.get("head_sha") != expected_sha
+            or run.get("head_sha") != run_sha
             or run.get("ref") != PROTECTED_REF
             or run.get("workflow") != workflow
             or not isinstance(run.get("run_id"), int)
@@ -2741,6 +2794,8 @@ def validate_identity_run_records(
     platform_run_record: Mapping[str, object],
     *,
     platform_conclusion: str = "success",
+    execution_main_run_record: Mapping[str, object] | None = None,
+    platform_pending: bool = False,
 ) -> None:
     """Prove the signed receipt names two exact successful workflow attempts."""
     if platform_conclusion not in {"success", "failure"}:
@@ -2750,7 +2805,7 @@ def validate_identity_run_records(
         selected = EPOCH.identity(evidence["tag"]["name"])
         if (evidence["schema"], evidence["repository"]) != (selected["schema"], selected["repository"]):
             raise ValueError("run identity epoch is foreign")
-        if selected["version"] == 2:
+        if selected["version"] >= 2:
             EPOCH.repository(evidence["repository"], evidence.get("repository_id"))
     except (KeyError, TypeError, ValueError) as error:
         raise ContractError("run identity epoch is foreign") from error
@@ -2758,18 +2813,55 @@ def validate_identity_run_records(
     source_sha = require_sha(
         source.get("merge_sha"), "release identity workflow source SHA"
     )
-    for key, actual, workflow, event, receipt_conclusion, actual_conclusion in (
-        ("main_ci", main_run_record, WORKFLOW_PATH, "push", True, "success"),
+    # A waiting reader may classify an exact pending v4 attempt, but cannot
+    # promote that classification to completed publication proof. Its caller
+    # must return a distinct pending result; normal verification stays strict.
+    pending_status = platform_run_record.get("status")
+    if platform_pending and (
+        selected["version"] != 4 or platform_conclusion != "success"
+        or pending_status not in {"queued", "in_progress", "pending", "requested", "waiting"}
+        or platform_run_record.get("conclusion") is not None
+    ):
+        raise ContractError("pending publisher classification is foreign")
+    execution_sha = source_sha
+    if selected["version"] == 4:
+        try:
+            EPOCH.validate_execution(evidence)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractError("signed publication execution is foreign") from error
+        execution_sha = evidence["execution"]["source_sha"]
+    rows = [
+        ("main_ci", evidence.get("main_ci"), main_run_record,
+         WORKFLOW_PATH, "push", True, "success", source_sha),
         (
             "platform_release",
+            evidence.get("platform_release"),
             platform_run_record,
-            PLATFORM_WORKFLOW_PATH,
-            "workflow_run",
+            selected.get("publisher_workflow", PLATFORM_WORKFLOW_PATH),
+            selected.get("publisher_event", "workflow_run"),
             False,
             platform_conclusion,
+            execution_sha,
         ),
-    ):
-        receipt = _object(evidence.get(key), f"release identity {key}")
+    ]
+    if selected["version"] == 4:
+        if execution_main_run_record is None:
+            if execution_sha != source_sha:
+                raise ContractError("historical publication requires executor main CI proof")
+            execution_main_run_record = main_run_record
+        head_commit = _object(execution_main_run_record.get("head_commit"), "executor head commit")
+        if (head_commit.get("id"), head_commit.get("tree_id")) != (
+            execution_sha, evidence["execution"]["tree_sha"]
+        ):
+            raise ContractError("executor tree differs from its completed main CI record")
+        rows.append(("execution.main_ci", evidence["execution"]["main_ci"],
+                     execution_main_run_record, WORKFLOW_PATH, "push", True,
+                     "success", execution_sha))
+    for key, receipt_value, actual, workflow, event, receipt_conclusion, actual_conclusion, expected_sha in rows:
+        expected_status = pending_status if platform_pending and key == "platform_release" else "completed"
+        if platform_pending and key == "platform_release":
+            actual_conclusion = None
+        receipt = _object(receipt_value, f"release identity {key}")
         expected_receipt_fields = {
             "event",
             "head_sha",
@@ -2790,7 +2882,7 @@ def validate_identity_run_records(
         if (
             set(receipt) != expected_receipt_fields
             or receipt.get("event") != event
-            or receipt.get("head_sha") != source_sha
+            or receipt.get("head_sha") != expected_sha
             or receipt.get("ref") != PROTECTED_REF
             or receipt.get("workflow") != workflow
             or not isinstance(receipt.get("run_id"), int)
@@ -2804,9 +2896,9 @@ def validate_identity_run_records(
             or actual.get("run_attempt") != receipt.get("run_attempt")
             or actual.get("event") != event
             or actual.get("head_branch") != "main"
-            or actual.get("head_sha") != source_sha
+            or actual.get("head_sha") != expected_sha
             or actual.get("path") != workflow
-            or actual.get("status") != "completed"
+            or actual.get("status") != expected_status
             or actual.get("conclusion") != actual_conclusion
         ):
             raise ContractError(
@@ -3083,6 +3175,9 @@ def _parser() -> argparse.ArgumentParser:
     identity.add_argument("--main-run-attempt", type=int, required=True)
     identity.add_argument("--platform-run-id", type=int, required=True)
     identity.add_argument("--platform-run-attempt", type=int, required=True)
+    identity.add_argument("--execution-sha")
+    identity.add_argument("--execution-main-run-id", type=int)
+    identity.add_argument("--execution-main-run-attempt", type=int)
     identity.add_argument("--selector-image-digest")
     identity.add_argument("--selector-build-sha")
     recovery = commands.add_parser("recovery-release")
@@ -3205,6 +3300,7 @@ def _parser() -> argparse.ArgumentParser:
     identity_runs.add_argument("--identity", type=Path, required=True)
     identity_runs.add_argument("--main-run-json", type=Path, required=True)
     identity_runs.add_argument("--platform-run-json", type=Path, required=True)
+    identity_runs.add_argument("--execution-main-run-json", type=Path)
     release_state = commands.add_parser("release-state")
     release_state.add_argument("--http-status", type=int, required=True)
     release_state.add_argument("--require", choices=("absent", "exact"))
@@ -3293,6 +3389,9 @@ def main(argv: list[str] | None = None) -> int:
                     selector_build_sha=args.selector_build_sha,
                     github_repository=args.github_repository,
                     github_repository_id=args.github_repository_id,
+                    execution_sha=args.execution_sha,
+                    execution_main_run_id=args.execution_main_run_id,
+                    execution_main_run_attempt=args.execution_main_run_attempt,
                 ),
                 end="",
             )
@@ -3478,6 +3577,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.identity.read_bytes(),
                 _read_object(args.main_run_json),
                 _read_object(args.platform_run_json),
+                execution_main_run_record=(
+                    _read_object(args.execution_main_run_json)
+                    if args.execution_main_run_json else None
+                ),
             )
             print("exact")
         elif args.command == "release-state":
