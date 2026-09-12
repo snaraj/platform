@@ -302,6 +302,18 @@ class RecoverySelectionTests(unittest.TestCase):
             self.stack.append(patch)
             setattr(self, name, patch.start())
             self.addCleanup(patch.stop)
+        self._git.side_effect = lambda _root, *args: "2026-09-11T00:00:00Z" if args[0] == "show" else TREE
+
+    @staticmethod
+    def prepared_api(index=0):
+        tag = f"v0.1.{81 + index}"
+        source = R.E.HISTORICAL_RELEASES[index]["source_sha"]
+        ref = {"ref": f"refs/tags/{tag}", "object": {"type": "tag", "sha": TREE}}
+        annotated = {"sha": TREE, "tag": tag, "object": {"type": "commit", "sha": source},
+                     "message": f"Platform release {tag} from {source}", "tagger": {
+                         "name": R.C.RELEASE_TAGGER_NAME, "email": R.C.RELEASE_TAGGER_EMAIL,
+                         "date": "2026-09-11T00:00:00Z"}}
+        return API({f"/git/ref/tags/{tag}": ref, f"/git/tags/{TREE}": annotated})
 
     @staticmethod
     def window(index):
@@ -313,7 +325,7 @@ class RecoverySelectionTests(unittest.TestCase):
     def select(self, index=0):
         with mock.patch.object(R, "prove_release", side_effect=[True] * (index + 1) + [False]) as releases, \
                 mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
-            value = R.selection(ROOT, API(), bound())
+            value = R.selection(ROOT, self.prepared_api(index), bound())
         self.assertEqual(releases.call_count, index + 2)
         return value
 
@@ -402,7 +414,7 @@ class RecoverySelectionTests(unittest.TestCase):
             self.run_tuple.reset_mock()
             self.prove_context.reset_mock()
             self.prove_ci.reset_mock()
-            api = API()
+            api = self.prepared_api()
             self.assertEqual(R.selection(ROOT, api, bound(), R.canonical(value)), value)
             self.run_tuple.assert_not_called()
             self.prove_context.assert_called_once_with(ROOT, api, bound())
@@ -437,6 +449,39 @@ class RecoverySelectionTests(unittest.TestCase):
         with mock.patch.object(R.C, "discover_transition_window", return_value=self.window(1)), \
                 self.assertRaises(ValueError):
             R.selection(ROOT, API(), bound(), R.canonical(value))
+
+    def test_prepare_and_verify_require_an_exact_prepared_tag_for_each_edge(self):
+        for index in range(3):
+            value = self.select(index)
+            for supplied in (None, R.canonical(value)):
+                prior = [True] * (index + 1) + [False] if supplied is None else [True]
+                with mock.patch.object(R, "prove_release", side_effect=prior), \
+                        mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
+                    self.assertEqual(R.selection(ROOT, self.prepared_api(index), bound(), supplied), value)
+                for change in ("absent", "lightweight", "source", "message", "tagger", "instant", "fetched"):
+                    api = self.prepared_api(index)
+                    ref = api.records[f"/git/ref/tags/{value['tag']}"]
+                    annotated = api.records[f"/git/tags/{TREE}"]
+                    if change == "absent":  # The dangling object remains present in the fixture.
+                        api.records[f"/git/ref/tags/{value['tag']}"] = None
+                    elif change == "lightweight":
+                        ref["object"]["type"] = "commit"
+                    elif change == "source":
+                        annotated["object"]["sha"] = SOURCE
+                    elif change == "message":
+                        annotated["message"] += "\n"
+                    elif change == "tagger":
+                        annotated["tagger"]["name"] = "other"
+                    elif change == "instant":
+                        annotated["tagger"]["date"] = "2026-09-10T00:00:00Z"
+                    else:
+                        ref["object"]["sha"] = annotated["sha"] = "d" * 40
+                        api.records[f"/git/tags/{'d' * 40}"] = annotated
+                    with self.subTest(index=index, verify=supplied is not None, change=change), \
+                            mock.patch.object(R, "prove_release", side_effect=prior), \
+                            mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)), \
+                            self.assertRaises(ValueError):
+                        R.selection(ROOT, api, bound(), supplied)
 
 
 class RecoveryReleaseTests(unittest.TestCase):
