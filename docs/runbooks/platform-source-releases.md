@@ -148,7 +148,7 @@ unchanged. Source CI and publisher attempts are verified through exact
 attempt-specific API records, including the original attempts named by the
 terminal checkpoint.
 
-After exact annotated-tag creation, recovery creates a draft with only
+After owner preparation of the exact annotated tag, recovery creates a draft with only
 `tag_name`, `name`, `body`, `draft:true` and `prerelease:false`. It omits
 `target_commitish` and requires GitHub's returned default-target hint to be
 exactly `main`; the tag object and peeled commit bind the historical source.
@@ -157,13 +157,54 @@ The notes PATCH contains only `body`; the publish PATCH contains only
 rechecks the unchanged tag object, source, predecessor and selected executor.
 An exact zero-asset draft may resume on a fresh dispatch. Partial assets,
 foreign custody, a moved tag, a missing settings proof or permission refusal
-stop delivery. No token-scope expansion or manual tag fallback is permitted.
+stop delivery. No token-scope expansion or automatic tag fallback is permitted.
+
+### Owner-prepared historical tags
+
+Only the owner may prepare the next exact annotated tag for this closed window:
+
+| Tag | Historical source |
+|---|---|
+| `v0.1.81` | `060c9678e130487b27cdaec395b0f1c5d74b9240` |
+| `v0.1.82` | `9cd79f1e69cfa00eb5467822831056101629c8f8` |
+| `v0.1.83` | `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` |
+
+This exception becomes operative only after owner merge of its reviewed source
+and successful exact-executor main CI and CodeQL. Before each owner action,
+independently verify a single-edge packet against the existing frozen source,
+parent, tree, fragment, original main/CodeQL attempts and current executor.
+Require the exact immutable predecessor and current tag protections, no active
+publisher for the edge, and an absent ref and Release. Use the canonical
+`prove_trees`, `prove_ci`, `prove_release` and `validate_tag_record` checks;
+tag existence and a successful job alone are insufficient evidence.
+
+The packet fixes the annotation object hash, exact source, message
+`Platform release <tag> from <source>`, existing release-tagger constants and
+source committer instant. The owner may reuse a verified exact dangling object
+or prepare that exact object, then create only the single absent tag reference.
+The owner remains the API actor; annotation metadata does not claim a bot action
+or a signed tag. Agents never create tag objects or refs. No temporary branch,
+lightweight tag, force update, deletion, credential or protection change is
+permitted. The owner must not create the Release or its assets. A permission
+refusal or ambiguous response stops for authoritative readback, never a retry.
+
+Read back the exact annotation/ref, compare the packet's object hash and peeled
+source, require Release still absent, and fetch the exact tag for local/API
+object equality. An already prepared exact tag is verified without another
+write. Prepare and verify refuse a missing or inexact tag before privileged
+jobs; the publisher independently refuses before either tag-creation POST.
+An unreferenced annotation object alone does not meet the prerequisite.
+Recovery retains all original-source/executor CI, first-attempt, settings,
+OIDC, immutable two-asset and original-publisher proofs. Only after a completed
+immutable release may the owner prepare the next edge. This is not a general
+tag-creation exception and does not extend to later ordinary releases.
 
 After owner merge and successful exact-executor main CI and CodeQL:
 
 1. Keep main at that executor. Confirm the prior dispatch is terminal and there
    is no incomplete publisher proof. Do not rerun any of the frozen old
-   workflows: their source cannot acquire this repair.
+   workflows: their source cannot acquire this repair. Complete the exact
+   owner-prepared tag prerequisite above for the oldest incomplete edge.
 2. Dispatch the no-input recovery workflow at `main` once. The Actions REST
    dispatch endpoint, using API version `2026-03-10` and body `{"ref":"main"}`,
    returns the new `workflow_run_id`; bind the returned ID, attempt 1, main

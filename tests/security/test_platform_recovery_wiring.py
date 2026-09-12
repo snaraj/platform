@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from . import test_platform_release_contract as legacy
+from . import test_platform_release_recovery as recovery
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/platform-release-recovery.yml"
@@ -80,6 +81,20 @@ def workflow_contract(source):
 
 
 class RecoveryWiringTests(unittest.TestCase):
+    def test_owner_exception_has_a_closed_table_and_keeps_agent_and_token_denials(self):
+        runbook = (ROOT / "docs/runbooks/platform-source-releases.md").read_text()
+        section = runbook.split("### Owner-prepared historical tags\n", 1)[1]
+        rows = re.findall(r"^\| `(v[0-9.]+)` \| `([0-9a-f]{40})` \|$", section, re.M)
+        self.assertEqual(rows, [(f"v0.1.{81 + index}", entry["source_sha"])
+                                for index, entry in enumerate(recovery.R.E.HISTORICAL_RELEASES)])
+        for text in ("Only the owner may prepare", "Agents never create tag objects or refs.",
+                     "The owner must not create the Release or its assets.",
+                     "No token-scope expansion or automatic tag fallback is permitted."):
+            self.assertIn(text, runbook)
+        controls = (ROOT / "docs/runbooks/github-controls.md").read_text()
+        self.assertIn("platform-source-releases.md#owner-prepared-historical-tags", controls)
+        self.assertIn("Agents never create tag objects or refs.", controls)
+
     def test_main_only_first_attempt_jobs_and_exact_authority(self):
         source = WORKFLOW.read_text()
         workflow_contract(source)
@@ -415,6 +430,51 @@ sleep() { :; }
                 self.assertEqual(observed, phases[:phases.index(phase) + 1])
                 if failure.get("TEST_AMBIGUOUS") == "publish":
                     self.assertIn("published", files)
+
+    def test_historical_absence_never_creates_objects_or_refs_but_ordinary_still_does(self):
+        source = function(TRANSACTION.read_text(), "publish_current_release")
+        preamble = r'''
+historical_recovery="${TEST_HISTORICAL}"
+TAG=v0.1.81
+SOURCE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+GITHUB_REPOSITORY=example/platform
+api_version=2026-03-10
+tagger_name=synthetic-tagger
+tagger_email=synthetic-email
+git() { printf '2026-09-11T00:00:00Z'; }
+classify_tag() {
+  if [ -f "${RUNNER_TEMP}/prepared" ]; then test "$1" = exact
+  elif [ "${TEST_STATE}" = foreign ]; then return 1
+  else test "$1" = absent; fi
+}
+classify_current_release() { test "$1" = absent; }
+preflight_publication_state() { :; }
+run_write_gh() {
+  case "$*" in
+    *git/tags*) printf 'object\n' >> "${RUNNER_TEMP}/writes"; printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+    *git/refs*) printf 'ref\n' >> "${RUNNER_TEMP}/writes"; touch "${RUNNER_TEMP}/prepared" ;;
+    *) printf 'unexpected\n' >> "${RUNNER_TEMP}/writes"; return 90 ;;
+  esac
+}
+write_current_draft_marker() { touch "${RUNNER_TEMP}/release-phase"; exit 0; }
+sleep() { :; }
+'''
+        code = preamble + source + "\npublish_current_release\n"
+        for state in ("absent", "dangling", "foreign"):
+            with self.subTest(state=state):
+                completed, files = self.execute(code, {"TEST_HISTORICAL": "true", "TEST_STATE": state})
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn("writes", files)
+                self.assertNotIn("release-phase", files)
+        completed, files = self.execute(code, {"TEST_HISTORICAL": "true", "TEST_STATE": "exact"},
+                                        files={"prepared": ""})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("writes", files)
+        self.assertIn("release-phase", files)
+        completed, files = self.execute(code, {"TEST_HISTORICAL": "false", "TEST_STATE": "absent"})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(files["writes"].splitlines(), ["object", "ref"])
+        self.assertIn("release-phase", files)
 
 
 if __name__ == "__main__":

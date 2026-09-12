@@ -377,6 +377,15 @@ authority unavailable to `GITHUB_TOKEN`. A disposable-repository canary must
 still prove this exact existing-tag path before Ready; documentation is not a
 substitute for observed API behavior.
 
+The separate [finite historical-source prerequisite](platform-source-releases.md#owner-prepared-historical-tags)
+permits only the owner to prepare each of the three fixed annotated tags after
+reviewed merge and fresh source, executor, predecessor and settings proofs.
+Agents never create tag objects or refs. That prerequisite retains the current
+publisher's ordinary token and its exact two authenticated assets; it does not
+inherit v0.1.0's zero-asset format or grant a general manual recovery path.
+The owner creates neither Releases nor assets, and the automated recovery
+refuses before tag writes when the exact prepared tag is absent or inexact.
+
 The failed `v0.1.41` and `v0.1.42` publications are not repaired in place.
 Their annotated tags are immutable and remain burned ledger boundaries. The
 only successor exception accepts an absent `v0.1.42` Release on the exact
