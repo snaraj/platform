@@ -21,7 +21,9 @@ PROFILE = "reserved-file-ext4-v1"
 CLASS = "local-pie-ssd-reserved"
 ROLES = {"blobs": 250 * 1024**3, "journal": 4 * 1024**3}
 PHASES = ("reserved", "formatted", "restarted", "trimmed")
-MAX_INPUT = 64 * 1024
+MAX_EXPECTED_INPUT = 64 * 1024
+MAX_EVIDENCE_INPUT = 16 * 1024**2
+MAX_EXTENTS = 8192
 MAX_AGE = 15 * 60
 
 
@@ -79,18 +81,25 @@ def unique_object(pairs):
     return result
 
 
-def load(path):
+def load(path, limit=MAX_EXPECTED_INPUT):
     # No following a link, and no unbounded read before a size check. Checking
     # the opened fd also rejects replacement by a non-regular input object.
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
-        need(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_INPUT, "input_file")
+        need(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= limit, "input_file")
         need(stat.S_IMODE(info.st_mode) & 0o077 == 0, "input_permissions")
-        payload = stream.read(MAX_INPUT + 1)
-        need(len(payload) <= MAX_INPUT, "input_size")
+        payload = stream.read(limit + 1)
+        need(len(payload) <= limit, "input_size")
     return payload, json.loads(payload, object_pairs_hook=unique_object,
                                parse_constant=lambda _: need(False, "json_constant"))
+
+
+def disjoint(physical, reason):
+    # Logical order need not be physical order. Sorting keeps complete-map
+    # checks bounded at O(n log n), including both roles in one phase.
+    ordered = sorted(physical)
+    need(all(left[1] <= right[0] for left, right in zip(ordered, ordered[1:])), reason)
 
 
 def allocation(observation, expected_identity, size):
@@ -99,7 +108,7 @@ def allocation(observation, expected_identity, size):
     need(number(observation["sizeBytes"], 1) == size, "backing_size")
     need(number(observation["allocatedBytes"]) >= size, "physical_allocation")
     extents = observation["extents"]
-    need(type(extents) is list and 1 <= len(extents) <= 256, "extent_count")
+    need(type(extents) is list and 1 <= len(extents) <= MAX_EXTENTS, "extent_count")
     cursor = 0
     physical = []
     for extent in extents:
@@ -109,11 +118,10 @@ def allocation(observation, expected_identity, size):
         length = number(extent["length"], 1)
         need(extent["state"] in ("written", "unwritten"), "extent_state")
         need(offset == cursor, "extent_coverage")
-        need(all(start + length <= low or start >= high for low, high in physical),
-             "extent_alias")
         physical.append((start, start + length))
         cursor += length
     need(cursor == size, "extent_coverage")
+    disjoint(physical, "extent_alias")
     return physical
 
 
@@ -203,8 +211,6 @@ def validate(expected_bytes, expected, packet, now=None):
             physical = allocation(phases[phase], identity(reservation["identity"]), size)
             # Separate inodes on this pool cannot reserve the same physical
             # range. Reuse across observation phases is expected, not aliasing.
-            need(all(end <= low or start >= high for start, end in physical
-                     for low, high in physical_by_phase[phase]), "volume_extent_alias")
             physical_by_phase[phase].extend(physical)
         need(packet["reservations"][name]["allocatedAfterBytes"] ==
              phases["trimmed"]["allocatedBytes"], "allocation_ledger")
@@ -236,6 +242,8 @@ def validate(expected_bytes, expected, packet, now=None):
              prevention["loopZeroUnmap"] == "blocked" and
              prevention["restartEnforcement"] == "verified" and
              prevention["explicitTrim"] == "blocked-reservation-unchanged", "trim_prevention")
+    for physical in physical_by_phase.values():
+        disjoint(physical, "volume_extent_alias")
     need(same(packet["recovery"], {
         "missingMount": "refused", "wrongBacking": "refused", "secondConsumer": "refused",
         "restartDurability": "verified", "offlineRestore": "verified", "quarantineRecovery": "verified",
@@ -250,8 +258,8 @@ def main():
     parser.add_argument("evidence", type=Path)
     args = parser.parse_args()
     try:
-        expected_bytes, expected = load(args.expected)
-        _, packet = load(args.evidence)
+        expected_bytes, expected = load(args.expected, MAX_EXPECTED_INPUT)
+        _, packet = load(args.evidence, MAX_EVIDENCE_INPUT)
         result = validate(expected_bytes, expected, packet)
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         # Do not echo private paths, identifiers or invalid input values.
