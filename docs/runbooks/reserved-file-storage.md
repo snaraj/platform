@@ -64,8 +64,11 @@ storage. Missing or inconsistent evidence remains a NO-GO.
 
 ## Private packet and deterministic consistency check
 
-Use two ordinary, mode-0600 JSON files outside the repository. Each is at most
-64 KiB, has no duplicate fields, and uses the closed fields below. Paths inside
+Use two ordinary, mode-0600 JSON files outside the repository. The expected
+document is at most 64 KiB; the evidence packet is at most 16 MiB. Both have no
+duplicate fields and use the closed fields below. The validator checks the
+opened file size before reading at most its limit plus one byte, including
+when a file grows after that size check. Paths inside
 the JSON are compared and never opened by the validator. The private raw
 evidence manifest must identify each observation, its command/tool/kernel,
 time, exact object and result; keep its hash in `rawEvidenceSha256`. In
@@ -109,12 +112,26 @@ For each volume, `backing` equals the expected path. `ownership` records uid/gid
 0, mode `0600`, links 1, type `regular`, ancestors
 `root-owned-no-links-no-write`, ACL `none`, workloadHolePunch `denied`.
 `phases` contains exactly `reserved`, `formatted`, `restarted`, `trimmed`.
-Each binds `identity`, `sizeBytes`, `allocatedBytes` and up to 256 contiguous,
+Each binds `identity`, `sizeBytes`, `allocatedBytes` and up to 8192 contiguous,
 non-overlapping extents `{logical, physical, length, state}` covering the whole
 file. States are `written` or `unwritten`; fragmented but fully covered files
 are accepted. The two roles' physical ranges must also be disjoint within each
 observation phase; ranges from different phases may coincide. The final
 allocated count must match the ledger.
+
+The coupled private collector uses one fixed 8192-record FIEMAP request and
+requires terminal `LAST`, exact whole-file coverage, known nonshared states,
+and unchanged backing identity/length/allocation across collection. Every raw
+record remains in the evidence. This bound admits metadata only: no paging,
+coalescing, truncation, ignored flags or inferred tail is permitted. A full
+buffer without `LAST` remains a refusal. Each of the two roles has four maps;
+physical overlap checks sort complete intervals within a map and across both
+roles in each phase, using O(n log n) work. Private creator journals and final
+receipts must also have an explicit 16 MiB limit; check current journal size
+plus the encoded record size before appending, preserving existing evidence
+when the next record would exceed the limit. Independently review revised
+collectors and their exact payload bindings before use; these parser limits
+do not qualify an unobserved format, restart, trim or recovery operation.
 
 `mount` records `target`, `filesystem`, `uuid`, `sourceDevice`,
 `sourceMajorMinor`, `backingIdentity`, `flags`, `topology`, `uid`, `gid`, `mode`,

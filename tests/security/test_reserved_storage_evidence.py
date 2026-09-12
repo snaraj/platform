@@ -103,6 +103,19 @@ def put(value, path, replacement):
     value[key] = replacement
 
 
+def fragment(observation, count, base):
+    """Synthetic complete maps in logical order but reverse physical order."""
+    size = observation["sizeBytes"]
+    chunk, remainder = divmod(size, count)
+    cursor, extents = 0, []
+    for index in range(count):
+        length = chunk + (index < remainder)
+        extents.append({"logical": cursor, "physical": base + size - cursor - length,
+                        "length": length, "state": "written" if index % 2 else "unwritten"})
+        cursor += length
+    observation["extents"] = extents
+
+
 class ReservedEvidenceTests(unittest.TestCase):
     def check(self, expected, packet):
         payload = encode(expected)
@@ -318,12 +331,7 @@ class ReservedEvidenceTests(unittest.TestCase):
 
     def test_extent_and_ledger_upper_bounds_refuse_otherwise_valid_inputs(self):
         expected, packet = fixture()
-        size = 252 * GIB
-        chunk = size // 257
-        extents = [{"logical": index * chunk, "physical": GIB + index * chunk,
-                    "length": chunk if index < 256 else size - index * chunk,
-                    "state": "written"} for index in range(257)]
-        packet["volumes"]["blobs"]["phases"]["reserved"]["extents"] = extents
+        fragment(packet["volumes"]["blobs"]["phases"]["reserved"], 8193, GIB)
         with self.assertRaisesRegex(ValueError, "^extent_count$"):
             self.check(expected, packet)
         expected, packet = fixture()
@@ -334,6 +342,70 @@ class ReservedEvidenceTests(unittest.TestCase):
                                            "allocatedBeforeBytes": 0, "allocatedAfterBytes": 0}
         with self.assertRaisesRegex(ValueError, "^reservation_count$"):
             self.check(expected, packet)
+
+    def test_complete_large_maps_and_maximum_packet_remain_consistent(self):
+        for counts in ((800, 7), (8192, 8192)):
+            with self.subTest(counts=counts):
+                expected, packet = fixture()
+                for index, (role, count) in enumerate(zip(("blobs", "journal"), counts)):
+                    for observation in packet["volumes"][role]["phases"].values():
+                        fragment(observation, count, (1 + 300 * index) * GIB)
+                self.assertFalse(self.check(expected, packet)["activationAuthorized"])
+                self.assertGreater(len(encode(packet)), 64 * 1024)
+                self.assertLess(len(encode(packet)), 16 * 1024**2)
+
+    def test_last_record_in_large_map_cannot_hide_a_hole_state_or_alias(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            for role, base in (("blobs", GIB), ("journal", 301 * GIB)):
+                for field, reason in (("logical", "extent_coverage"),
+                                      ("state", "extent_state"), ("physical", "extent_alias")):
+                    with self.subTest(phase=phase, role=role, field=field):
+                        expected, packet = fixture()
+                        observation = packet["volumes"][role]["phases"][phase]
+                        fragment(observation, 8192, base)
+                        extents = observation["extents"]
+                        replacement = {"logical": extents[-1]["logical"] + 1,
+                                       "state": "shared", "physical": extents[0]["physical"]}
+                        extents[-1][field] = replacement[field]
+                        with self.assertRaisesRegex(ValueError, "^" + reason + "$"):
+                            self.check(expected, packet)
+
+    def test_last_record_cross_role_overlap_in_each_large_phase_is_refused(self):
+        for phase in ("reserved", "formatted", "restarted", "trimmed"):
+            for role, other in (("blobs", "journal"), ("journal", "blobs")):
+                with self.subTest(phase=phase, role=role):
+                    expected, packet = fixture()
+                    for index, name in enumerate(("blobs", "journal")):
+                        fragment(packet["volumes"][name]["phases"][phase], 8192,
+                                 (1 + index * 300) * GIB)
+                    current = packet["volumes"][role]["phases"][phase]["extents"]
+                    target = packet["volumes"][other]["phases"][phase]["extents"]
+                    current[-1]["physical"] = target[-1]["physical"]
+                    with self.assertRaisesRegex(ValueError, "^volume_extent_alias$"):
+                        self.check(expected, packet)
+
+    def test_physical_interval_comparisons_do_not_grow_quadratically(self):
+        comparisons = 0
+        count = 2 * 8192
+        def measured():
+            nonlocal comparisons
+            comparisons += 1
+            # Bound a quadratic mutant during execution, without a timeout.
+            self.assertLess(comparisons, count * 32)
+        class Measured(int):
+            def __lt__(self, other):
+                measured()
+                return int(self) < int(other)
+            def __le__(self, other):
+                measured()
+                return int(self) <= int(other)
+        # Two full maps in a phase. Odd permutation avoids an already sorted
+        # fixture; count comparisons instead of relying on a timing threshold.
+        physical = [(Measured((index * 7919 % count) * 2),
+                     Measured((index * 7919 % count) * 2 + 2)) for index in range(count)]
+        gate.disjoint(physical, "overlap")
+        self.assertGreater(comparisons, 0)
+        self.assertLess(comparisons, count * 32)
 
     def test_both_volume_reservations_are_mandatory(self):
         expected, packet = fixture()
@@ -440,14 +512,19 @@ class ReservedEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             expected, packet = fixture()
+            for role, count, base in (("blobs", 800, GIB), ("journal", 7, 301 * GIB)):
+                for observation in packet["volumes"][role]["phases"].values():
+                    fragment(observation, count, base)
             self.check(expected, packet)
             paths = (root / "expected.json", root / "evidence.json")
             for path, value in zip(paths, (expected, packet)):
                 path.write_bytes(encode(value))
                 path.chmod(0o600)
             output = io.StringIO()
-            with patch("sys.argv", ["gate", *map(str, paths)]), patch.object(gate.time, "time", return_value=NOW), redirect_stdout(output):
+            with patch("sys.argv", ["gate", *map(str, paths)]), patch.object(gate.time, "time", return_value=NOW), redirect_stdout(output), patch.object(gate, "load", wraps=gate.load) as loading:
                 self.assertEqual(gate.main(), 0)
+            self.assertEqual([call.args for call in loading.call_args_list],
+                             [(paths[0], 64 * 1024), (paths[1], 16 * 1024**2)])
             self.assertFalse(json.loads(output.getvalue())["activationAuthorized"])
             self.assertNotIn(directory, output.getvalue())
             paths[1].write_text('{"privateMarker":"NOT_FOR_OUTPUT"}')
@@ -484,19 +561,47 @@ class ReservedEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, reason):
                     gate.load(path)
 
-    def test_an_input_growing_after_stat_is_still_bounded(self):
+    def test_each_input_budget_checks_stat_and_reads_at_most_limit_plus_one(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "growing.json"
-            path.write_text('{}')
-            path.chmod(0o600)
-            real_stat = gate.os.fstat
-            def grow_after_stat(fd):
-                before = real_stat(fd)
-                path.write_bytes(b'{"v":"' + b'x' * (64 * 1024 + 1 - 8) + b'"}')
-                return before
-            with patch.object(gate.os, "fstat", side_effect=grow_after_stat):
-                with self.assertRaisesRegex(ValueError, "^input_size$"):
-                    gate.load(path)
+            real_stat, real_fdopen = gate.os.fstat, gate.os.fdopen
+            for limit in (64 * 1024, 16 * 1024**2):
+                reads = []
+                class Reader:
+                    def __init__(self, fd, mode):
+                        self.stream = real_fdopen(fd, mode)
+                    def __enter__(self):
+                        self.stream.__enter__()
+                        return self
+                    def __exit__(self, *args):
+                        return self.stream.__exit__(*args)
+                    def fileno(self):
+                        return self.stream.fileno()
+                    def read(self, size=-1):
+                        reads.append(size)
+                        # Refuse an unbounded mutant before it can allocate.
+                        self_test.assertEqual(size, limit + 1)
+                        return self.stream.read(size)
+                self_test = self
+                path.write_bytes(b'{}' + b' ' * (limit - 2))
+                path.chmod(0o600)
+                with patch.object(gate.os, "fdopen", side_effect=Reader):
+                    self.assertEqual(gate.load(path, limit)[1], {})
+                    self.assertEqual(reads, [limit + 1])
+                    reads.clear()
+                    path.write_bytes(b'{}' + b' ' * (limit - 1))
+                    with self.assertRaisesRegex(ValueError, "^input_file$"):
+                        gate.load(path, limit)
+                    self.assertEqual(reads, [])
+                    path.write_bytes(b'{}')
+                    def grow_after_stat(fd):
+                        before = real_stat(fd)
+                        path.write_bytes(b'{}' + b' ' * (limit - 1))
+                        return before
+                    with patch.object(gate.os, "fstat", side_effect=grow_after_stat):
+                        with self.assertRaisesRegex(ValueError, "^input_size$"):
+                            gate.load(path, limit)
+                    self.assertEqual(reads, [limit + 1])
 
     def test_opened_input_type_is_checked_independently_of_reported_size(self):
         with tempfile.TemporaryDirectory() as directory:
