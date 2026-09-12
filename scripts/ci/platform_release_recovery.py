@@ -234,13 +234,9 @@ def verify_signature(identity: bytes, bundle: bytes, tag: str) -> None:
                        check=True, timeout=40, stdout=subprocess.DEVNULL, env=environment)
 
 
-def prove_release(root: Path, api: PublicAPI, tag: str, source: str) -> bool:
-    """Only an exact immutable release with its ORIGINAL completed run advances."""
-    ref = api.get(f"/git/ref/tags/{tag}", absent=True)
-    release = api.get(f"/releases/tags/{tag}", absent=True)
-    if ref is None:
-        require(release is None, "Release without its exact annotated tag")
-        return False
+def prove_tag(root: Path, api: PublicAPI, tag: str, source: str, ref: dict | None) -> str:
+    """A dangling object cannot substitute for the owner's exact prepared ref."""
+    require(ref is not None, "owner-prepared annotated tag missing; recovery remains held")
     object_sha = C.require_sha(ref.get("object", {}).get("sha"), "tag object")
     annotated = api.get(f"/git/tags/{object_sha}")
     C.validate_tag_record(ref, annotated, tag=tag, source_sha=source,
@@ -248,6 +244,17 @@ def prove_release(root: Path, api: PublicAPI, tag: str, source: str) -> bool:
                           tagger_name=C.RELEASE_TAGGER_NAME, tagger_email=C.RELEASE_TAGGER_EMAIL,
                           tagger_date=C._git(root, "show", "-s", "--format=%cI", source))
     require(C._git(root, "rev-parse", f"refs/tags/{tag}") == object_sha, "fetched and API tag objects differ")
+    return object_sha
+
+
+def prove_release(root: Path, api: PublicAPI, tag: str, source: str) -> bool:
+    """Only an exact immutable release with its ORIGINAL completed run advances."""
+    ref = api.get(f"/git/ref/tags/{tag}", absent=True)
+    release = api.get(f"/releases/tags/{tag}", absent=True)
+    if ref is None:
+        require(release is None, "Release without its exact annotated tag")
+        return False
+    object_sha = prove_tag(root, api, tag, source, ref)
     if release is None:
         return False
     selected = E.identity(tag)
@@ -340,6 +347,9 @@ def selection(root: Path, api: PublicAPI, bound: dict, supplied: str | None = No
         codeql = (positive(value["executor_codeql_run_id"]), positive(value["executor_codeql_run_attempt"]))
     prove_ci(api, bound["executor_sha"], C._git(root, "rev-parse", f"{bound['executor_sha']}^{{tree}}"), main, codeql)
     prove_ci(api, chosen["source_sha"], chosen["tree_sha"], (chosen["main_run_id"], 1), (chosen["codeql_run_id"], 1))
+    # Admission precedes settings-token acquisition and is repeated by publish.
+    prove_tag(root, api, value["tag"], chosen["source_sha"],
+              api.get(f"/git/ref/tags/{value['tag']}", absent=True))
     return value
 
 

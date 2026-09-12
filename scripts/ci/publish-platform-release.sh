@@ -729,6 +729,11 @@ publish_current_release() {
     "${SOURCE_SHA}" "${TAG}" "${message}" "${tagger_date}" >/dev/null 2>&1; then
     printf 'verified existing %s at %s\n' "${TAG}" "${SOURCE_SHA}"
   else
+    # Historical workflow-bearing refs require the owner's prepared-tag boundary.
+    if [ "${historical_recovery}" = true ]; then
+      printf 'owner-prepared annotated tag missing or inexact; recovery remains held\n' >&2
+      return 1
+    fi
     classify_tag absent \
       "${SOURCE_SHA}" "${TAG}" "${message}" "${tagger_date}" >/dev/null
     classify_current_release absent >/dev/null
