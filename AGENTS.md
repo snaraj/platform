@@ -177,8 +177,13 @@ and dependency-governed Draft capacity is recorded durably in
 - `bootstrap/flux/release-selector/platform-release-identity.v1.schema.json`,
   `platform-release-identity.v2.schema.json`, and
   `platform-release-identity.v3.schema.json` — DELIVERY-owned immutable source
-  identity schemas. Historical v1/v2 bytes and verification remain frozen; new
-  source releases use the closed v3 shape.
+  identity schemas. Historical v1/v2/v3 bytes and verification remain frozen.
+  The explicit issue #369 recovery commission also assigns the additive
+  `platform-release-identity.v4.schema.json` to DELIVERY. Its closed policy
+  separates historical source CI from the actual protected publisher executor;
+  it permits only the three source edges recorded in that issue. This schema
+  assignment grants no general replay, settings change, live-system or merge
+  authority. Later ordinary v4 publication requires source/executor equality.
 - `policies/conftest/**` and `policies/release-conftest/**` — DELIVERY.
   The enumeration is exact, not shorthand for `policies/**`: these subtrees are the
   executable expression of the gates this lane already owns. Every other
@@ -891,6 +896,15 @@ is the consolidated command view:
   its publish job is eligible only after that workflow completed successfully
   for a push to `main`, then binds and publishes the exact final SHA. A distinct
   main SHA has an independent non-canceling transaction.
+- **platform-release-recovery.yml** — no-input, protected-main-only manual
+  dispatch for the finite issue #369 source backlog. Dispatches serialize,
+  rerun attempts refuse, and one canonical run-bound selection crosses all
+  jobs. Original source CI and current executor CI are both required. The
+  Administration-read App remains confined to settings proof; only the
+  ordinary job token and OIDC reach publication. Modeled pass/deny evidence
+  is required before Ready; the first protected post-merge execution proves
+  actual provider capability and remains a delivery gate, never a reason to
+  relax permissions or substitute a later run for failed signed evidence.
 - **scheduled-security.yml** — weekly cron full-history scan plus manual
   dispatch. Post-merge therefore consists of the full main-push battery and
   CodeQL, followed success-only by the source publisher; scheduled security is

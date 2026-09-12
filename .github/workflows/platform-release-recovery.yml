@@ -1,0 +1,111 @@
+name: Platform source recovery
+
+# A first attempt selects one closed historical edge. Fresh dispatches serialize;
+# rerunning jobs is refused before any privileged job can start.
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: platform-source-recovery
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      selection: ${{ steps.selection.outputs.selection }}
+      source_sha: ${{ steps.selection.outputs.source_sha }}
+    steps:
+      - name: Check out exact protected executor
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified release tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Select one source and prove original and executor CI
+        id: selection
+        env:
+          RECOVERY_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -I -B scripts/ci/platform_release_recovery.py prepare
+
+  immutable-settings:
+    needs: prepare
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1 && needs.prepare.outputs.selection != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: platform-release
+      deployment: false
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      attestation: ${{ steps.settings.outputs.attestation }}
+    steps:
+      - name: Check out exact protected executor
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified release tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Revalidate the same selected edge before settings authority
+        env:
+          RECOVERY_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVERY_SELECTION: ${{ needs.prepare.outputs.selection }}
+        run: python3 -I -B scripts/ci/platform_release_recovery.py verify
+      - name: Mint current-settings proof token
+        id: settings-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PLATFORM_RELEASE_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_RELEASE_APP_PRIVATE_KEY }}
+          owner: snaraj
+          repositories: platform
+          permission-administration: read
+          skip-token-revoke: false
+          github-api-url: ${{ github.api_url }}
+      - name: Verify current immutable-release setting
+        id: settings
+        env:
+          IMMUTABLE_SETTINGS_TOKEN: ${{ steps.settings-token.outputs.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: bash scripts/ci/verify-platform-release-settings.sh
+
+  publish:
+    needs: [prepare, immutable-settings]
+    if: >-
+      github.ref == 'refs/heads/main' && github.run_attempt == 1 &&
+      needs.prepare.outputs.selection != '' &&
+      needs.immutable-settings.outputs.attestation ==
+      format('PASS:{0}:{1}:{2}:{3}', github.repository, github.run_id,
+      github.run_attempt, needs.prepare.outputs.source_sha)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out exact protected executor
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified release tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Publish only the selected historical edge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVERY_SELECTION: ${{ needs.prepare.outputs.selection }}
+        run: bash scripts/ci/publish-platform-recovery.sh

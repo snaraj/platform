@@ -75,6 +75,22 @@ identity_asset_name="$(jq -er '.asset' <<<"${epoch}")"
 identity_bundle_name="$(jq -er '.bundle' <<<"${epoch}")"
 transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
 identity_issuer='https://token.actions.githubusercontent.com'
+historical_recovery=false
+bound_tag_object=''
+if [ "$(jq -r '.publisher_event // empty' <<<"${epoch}")" = workflow_dispatch ]; then
+  historical_recovery=true
+  : "${RECOVERY_SELECTION:?RECOVERY_SELECTION is required}"
+  RECOVERY_READ_TOKEN="${write_token}" python3 -I -B scripts/ci/platform_release_recovery.py verify
+  python3 -I -B scripts/ci/platform_release_recovery.py bind >/dev/null
+elif [ "$(jq -r '.version' <<<"${epoch}")" = 4 ]; then
+  # The OIDC workflow and executed checkout must both name the ordinary source.
+  # A newer default-branch workflow cannot masquerade as an older source run.
+  test "${GITHUB_EVENT_NAME-}" = workflow_run
+  test "${GITHUB_SHA-}" = "${SOURCE_SHA}"
+  test "${GITHUB_WORKFLOW_SHA-}" = "${SOURCE_SHA}"
+  test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+  test -z "${RECOVERY_SELECTION-}"
+fi
 
 get_json() {
   local token="$1" url="$2" output="$3"
@@ -131,10 +147,17 @@ verify_identity_signature() {
   local identity="$1" bundle="$2" tag="$3" policy identity_subject
   policy="$(python3 -I -B "${epoch_contract}" "${tag}")" || return
   identity_subject="$(jq -er '.subject' <<<"${policy}")" || return
+  local -a execution_args=()
+  if [ "$(jq -r '.version' <<<"${policy}")" = 4 ]; then
+    execution_args=(--certificate-github-workflow-sha "$(jq -er '.execution.source_sha |
+      select(type == "string" and test("^[0-9a-f]{40}$"))' "${identity}")"
+      --certificate-github-workflow-trigger "$(jq -er '.publisher_event' <<<"${policy}")")
+  fi
   env -u COSIGN_REPOSITORY cosign verify-blob \
     --bundle "${bundle}" \
     --certificate-identity "${identity_subject}" \
     --certificate-oidc-issuer "${identity_issuer}" \
+    "${execution_args[@]}" \
     "${identity}" >/dev/null
 }
 
@@ -150,6 +173,7 @@ download_identity_pair() {
 
 upload_identity_asset() {
   local release_id="$1" name="$2" path="$3" status
+  release_write_boundary
   status="$(curl --silent --show-error \
     --proto '=https' --tlsv1.2 --request POST \
     --output "${asset_upload_json}" --write-out '%{http_code}' \
@@ -160,6 +184,7 @@ upload_identity_asset() {
     --data-binary "@${path}" \
     "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${name}")"
   test "${status}" = 201
+  release_write_boundary
 }
 
 validate_identity_runs() {
@@ -178,10 +203,18 @@ validate_identity_runs() {
   test "$(get_public_json \
     "${api}/actions/runs/${platform_id}/attempts/${platform_attempt}" \
     "${legacy_platform_run_json}")" = 200 || return
+  local -a execution_args=()
+  if jq -e '.schema == "https://snaraj.dev/schemas/platform-release-identity/v4"' "${identity}" >/dev/null; then
+    local executor_id executor_attempt executor_json="${RUNNER_TEMP}/platform-executor-main-run.json"
+    executor_id="$(jq -er '.execution.main_ci.run_id | select(type == "number" and . > 0)' "${identity}")" || return
+    executor_attempt="$(jq -er '.execution.main_ci.run_attempt | select(type == "number" and . > 0)' "${identity}")" || return
+    test "$(get_public_json "${api}/actions/runs/${executor_id}/attempts/${executor_attempt}" "${executor_json}")" = 200 || return
+    execution_args=(--execution-main-run-json "${executor_json}")
+  fi
   python3 -I -B "${contract}" identity-run-records \
     --identity "${identity}" \
     --main-run-json "${legacy_main_run_json}" \
-    --platform-run-json "${legacy_platform_run_json}" >/dev/null
+    --platform-run-json "${legacy_platform_run_json}" "${execution_args[@]}" >/dev/null
 }
 
 run_write_gh() {
@@ -224,6 +257,12 @@ write_current_identity() {
   local main_run_attempt="${4:-${MAIN_RUN_ATTEMPT}}"
   local platform_run_id="${5:-${GITHUB_RUN_ID}}"
   local platform_run_attempt="${6:-${GITHUB_RUN_ATTEMPT}}"
+  local -a execution_args=()
+  if [ "${historical_recovery}" = true ]; then
+    execution_args=(--execution-sha "${GITHUB_SHA}"
+      --execution-main-run-id "${EXECUTION_MAIN_RUN_ID}"
+      --execution-main-run-attempt "${EXECUTION_MAIN_RUN_ATTEMPT}")
+  fi
   python3 -I -B "${contract}" release-identity \
     --repository . --head "${SOURCE_SHA}" --tag "${TAG}" \
     --base-sha "${BASE_SHA}" --base-tag "${BASE_TAG}" \
@@ -233,7 +272,49 @@ write_current_identity() {
     --platform-run-id "${platform_run_id}" \
     --platform-run-attempt "${platform_run_attempt}" \
     --github-repository "${GITHUB_REPOSITORY}" \
-    --github-repository-id "${GITHUB_REPOSITORY_ID}" > "${identity_asset}"
+    --github-repository-id "${GITHUB_REPOSITORY_ID}" "${execution_args[@]}" > "${identity_asset}"
+}
+
+# Keep ordinary payloads unchanged. The finite recovery uses the documented
+# existing-tag default-target route and records the returned `main` hint.
+# The real historical source is independently fixed by the annotated tag.
+restrict_recovery_request() {
+  local phase="$1" path="$2" filter
+  if [ "${historical_recovery}" != true ]; then return; fi
+  case "${phase}" in
+    create) filter='del(.target_commitish)' ;;
+    body) filter='{body}' ;;
+    publish) filter='{draft:false}' ;;
+    *) return 1 ;;
+  esac
+  jq "${filter}" "${path}" > "${path}.scoped"
+  mv "${path}.scoped" "${path}"
+}
+
+# A partial current draft is expected during publication, so this boundary
+# verifies the predecessor and tag, never misclassifies our in-flight assets
+# as a completed release. Preserve the first observed current tag object.
+release_write_boundary() {
+  if [ "$(jq -r '.version' <<<"${epoch}")" != 4 ]; then return; fi
+  git fetch --quiet --tags origin
+  if [ "${historical_recovery}" = true ]; then
+    python3 -I -B scripts/ci/platform_release_recovery.py bind >/dev/null
+    local current_main="${RUNNER_TEMP}/platform-current-main.json"
+    test "$(get_json "${write_token}" "${api}/git/ref/heads/main" "${current_main}")" = 200
+    jq -e --arg sha "${GITHUB_SHA}" '.ref == "refs/heads/main" and
+      .object.type == "commit" and .object.sha == $sha' "${current_main}" >/dev/null
+  fi
+  local predecessor_date current_date current_object
+  predecessor_date="$(git show -s --format=%cI "${BASE_SHA}")"
+  current_date="$(git show -s --format=%cI "${SOURCE_SHA}")"
+  classify_tag exact "${BASE_SHA}" "${BASE_TAG}" \
+    "Platform release ${BASE_TAG} from ${BASE_SHA}" "${predecessor_date}" >/dev/null
+  classify_predecessor_release >/dev/null
+  classify_tag exact "${SOURCE_SHA}" "${TAG}" \
+    "Platform release ${TAG} from ${SOURCE_SHA}" "${current_date}" >/dev/null
+  current_object="$(jq -er '.object.sha' "${ref_json}")"
+  if [ -z "${bound_tag_object}" ]; then bound_tag_object="${current_object}"; fi
+  test "${current_object}" = "${bound_tag_object}"
 }
 
 write_current_notes() {
@@ -447,6 +528,9 @@ preflight_publication_state() {
   local current_tagger_date current_message current_tag_state current_release_state
   local current_draft_state
   local repository_json="${RUNNER_TEMP}/platform-repository.json"
+  if [ "${historical_recovery}" = true ]; then
+    python3 -I -B scripts/ci/platform_release_recovery.py bind >/dev/null
+  fi
   test "$(get_json "${write_token}" "${api}" "${repository_json}")" = 200
   python3 -I -B "${epoch_contract}" "${TAG}" \
     --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
@@ -481,6 +565,7 @@ preflight_publication_state() {
     classify_release absent "${recovery_tag}" "${recovery_source_sha}" >/dev/null
     recovery_release_state=absent
   fi
+  if [ "${historical_recovery}" = true ]; then test "${recovery_release_state}" = exact; fi
 
   if classify_tag exact \
     "${SOURCE_SHA}" "${TAG}" "${current_message}" \
@@ -538,6 +623,7 @@ preflight_publication_state() {
 
 retire_burned_partial_draft() {
   local release_id status removed attempt tagger_date message
+  if [ "${historical_recovery}" = true ]; then return; fi
   if [ "${BASE_SHA}" != "${burned_source_sha}" ] || \
      [ "${BASE_TAG}" != "${burned_tag}" ] || [ "${TAG}" != v0.1.43 ]; then
     return
@@ -584,6 +670,7 @@ retire_burned_partial_draft() {
 
 complete_recovery_release() {
   local tagger_date message release_race_verified attempt
+  if [ "${historical_recovery}" = true ]; then return; fi
   tagger_date="$(git show -s --format=%cI "${recovery_source_sha}")"
   message="Platform release ${recovery_tag} from ${recovery_source_sha}"
 
@@ -706,11 +793,14 @@ publish_current_release() {
         --arg name "Platform ${TAG}" --rawfile body "${draft_marker}" \
         '{body:$body,draft:true,name:$name,prerelease:false,tag_name:$tag,target_commitish:$target}' \
         > "${draft_request}"
+      restrict_recovery_request create "${draft_request}"
+      release_write_boundary
       release_id="$(run_write_gh api --method POST \
         --header 'Accept: application/vnd.github+json' \
         --header "X-GitHub-Api-Version: ${api_version}" \
         "repos/${GITHUB_REPOSITORY}/releases" \
         --input "${draft_request}" --jq '.id')"
+      release_write_boundary
     fi
     [[ "${release_id}" =~ ^[1-9][0-9]*$ ]]
     test "$(get_json "${write_token}" "${api}/releases/${release_id}" \
@@ -725,11 +815,14 @@ publish_current_release() {
       --arg name "Platform ${TAG}" --rawfile body "${notes}" \
       '{body:$body,draft:true,name:$name,prerelease:false,tag_name:$tag,target_commitish:$target}' \
       > "${body_patch}"
+    restrict_recovery_request body "${body_patch}"
+    release_write_boundary
     run_write_gh api --method PATCH \
       --header 'Accept: application/vnd.github+json' \
       --header "X-GitHub-Api-Version: ${api_version}" \
       "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
       --input "${body_patch}" >/dev/null
+    release_write_boundary
     test "$(get_json "${write_token}" "${api}/releases/${release_id}" \
       "${release_json}")" = 200
     python3 -I -B "${contract}" release-draft-record \
@@ -764,11 +857,14 @@ publish_current_release() {
       --arg name "Platform ${TAG}" --rawfile body "${notes}" \
       '{body:$body,draft:false,name:$name,prerelease:false,tag_name:$tag,target_commitish:$target}' \
       > "${publish_patch}"
+    restrict_recovery_request publish "${publish_patch}"
+    release_write_boundary
     run_write_gh api --method PATCH \
       --header 'Accept: application/vnd.github+json' \
       --header "X-GitHub-Api-Version: ${api_version}" \
       "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
       --input "${publish_patch}" >/dev/null
+    release_write_boundary
     release_race_verified=false
     for attempt in 1 2 3 4 5; do
       if classify_current_release exact >/dev/null 2>&1; then

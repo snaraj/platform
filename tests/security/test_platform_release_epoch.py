@@ -26,7 +26,8 @@ class PlatformReleaseEpochTests(unittest.TestCase):
         self.assertEqual(current["repository"], "snaraj/platform")
         self.assertNotIn("selector_digest", current)
         self.assertNotIn("selector_source", current)
-        self.assertEqual(EPOCH.identity("v9.9.9")["version"], 3)
+        self.assertEqual(EPOCH.identity("v0.1.80")["version"], 3)
+        self.assertEqual(EPOCH.identity("v9.9.9")["version"], 4)
 
     def test_first_v3_accepts_only_the_verified_terminal_v2(self):
         value = EPOCH.publication(

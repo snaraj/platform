@@ -41,6 +41,7 @@ cached_intent=''
 cached_status=1
 burned_source_sha='6d85c2b01dd4bd66add4192372b26bcdf1b0a951'
 burned_tag='v0.1.42'
+original_publisher_pending=false
 
 get_json() {
   local url="$1" output="$2"
@@ -128,10 +129,13 @@ classify_predecessor_release() {
   bundle_status="$(get_asset "${bundle_id}" "${bundle_json}")"
   test "${identity_status}" = 200
   test "${bundle_status}" = 200
-  selector_build_sha="$(jq -er '
-    .selector.provenance.source_sha |
-    select(type == "string" and test("^[0-9a-f]{40}$"))
-  ' "${identity_json}")"
+  selector_build_sha="${source_sha}"
+  if [ "$(jq -r '.version' <<<"${policy}")" -lt 3 ]; then
+    selector_build_sha="$(jq -er '
+      .selector.provenance.source_sha |
+      select(type == "string" and test("^[0-9a-f]{40}$"))
+    ' "${identity_json}")" || return
+  fi
   tag_object_sha="$(jq -er '
     .object.sha | select(type == "string" and test("^[0-9a-f]{40}$"))
   ' "${ref_json}")"
@@ -143,10 +147,21 @@ classify_predecessor_release() {
     --source-sha "${source_sha}" \
     --selector-build-sha "${selector_build_sha}" \
     --tag-object-sha "${tag_object_sha}" \
-    --source-tree-sha "${source_tree_sha}" "${transport_args[@]}" >/dev/null
+    --source-tree-sha "${source_tree_sha}" "${transport_args[@]}" >/dev/null || return
+  if [ "$(jq -r '.version' <<<"${policy}")" = 4 ]; then
+    local proof_status
+    if RECOVERY_READ_TOKEN="${read_token}" python3 -I -B scripts/ci/platform_release_recovery.py predecessor; then
+      return 0
+    else
+      proof_status=$?
+      if [ "${proof_status}" = 3 ]; then original_publisher_pending=true; fi
+      return "${proof_status}"
+    fi
+  fi
 }
 
 for _attempt in {1..30}; do
+  original_publisher_pending=false
   # Public tag refresh has no checkout credential. Only the REST reads below
   # receive the step-scoped contents-read token.
   git fetch --quiet --tags origin
@@ -202,6 +217,11 @@ for _attempt in {1..30}; do
     classify_predecessor_release absent "${base_tag}" "${base_sha}"
   elif classify_predecessor_release exact "${base_tag}" "${base_sha}"; then
     :
+  elif [ "${original_publisher_pending}" = true ]; then
+    # Exact immutable bytes do not turn their still-running original publisher
+    # into a successful predecessor. Wait without classifying it as absent.
+    sleep 10
+    continue
   elif classify_predecessor_release absent "${base_tag}" "${base_sha}"; then
     # Only clean absence is contention.
     sleep 10

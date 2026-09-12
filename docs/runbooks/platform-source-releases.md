@@ -77,7 +77,7 @@ It proves both draft absence and the unchanged annotated tag before creating
 annotated tag, two signed identity assets, and an immutable published Release.
 Every later edge returns to the ordinary complete-predecessor rule.
 
-Historical v1 and v2 identity assets remain immutable and are verified under
+Historical v1, v2 and v3 identity assets remain immutable and are verified under
 their original schemas and publisher subjects. `v0.1.77` is the terminal v2
 release. Its exact successor begins v3, whose signed identity records only the
 platform source, repository object, predecessor, tag, immutable Release and
@@ -98,13 +98,97 @@ tag and immutable Release both exist, B derives the next patch; once B is exact,
 C does. Outside the exact burned `v0.1.42` recovery edge, a tag without its
 exact Release remains pending and cannot allocate the next patch. Unsafe ledger
 states are never retried as contention. A bounded timeout fails the workflow
-without allocating or moving a tag; the exact SHA can be rerun normally.
+without allocating or moving a tag. For historical v1/v2/v3 execution, the exact
+SHA can be rerun normally. Ordinary v4 additionally requires the workflow SHA,
+execution SHA and released source SHA to agree. A later main merge can make
+the `workflow_run` context differ from the earlier source; that publication
+fails closed even if its source CI succeeded. Keep main at the intended
+executor while completing the recovery below and its ordinary successor.
+This repair does not authorize a general replay of later sources. If main
+advances and equality cannot be restored without changing immutable history,
+stop delivery for a separately reviewed forward repair.
 
 Within that bounded wait, the expensive ledger result is cached only while the
 complete `refs/tags/v*` ref name, tag-object ID, and peeled target snapshot is
 byte-identical. A created, retargeted, or replaced tag changes the key and forces
 full validation before the next REST read. A Release-only state change leaves
 the validated Git ledger unchanged and repeats only the exact GET classifiers.
+
+## Finite historical-source recovery
+
+Issue #369 admits exactly three consecutive protected-main sources after the
+immutable `v0.1.80` checkpoint. The ledger derives their next patches; the table
+does not allocate tags. Both original workflow attempts must still be completed
+and successful, and every original workflow file, tree, parent and fragment
+must match the frozen policy in `platform_release_epoch.py`.
+
+| Source | Original main CI / CodeQL (attempt 1) | Fragment |
+| --- | --- | --- |
+| `060c9678e130487b27cdaec395b0f1c5d74b9240` | `34283118915` / `34283118636` | `362-obsync-private-boundary.md` |
+| `9cd79f1e69cfa00eb5467822831056101629c8f8` | `34305321734` / `34305321809` | `365-obsync-staged-readiness.md` |
+| `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` | `34638257426` / `34638258315` | `367-reserved-file-storage.md` |
+
+The current protected checkout executes the repair; the historical trees are
+data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
+incomplete edge once and binds its source, tag, predecessor, executor, repository
+object, run ID, attempt and executor CI in a canonical receipt. Every later job
+rechecks that receipt, original source CI, successful current-executor main CI
+and CodeQL, the current main ref, and the complete immutable predecessor. A
+fresh dispatch cannot overtake a still-running original publisher. Only attempt
+1 is admitted; rerunning jobs cannot borrow an earlier settings attestation or
+selection. Dispatches share one non-canceling concurrency group.
+
+New v4 identity assets keep original source/main-CI fields separate from
+`execution.source_sha`, `execution.tree_sha`, `execution.main_ci` and the actual
+publisher run. The external tag policy selects the recovery signing subject
+only for those three exact edges. Later ordinary releases use the ordinary
+subject and require source/executor equality; downloaded identity fields cannot
+select another trust root. The v1/v2/v3 schemas and existing immutable bytes are
+unchanged. Source CI and publisher attempts are verified through exact
+attempt-specific API records, including the original attempts named by the
+terminal checkpoint.
+
+After exact annotated-tag creation, recovery creates a draft with only
+`tag_name`, `name`, `body`, `draft:true` and `prerelease:false`. It omits
+`target_commitish` and requires GitHub's returned default-target hint to be
+exactly `main`; the tag object and peeled commit bind the historical source.
+The notes PATCH contains only `body`; the publish PATCH contains only
+`draft:false`. Before and after each Release or asset write, the publisher
+rechecks the unchanged tag object, source, predecessor and selected executor.
+An exact zero-asset draft may resume on a fresh dispatch. Partial assets,
+foreign custody, a moved tag, a missing settings proof or permission refusal
+stop delivery. No token-scope expansion or manual tag fallback is permitted.
+
+After owner merge and successful exact-executor main CI and CodeQL:
+
+1. Keep main at that executor. Confirm the prior dispatch is terminal and there
+   is no incomplete publisher proof. Do not rerun any of the frozen old
+   workflows: their source cannot acquire this repair.
+2. Dispatch the no-input recovery workflow at `main` once. The Actions REST
+   dispatch endpoint, using API version `2026-03-10` and body `{"ref":"main"}`,
+   returns the new `workflow_run_id`; bind the returned ID, attempt 1, main
+   SHA and workflow path before following its jobs. A lost response requires
+   readback of matching dispatch runs, never an immediate duplicate POST.
+3. Require all jobs to succeed, then independently read back the selected
+   annotated tag, immutable non-draft/non-prerelease Release and exact two
+   assets. Verify downloaded size/digest/canonical identity, Sigstore subject,
+   issuer and actual executor SHA/event, plus all signed original run attempts.
+   Only completed success makes this edge a predecessor. Repeat steps 1–3 for
+   the next edge, at most three dispatches with actual publications.
+4. When the three predecessors are complete, let the ordinary publisher for
+   the repair's own source finish. If its bounded predecessor wait already
+   timed out, rerun that whole repaired-source workflow so every proof job
+   executes again. Do not use a failed-jobs-only rerun. Require the same final
+   tag, identity, original-attempt and immutable-Release readback.
+
+An immutable asset may become visible before its original publisher finishes.
+A reader waits for that exact attempt; a failed, cancelled, missing or unknown
+original attempt is a terminal delivery hold. A later successful dispatch or
+rerun cannot replace the signed attempt or rewrite immutable bytes. This scope
+has no settlement-proof extension. Local modeled pass/deny checks and review
+permit source Ready; the first protected execution proves actual ordinary-token
+provider capability. No source release implies storage qualification, live
+deployment, application promotion or device acceptance.
 
 ## Dependency queue contract
 
