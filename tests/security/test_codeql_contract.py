@@ -2,6 +2,7 @@
 
 import re
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -191,12 +192,12 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         cls.flat = [pin for pins in cls.pins.values() for pin in pins]
 
     def assert_required_pair(self, pins):
-        self.assertGreaterEqual(len(pins), 2, pins)
-        self.assertLessEqual(
-            REQUIRED_SUB_ACTIONS,
-            {sub for sub, _sha, _version in pins},
-            "the CodeQL analysis must still run through init and analyze; "
-            "found {}".format(sorted({sub for sub, _s, _v in pins})),
+        roles = Counter(sub for sub, _sha, _version in pins)
+        self.assertEqual(
+            roles,
+            Counter({"init": 1, "analyze": 1}),
+            "the CodeQL analysis must contain exactly one init and one analyze; "
+            "found {}".format(dict(sorted(roles.items()))),
         )
 
     def test_the_sweep_finds_the_pins_it_exists_to_compare(self):
@@ -240,6 +241,23 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         self.assertEqual(replacements, 1)
         pins = codeql_action_pins(mutant)
         self.assertNotIn("analyze", {sub for sub, _sha, _version in pins})
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(pins)
+
+    def test_duplicate_action_role_is_rejected(self):
+        """A same-release duplicate still changes the executed workflow."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        anchor = "      - name: Initialize CodeQL\n"
+        duplicate = (
+            "      - name: Duplicate Initialize CodeQL\n"
+            "        uses: github/codeql-action/init@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n"
+        )
+        self.assertEqual(workflow.count(anchor), 1)
+        mutant = workflow.replace(anchor, duplicate + anchor, 1)
+        pins = codeql_action_pins(mutant)
+        self.assertEqual(Counter(sub for sub, _sha, _version in pins)["init"], 2)
         with self.assertRaises(AssertionError):
             self.assert_required_pair(pins)
 
