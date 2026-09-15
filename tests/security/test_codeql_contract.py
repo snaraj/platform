@@ -12,12 +12,15 @@ CONFIG = ROOT / ".github" / "codeql" / "codeql-config.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 CONFIG_REFERENCE = "config-file: ./.github/codeql/codeql-config.yml"
 
-# One pinned use of a `github/codeql-action/<sub>` action: full commit SHA plus
-# the mandatory version comment. Both halves are captured because both must
-# move together — a SHA bump with a stale comment is a lie in the diff.
+# One canonical step-level use of a `github/codeql-action/<sub>` action: full
+# commit SHA plus the mandatory version comment. The exact eight-space `uses:`
+# field is the committed workflow shape; anchoring the whole line prevents a
+# shell scalar or comment from impersonating an action step. Both pin halves
+# are captured because both must move together — a SHA bump with a stale
+# comment is a lie in the diff.
 CODEQL_ACTION_PIN = re.compile(
-    r"uses:\s*github/codeql-action/(?P<sub>[A-Za-z0-9._-]+)"
-    r"@(?P<sha>[0-9a-f]{40})\s*#\s*(?P<version>\S+)"
+    r"^ {8}uses: github/codeql-action/(?P<sub>[A-Za-z0-9._-]+)"
+    r"@(?P<sha>[0-9a-f]{40}) # (?P<version>\S+)$"
 )
 # The sub-actions that load and consume one CodeQL bundle. They are the pair
 # whose split produces the runtime "Loaded a configuration file for version X,
@@ -38,7 +41,7 @@ def codeql_action_pins(text):
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        match = CODEQL_ACTION_PIN.search(line)
+        match = CODEQL_ACTION_PIN.fullmatch(line)
         if match is not None:
             pins.append((match["sub"], match["sha"], match["version"]))
     return pins
@@ -187,25 +190,30 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         cls.pins = all_codeql_action_pins()
         cls.flat = [pin for pins in cls.pins.values() for pin in pins]
 
+    def assert_required_pair(self, pins):
+        self.assertGreaterEqual(len(pins), 2, pins)
+        self.assertLessEqual(
+            REQUIRED_SUB_ACTIONS,
+            {sub for sub, _sha, _version in pins},
+            "the CodeQL analysis must still run through init and analyze; "
+            "found {}".format(sorted({sub for sub, _s, _v in pins})),
+        )
+
     def test_the_sweep_finds_the_pins_it_exists_to_compare(self):
         """Two pins found, both sub-actions present: nothing compares vacuously."""
 
-        self.assertGreaterEqual(len(self.flat), 2, self.pins)
-        self.assertLessEqual(
-            REQUIRED_SUB_ACTIONS,
-            {sub for sub, _sha, _version in self.flat},
-            "the CodeQL analysis must still run through init and analyze; "
-            "found {}".format(sorted({sub for sub, _s, _v in self.flat})),
-        )
+        self.assert_required_pair(self.flat)
 
     def test_the_extractor_reports_a_split_when_there_is_one(self):
         """Vacuity probe: the comparison must be able to go red."""
 
         hostile = (
-            "      - uses: github/codeql-action/init@"
+            "      - name: Initialize CodeQL\n"
+            "        uses: github/codeql-action/init@"
             + "a" * 40
             + " # v4.37.6\n"
-            "      - uses: github/codeql-action/analyze@"
+            "      - name: Analyze\n"
+            "        uses: github/codeql-action/analyze@"
             + "b" * 40
             + " # v4.37.7\n"
         )
@@ -213,6 +221,27 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         self.assertEqual(len(extracted), 2)
         self.assertEqual(len({sha for _sub, sha, _version in extracted}), 2)
         self.assertEqual(len({version for _sub, _sha, version in extracted}), 2)
+
+    def test_run_scalar_text_cannot_replace_the_analyze_action_step(self):
+        """A shell string that resembles `uses:` is not an executable action."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        mutant, replacements = re.subn(
+            r"^ {8}uses: github/codeql-action/analyze@[^\n]+\n"
+            r" {8}with:\n"
+            r" {10}category: /language:\$\{\{ matrix\.language \}\}\n",
+            "        run: |\n"
+            "          echo uses: github/codeql-action/analyze@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n",
+            workflow,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(replacements, 1)
+        pins = codeql_action_pins(mutant)
+        self.assertNotIn("analyze", {sub for sub, _sha, _version in pins})
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(pins)
 
     def test_every_codeql_action_pin_names_one_sha(self):
         shas = {sha for _sub, sha, _version in self.flat}
