@@ -1,7 +1,9 @@
 """Ensure CodeQL still analyzes the platform's own code after site extraction."""
 
 import re
+import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -12,13 +14,18 @@ CONFIG = ROOT / ".github" / "codeql" / "codeql-config.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 CONFIG_REFERENCE = "config-file: ./.github/codeql/codeql-config.yml"
 
-# One pinned use of a `github/codeql-action/<sub>` action: full commit SHA plus
-# the mandatory version comment. Both halves are captured because both must
-# move together — a SHA bump with a stale comment is a lie in the diff.
-CODEQL_ACTION_PIN = re.compile(
-    r"uses:\s*github/codeql-action/(?P<sub>[A-Za-z0-9._-]+)"
-    r"@(?P<sha>[0-9a-f]{40})\s*#\s*(?P<version>\S+)"
+# The two-part detector is deliberately simpler than parsing permissive YAML.
+# A canonical executable `uses:` field establishes each required action and a
+# raw census below refuses every additional CodeQL action reference, including
+# alternate whitespace, comments, and scalar text. This keeps those looser
+# forms from hiding from cardinality while preventing them from impersonating
+# the executable pair. Both pin halves are captured because both must move
+# together — a SHA bump with a stale comment is a lie in the diff.
+CANONICAL_CODEQL_ACTION_PIN = re.compile(
+    r"^ {8}uses: github/codeql-action/(?P<sub>[A-Za-z0-9._-]+)"
+    r"@(?P<sha>[0-9a-f]{40}) # (?P<version>\S+)$"
 )
+CODEQL_ACTION_REFERENCE = "github/codeql-action/"
 # The sub-actions that load and consume one CodeQL bundle. They are the pair
 # whose split produces the runtime "Loaded a configuration file for version X,
 # but running version Y" failure.
@@ -38,17 +45,39 @@ def codeql_action_pins(text):
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        match = CODEQL_ACTION_PIN.search(line)
+        match = CANONICAL_CODEQL_ACTION_PIN.fullmatch(line)
         if match is not None:
             pins.append((match["sub"], match["sha"], match["version"]))
     return pins
 
 
-def all_codeql_action_pins():
+def workflow_paths(root=WORKFLOWS):
+    """Return every workflow file extension GitHub executes."""
+
+    return sorted(
+        path for path in root.iterdir() if path.suffix in {".yml", ".yaml"}
+    )
+
+
+def all_workflow_text(root=WORKFLOWS):
+    """Join the complete executable workflow inventory for raw census checks."""
+
+    return "\n".join(
+        workflow.read_text(encoding="utf-8") for workflow in workflow_paths(root)
+    )
+
+
+def codeql_action_reference_count(text):
+    """Count the case-insensitive repository identity GitHub resolves."""
+
+    return text.casefold().count(CODEQL_ACTION_REFERENCE)
+
+
+def all_codeql_action_pins(root=WORKFLOWS):
     """Sweep every workflow, so a third use elsewhere joins the lockstep."""
 
     found = {}
-    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+    for workflow in workflow_paths(root):
         pins = codeql_action_pins(workflow.read_text(encoding="utf-8"))
         if pins:
             found[workflow.name] = pins
@@ -184,35 +213,158 @@ class CodeQlActionLockstepTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.workflow_text = all_workflow_text()
         cls.pins = all_codeql_action_pins()
         cls.flat = [pin for pins in cls.pins.values() for pin in pins]
+
+    def assert_required_pair(self, text):
+        self.assertEqual(
+            codeql_action_reference_count(text),
+            2,
+            "the workflow tree must contain exactly two CodeQL action "
+            "references; extra references are refused regardless of YAML "
+            "spacing or context",
+        )
+        pins = codeql_action_pins(text)
+        roles = Counter(sub for sub, _sha, _version in pins)
+        self.assertEqual(
+            roles,
+            Counter({"init": 1, "analyze": 1}),
+            "the CodeQL analysis must contain exactly one init and one analyze; "
+            "found {}".format(dict(sorted(roles.items()))),
+        )
+        return pins
 
     def test_the_sweep_finds_the_pins_it_exists_to_compare(self):
         """Two pins found, both sub-actions present: nothing compares vacuously."""
 
-        self.assertGreaterEqual(len(self.flat), 2, self.pins)
-        self.assertLessEqual(
-            REQUIRED_SUB_ACTIONS,
-            {sub for sub, _sha, _version in self.flat},
-            "the CodeQL analysis must still run through init and analyze; "
-            "found {}".format(sorted({sub for sub, _s, _v in self.flat})),
-        )
+        self.assert_required_pair(self.workflow_text)
 
     def test_the_extractor_reports_a_split_when_there_is_one(self):
         """Vacuity probe: the comparison must be able to go red."""
 
         hostile = (
-            "      - uses: github/codeql-action/init@"
+            "      - name: Initialize CodeQL\n"
+            "        uses: github/codeql-action/init@"
             + "a" * 40
             + " # v4.37.6\n"
-            "      - uses: github/codeql-action/analyze@"
+            "      - name: Analyze\n"
+            "        uses: github/codeql-action/analyze@"
             + "b" * 40
             + " # v4.37.7\n"
         )
-        extracted = codeql_action_pins(hostile)
+        extracted = self.assert_required_pair(hostile)
         self.assertEqual(len(extracted), 2)
         self.assertEqual(len({sha for _sub, sha, _version in extracted}), 2)
         self.assertEqual(len({version for _sub, _sha, version in extracted}), 2)
+
+    def test_run_scalar_text_cannot_replace_the_analyze_action_step(self):
+        """A shell string that resembles `uses:` is not an executable action."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        mutant, replacements = re.subn(
+            r"^ {8}uses: github/codeql-action/analyze@[^\n]+\n"
+            r" {8}with:\n"
+            r" {10}category: /language:\$\{\{ matrix\.language \}\}\n",
+            "        run: |\n"
+            "          echo uses: github/codeql-action/analyze@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n",
+            workflow,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(replacements, 1)
+        pins = codeql_action_pins(mutant)
+        self.assertNotIn("analyze", {sub for sub, _sha, _version in pins})
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(mutant)
+
+    def test_repository_case_cannot_hide_an_extra_action_role(self):
+        """GitHub repository identity is case-insensitive; the census is too."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        anchor = "      - name: Initialize CodeQL\n"
+        duplicate = (
+            "      - name: Case-varied Initialize CodeQL\n"
+            "        uses: GitHub/CodeQL-Action/init@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n"
+        )
+        self.assertEqual(workflow.count(anchor), 1)
+        mutant = workflow.replace(anchor, duplicate + anchor, 1)
+        self.assertEqual(
+            Counter(sub for sub, _sha, _version in codeql_action_pins(mutant))["init"],
+            1,
+            "the case-varied action must stay outside the canonical "
+            "executable-line extractor",
+        )
+        self.assertEqual(codeql_action_reference_count(mutant), 3)
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(mutant)
+
+    def test_duplicate_action_role_is_rejected(self):
+        """A same-release duplicate still changes the executed workflow."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        anchor = "      - name: Initialize CodeQL\n"
+        duplicate = (
+            "      - name: Duplicate Initialize CodeQL\n"
+            "        uses: github/codeql-action/init@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n"
+        )
+        self.assertEqual(workflow.count(anchor), 1)
+        mutant = workflow.replace(anchor, duplicate + anchor, 1)
+        pins = codeql_action_pins(mutant)
+        self.assertEqual(Counter(sub for sub, _sha, _version in pins)["init"], 2)
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(mutant)
+
+    def test_alternate_spacing_cannot_hide_a_duplicate_action_role(self):
+        """GitHub accepts extra whitespace after `uses:`; the census sees it."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        anchor = "      - name: Initialize CodeQL\n"
+        duplicate = (
+            "      - name: Alternate-spaced Initialize CodeQL\n"
+            "        uses:  github/codeql-action/init@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n"
+        )
+        self.assertEqual(workflow.count(anchor), 1)
+        mutant = workflow.replace(anchor, duplicate + anchor, 1)
+        self.assertEqual(
+            Counter(sub for sub, _sha, _version in codeql_action_pins(mutant))["init"],
+            1,
+            "the hostile alternate-spaced field must stay outside the "
+            "canonical executable-line extractor",
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(mutant)
+
+    def test_yaml_extension_cannot_hide_an_extra_action_role(self):
+        """GitHub executes both workflow suffixes; the census inventories both."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workflows = Path(temporary)
+            (workflows / "codeql.yml").write_text(
+                WORKFLOW.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (workflows / "hostile-extra-codeql.yaml").write_text(
+                "jobs:\n"
+                "  extra:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - name: Extra Initialize CodeQL\n"
+                "        uses: github/codeql-action/init@"
+                "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                [path.name for path in workflow_paths(workflows)],
+                ["codeql.yml", "hostile-extra-codeql.yaml"],
+            )
+            mutant = all_workflow_text(workflows)
+            self.assertEqual(codeql_action_reference_count(mutant), 3)
+            with self.assertRaises(AssertionError):
+                self.assert_required_pair(mutant)
 
     def test_every_codeql_action_pin_names_one_sha(self):
         shas = {sha for _sub, sha, _version in self.flat}
