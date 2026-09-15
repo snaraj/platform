@@ -1,6 +1,7 @@
 """Ensure CodeQL still analyzes the platform's own code after site extraction."""
 
 import re
+import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -50,11 +51,33 @@ def codeql_action_pins(text):
     return pins
 
 
-def all_codeql_action_pins():
+def workflow_paths(root=WORKFLOWS):
+    """Return every workflow file extension GitHub executes."""
+
+    return sorted(
+        path for path in root.iterdir() if path.suffix in {".yml", ".yaml"}
+    )
+
+
+def all_workflow_text(root=WORKFLOWS):
+    """Join the complete executable workflow inventory for raw census checks."""
+
+    return "\n".join(
+        workflow.read_text(encoding="utf-8") for workflow in workflow_paths(root)
+    )
+
+
+def codeql_action_reference_count(text):
+    """Count the case-insensitive repository identity GitHub resolves."""
+
+    return text.casefold().count(CODEQL_ACTION_REFERENCE)
+
+
+def all_codeql_action_pins(root=WORKFLOWS):
     """Sweep every workflow, so a third use elsewhere joins the lockstep."""
 
     found = {}
-    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+    for workflow in workflow_paths(root):
         pins = codeql_action_pins(workflow.read_text(encoding="utf-8"))
         if pins:
             found[workflow.name] = pins
@@ -190,16 +213,13 @@ class CodeQlActionLockstepTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.workflow_text = "\n".join(
-            workflow.read_text(encoding="utf-8")
-            for workflow in sorted(WORKFLOWS.glob("*.yml"))
-        )
+        cls.workflow_text = all_workflow_text()
         cls.pins = all_codeql_action_pins()
         cls.flat = [pin for pins in cls.pins.values() for pin in pins]
 
     def assert_required_pair(self, text):
         self.assertEqual(
-            text.count(CODEQL_ACTION_REFERENCE),
+            codeql_action_reference_count(text),
             2,
             "the workflow tree must contain exactly two CodeQL action "
             "references; extra references are refused regardless of YAML "
@@ -259,6 +279,28 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assert_required_pair(mutant)
 
+    def test_repository_case_cannot_hide_an_extra_action_role(self):
+        """GitHub repository identity is case-insensitive; the census is too."""
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        anchor = "      - name: Initialize CodeQL\n"
+        duplicate = (
+            "      - name: Case-varied Initialize CodeQL\n"
+            "        uses: GitHub/CodeQL-Action/init@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n"
+        )
+        self.assertEqual(workflow.count(anchor), 1)
+        mutant = workflow.replace(anchor, duplicate + anchor, 1)
+        self.assertEqual(
+            Counter(sub for sub, _sha, _version in codeql_action_pins(mutant))["init"],
+            1,
+            "the case-varied action must stay outside the canonical "
+            "executable-line extractor",
+        )
+        self.assertEqual(codeql_action_reference_count(mutant), 3)
+        with self.assertRaises(AssertionError):
+            self.assert_required_pair(mutant)
+
     def test_duplicate_action_role_is_rejected(self):
         """A same-release duplicate still changes the executed workflow."""
 
@@ -296,6 +338,33 @@ class CodeQlActionLockstepTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             self.assert_required_pair(mutant)
+
+    def test_yaml_extension_cannot_hide_an_extra_action_role(self):
+        """GitHub executes both workflow suffixes; the census inventories both."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workflows = Path(temporary)
+            (workflows / "codeql.yml").write_text(
+                WORKFLOW.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (workflows / "hostile-extra-codeql.yaml").write_text(
+                "jobs:\n"
+                "  extra:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - name: Extra Initialize CodeQL\n"
+                "        uses: github/codeql-action/init@"
+                "b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                [path.name for path in workflow_paths(workflows)],
+                ["codeql.yml", "hostile-extra-codeql.yaml"],
+            )
+            mutant = all_workflow_text(workflows)
+            self.assertEqual(codeql_action_reference_count(mutant), 3)
+            with self.assertRaises(AssertionError):
+                self.assert_required_pair(mutant)
 
     def test_every_codeql_action_pin_names_one_sha(self):
         shas = {sha for _sub, sha, _version in self.flat}
