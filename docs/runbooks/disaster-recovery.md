@@ -3,6 +3,10 @@
 Targets are six-hour Kubernetes-state RPO and four-hour RTO. They remain
 aspirational until a timed restore drill succeeds.
 
+For an existing host that failed to recover after a power interruption, first
+follow [boot-time clock and control-plane recovery](boot-time-recovery.md).
+Diagnose time, power and runtime state before deciding that a restore is needed.
+
 ## Required protected material
 
 - exact compatible upstream Kubernetes, containerd, CRI, etcd-recovery, and
