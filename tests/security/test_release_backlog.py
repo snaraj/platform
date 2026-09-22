@@ -38,6 +38,9 @@ PREPARE = load_script(
 PREPARE.B = BACKLOG
 PREPARE.C = BACKLOG.C
 CONTRACT = BACKLOG.C
+# Emptied rather than deleted: mock.patch.dict restores exactly what it
+# replaced, and an empty value is falsy to the command's own check.
+WITHOUT_CI = {marker: "" for marker in PREPARE.CI_MARKERS}
 NOW = dt.datetime(2026, 9, 22, 12, 0, tzinfo=dt.timezone.utc)
 
 
@@ -255,8 +258,12 @@ class PreparedTagTests(unittest.TestCase):
         return bare
 
     def run_prepare(self, ledger: Ledger, *, push: bool):
+        # This battery runs inside CI, where the runner markers the command
+        # refuses on are genuinely set. Clearing them is what lets the positive
+        # paths execute at all; the refusal itself is proved separately, with
+        # exactly one marker restored.
         stream = io.StringIO()
-        with ledger.floor_patch():
+        with ledger.floor_patch(), mock.patch.dict(PREPARE.os.environ, WITHOUT_CI):
             code = PREPARE.prepare(
                 ledger.root, "HEAD", push=push, remote="origin", stream=stream
             )
@@ -388,9 +395,13 @@ class PreparedTagTests(unittest.TestCase):
                 root = Path(temporary) / "work"
                 root.mkdir()
                 ledger, _, _ = self.two_pending(root)
-                with mock.patch.dict(PREPARE.os.environ, {marker: "true"}), \
-                        self.assertRaises(CONTRACT.ContractError):
-                    self.run_prepare(ledger, push=True)
+                stream = io.StringIO()
+                with ledger.floor_patch(), mock.patch.dict(
+                    PREPARE.os.environ, {**WITHOUT_CI, marker: "true"}
+                ), self.assertRaises(CONTRACT.ContractError):
+                    PREPARE.prepare(
+                        ledger.root, "HEAD", push=True, remote="origin", stream=stream
+                    )
                 self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
 
     def test_redirecting_git_variables_never_reach_the_tag_command(self):
@@ -422,10 +433,13 @@ class PreparedTagTests(unittest.TestCase):
     def test_the_cli_reports_a_refusal_without_a_traceback(self):
         with tempfile.TemporaryDirectory() as temporary:
             ledger = Ledger(Path(temporary))
-            self.assertEqual(
-                PREPARE.main(["--repository", str(ledger.root), "--head", "absent"]),
-                1,
-            )
+            with mock.patch.dict(PREPARE.os.environ, WITHOUT_CI):
+                self.assertEqual(
+                    PREPARE.main(
+                        ["--repository", str(ledger.root), "--head", "absent"]
+                    ),
+                    1,
+                )
 
 
 class FakeReader:
