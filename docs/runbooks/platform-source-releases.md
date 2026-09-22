@@ -118,11 +118,12 @@ the validated Git ledger unchanged and repeats only the exact GET classifiers.
 
 Issue #369 admitted the first three consecutive protected-main sources after
 the immutable `v0.1.80` checkpoint; issue #317 freezes the eight the stalled
-publisher left behind, ending at the last merge before that change, and issue
-#391 freezes the twelfth, the merge that repaired the backlog derivation,
-because this change moves main past it. The window is a reviewed list and
-never a computed range: adding an edge is a reviewed commit, so CI can never
-widen it. The ledger derives their next patches; the table does not allocate
+publisher left behind, ending at the last merge before that change, issue #391
+freezes the twelfth, the merge that repaired the backlog derivation, and issue
+#393 freezes the thirteenth, the merge that derives the reader's per-run bounds
+from this list, because each change moves main past its predecessor. The window
+is a reviewed list and never a computed range: adding an edge is a reviewed
+commit, so CI can never widen it. The ledger derives their next patches; the table does not allocate
 tags. Both original workflow attempts must still be completed and successful,
 and every original workflow file, tree, parent and fragment must match the
 frozen policy in `platform_release_epoch.py`. The window spans two publisher
@@ -143,6 +144,7 @@ workflow inventory there rather than sharing a single fingerprint.
 | `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` | `35548047591` / `35548047644` | `383-boot-time-recovery.md` |
 | `10ee0a67144675630456daafeb002755aba653d4` | `35684876122` / `35684876102` | `387-codeql-4-38-1.md` |
 | `f71fc1f37f9ca1883e10286a13132cd70a17cf9f` | `35773664240` / `35773664214` | `317-release-backlog-automation.md` |
+| `76f60b306d028f5a2febcbf7b35c8ab16b0dd139` | `35788330613` / `35788330655` | `391-frozen-executor-pin.md` |
 
 The current protected checkout executes the repair; the historical trees are
 data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
@@ -157,7 +159,7 @@ share one non-canceling concurrency group.
 New v4 identity assets keep original source/main-CI fields separate from
 `execution.source_sha`, `execution.tree_sha`, `execution.main_ci` and the actual
 publisher run. The external tag policy selects the recovery signing subject
-only for those twelve exact edges. Later ordinary releases use the ordinary
+only for those thirteen exact edges. Later ordinary releases use the ordinary
 subject and require source/executor equality; downloaded identity fields cannot
 select another trust root. The v1/v2/v3 schemas and existing immutable bytes are
 unchanged. Source CI and publisher attempts are verified through exact
@@ -221,6 +223,7 @@ table:
 | `v0.1.90` | `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` |
 | `v0.1.91` | `10ee0a67144675630456daafeb002755aba653d4` |
 | `v0.1.92` | `f71fc1f37f9ca1883e10286a13132cd70a17cf9f` |
+| `v0.1.93` | `76f60b306d028f5a2febcbf7b35c8ab16b0dd139` |
 
 ### Draining the published backlog
 
@@ -239,6 +242,14 @@ window before that pull request is reviewed. Then dispatch once per edge:
 gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
+Every dispatch re-proves each published edge, so the reader's per-run bounds
+scale with the window instead of being fixed beside it: `per_run_bounds` in
+`platform_release_recovery.py` derives the read budget from the frozen window's
+length, states the measured per-edge and fixed costs it is derived from, and
+refuses a window the deadline could not walk. Extending the window re-derives
+both bounds, and the pull request that extends it proves they still hold for a
+fully published window (issue #393).
+
 A lost dispatch response requires readback of matching runs, never a duplicate
 POST. After each, independently read back the annotated tag, the immutable
 non-draft/non-prerelease Release and its two assets — size/digest/canonical
@@ -246,9 +257,10 @@ identity, Sigstore subject, issuer, actual executor SHA/event, every signed
 original attempt. Only completed success makes an edge a predecessor. When the
 window is complete, let the repair's own ordinary publisher finish, or rerun
 that whole workflow (never failed-jobs-only) if its wait timed out. After the
-issue #391 repair merges, that is: prepare `v0.1.92` with the command above,
-drain `v0.1.82` through `v0.1.92` one dispatch at a time, then let that merge's
-own publisher — rerun whole if it timed out — publish `v0.1.93`.
+issue #393 repair merges, that is: nothing to prepare, because every pending
+tag from `v0.1.90` to `v0.1.93` already exists; keep main at that executor,
+drain `v0.1.90` through `v0.1.93` one dispatch at a time, then let that merge's
+own publisher — rerun whole if it timed out — publish `v0.1.94`.
 
 A publisher that died mid-upload leaves a draft with a stale identity asset pair
 and recovery refuses `draft Release asset inventory count is not exact`. Deleting

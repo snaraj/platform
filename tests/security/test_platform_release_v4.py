@@ -314,7 +314,7 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "no published Release"):
                 E.frozen_executor(PINNED_TAG, {**entry, "executor_sha": malformed})
         # Every other edge is unpinned, and a pin cannot be granted to one no
-        # published Release records — the twelfth edge frozen here included.
+        # published Release records — the thirteenth edge frozen here included.
         for index in range(1, len(E.HISTORICAL_RELEASES)):
             tag = f"v0.1.{81 + index}"
             other = dict(E.HISTORICAL_RELEASES[index])
@@ -487,9 +487,10 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                              (FIRST_ORDINARY_V4_TAG, 4)):
             self.assertEqual(E.identity(tag)["version"], version)
         # The whole frozen window carries the recovery subject, not just its
-        # first three edges: issue #317 extended it through v0.1.91 and issue
-        # #391 freezes the twelfth edge, v0.1.92.
-        self.assertEqual(LAST_FROZEN_TAG, "v0.1.92")
+        # first three edges: issue #317 extended it through v0.1.91, issue
+        # #391 froze the twelfth edge, v0.1.92, and issue #393 freezes the
+        # thirteenth, v0.1.93.
+        self.assertEqual(LAST_FROZEN_TAG, "v0.1.93")
         for tag in FROZEN_TAGS:
             selected = E.identity(tag)
             self.assertEqual(selected["publisher_workflow"], ".github/workflows/platform-release-recovery.yml")

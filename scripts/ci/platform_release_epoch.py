@@ -89,8 +89,9 @@ FROZEN_EDGE_FIELDS = frozenset({
 # replay inputs or allocated tags. The ordinary ledger derives each next tag.
 # The window is a frozen reviewed list and never a computed range: issue #369
 # admitted the first three edges, issue #317 froze the eight the stalled
-# publisher left behind, and issue #391 freezes the twelfth, the merge that
-# repaired the derivation, because this change moves main past it.
+# publisher left behind, issue #391 froze the twelfth, the merge that repaired
+# the derivation, and issue #393 freezes the thirteenth, the merge that derives
+# the reader's per-run bounds from this list, because it moves main past it.
 HISTORICAL_RELEASES = (
     {
         "source_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
@@ -211,6 +212,16 @@ HISTORICAL_RELEASES = (
         "fragment_sha256": "1d0cd44be2be75974f003da46df4116f8fd1461569164e45de4e4b9cb53ada58",
         "main_run_id": 35773664240,
         "codeql_run_id": 35773664214,
+        "workflows": "codeql-4-38-1",
+    },
+    {
+        "source_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+        "tree_sha": "8123906d6d4330ed69c175038fe472fbd9d285dd",
+        "parent_sha": "f71fc1f37f9ca1883e10286a13132cd70a17cf9f",
+        "fragment_path": "changelog.d/391-frozen-executor-pin.md",
+        "fragment_sha256": "f5d909df8b48d03bdae3de3a7dc35fae5885bdba0b7c046837906f6e267c66bf",
+        "main_run_id": 35788330613,
+        "codeql_run_id": 35788330655,
         "workflows": "codeql-4-38-1",
     },
 )
