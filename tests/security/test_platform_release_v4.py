@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from . import test_platform_release_identity_asset as asset_fixtures
 ROOT = Path(__file__).resolve().parents[2]
 C = load_script("ci/platform_release_contract.py", module_name="release_v4_contract")
 E = C.EPOCH
+EPOCH_SCRIPT = ROOT / "scripts/ci/platform_release_epoch.py"
 EXECUTOR = "e" * 40
 EXECUTOR_TREE = "f" * 40
 # v0.1.81 is the one frozen edge whose published identity records an executor
@@ -35,6 +37,24 @@ FROZEN_TAGS = tuple(
 )
 LAST_FROZEN_TAG = FROZEN_TAGS[-1]
 FIRST_ORDINARY_V4_TAG = E.next_tag(LAST_FROZEN_TAG)
+# Imports the file named by argv[1] and reports which of the two things
+# happened: the import itself refused, or it succeeded and a production entry
+# point answered. Nothing here calls validate_window, so a refusal can only
+# come from the module-level call the epoch script makes for itself.
+IMPORT_PROBE = """\
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("epoch_under_probe", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+try:
+    spec.loader.exec_module(module)
+except ValueError as error:
+    print("REFUSED " + str(error))
+else:
+    print("IMPORTED " + module.release_target(sys.argv[2], sys.argv[3]))
+"""
 
 
 def main_ci(source, run_id):
@@ -282,6 +302,17 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             with self.subTest(recorded=recorded), mock.patch.dict(
                     E.PINNED_EXECUTIONS, {PINNED_TAG: recorded}), self.assertRaises(ValueError):
                 E.frozen_executor(PINNED_TAG, entry)
+        # The 40-hex shape is checked on the pin itself, not merely implied
+        # by a well-formed table: a record and an entry that AGREE on a SHA
+        # GitHub could not have recorded still refuse, so a future edit to the
+        # reviewed table cannot license one by transcribing it into both.
+        for spelling, malformed in (("uppercase", PINNED_EXECUTOR.upper()),
+                                    ("truncated", PINNED_EXECUTOR[:-1])):
+            with self.subTest(spelling=spelling), mock.patch.dict(
+                    E.PINNED_EXECUTIONS,
+                    {PINNED_TAG: {"release_id": PINNED_RELEASE_ID, "executor_sha": malformed}}), \
+                    self.assertRaisesRegex(ValueError, "no published Release"):
+                E.frozen_executor(PINNED_TAG, {**entry, "executor_sha": malformed})
         # Every other edge is unpinned, and a pin cannot be granted to one no
         # published Release records — the twelfth edge frozen here included.
         for index in range(1, len(E.HISTORICAL_RELEASES)):
@@ -307,6 +338,56 @@ class PlatformReleaseV4Tests(unittest.TestCase):
         with mock.patch.dict(E.PINNED_EXECUTIONS, {"v0.1.70": {"release_id": 1, "executor_sha": "a" * 40}}), \
                 self.assertRaisesRegex(ValueError, "names no frozen edge"):
             E.validate_window()
+
+    def test_the_module_level_sweep_call_is_what_refuses_an_unbacked_pin(self):
+        """Prove the wiring, not the helper: delete the call and this goes red.
+
+        Every other check above reaches ``validate_window`` by name, so all of
+        them survive disconnecting it from module import — the helper was
+        proven and its automatic invocation was not. This test never names it.
+        It writes a copy of the script carrying an unbacked pin on the frozen
+        edge no publisher has taken yet, then merely IMPORTS that copy in a
+        fresh isolated interpreter, so neither this process's already-loaded
+        module nor a bytecode cache can answer in its place. A refusal there
+        can come from nothing but the module-level call, and the second case
+        shows the production command-line entry point refusing for the same
+        reason rather than an import in isolation. The unmodified source is the
+        positive control: it must import and answer, so a red result is the
+        injected pin and never the copying.
+        """
+        source = EPOCH_SCRIPT.read_text(encoding="utf-8")
+        unpublished = E.HISTORICAL_RELEASES[-1]
+        anchor = '        "source_sha": "{}",\n'.format(unpublished["source_sha"])
+        self.assertEqual(source.count(anchor), 1)
+        forward = source.replace(
+            anchor, anchor + '        "executor_sha": "{}",\n'.format(PINNED_EXECUTOR))
+        self.assertEqual(forward.count("executor_sha"), source.count("executor_sha") + 1)
+        refusal = "frozen edge pins an executor no published Release records"
+        with tempfile.TemporaryDirectory() as directory:
+            imported, command = {}, {}
+            for name, text in (("intact", source), ("forward_pin", forward)):
+                copy_path = Path(directory) / (name + "_epoch.py")
+                copy_path.write_text(text, encoding="utf-8")
+                imported[name] = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", IMPORT_PROBE, str(copy_path),
+                     PINNED_TAG, E.HISTORICAL_RELEASES[0]["source_sha"]],
+                    capture_output=True, text=True, check=False, timeout=60)
+                command[name] = subprocess.run(
+                    [sys.executable, "-I", "-B", str(copy_path), PINNED_TAG],
+                    capture_output=True, text=True, check=False, timeout=60)
+            self.assertEqual(imported["intact"].returncode, 0, imported["intact"].stderr)
+            self.assertEqual(imported["intact"].stdout, "IMPORTED main\n")
+            self.assertEqual(command["intact"].returncode, 0, command["intact"].stderr)
+            self.assertEqual(json.loads(command["intact"].stdout)["publisher_workflow"],
+                             E.RECOVERY_WORKFLOW)
+            self.assertEqual(imported["forward_pin"].returncode, 0,
+                             imported["forward_pin"].stderr)
+            self.assertEqual(imported["forward_pin"].stdout, "REFUSED " + refusal + "\n")
+            # The command-line entry point never reaches its own argument
+            # parsing, so the refusal is not a caught-and-reported denial.
+            self.assertNotEqual(command["forward_pin"].returncode, 0)
+            self.assertEqual(command["forward_pin"].stdout, "")
+            self.assertIn(refusal, command["forward_pin"].stderr)
 
     def test_the_published_v0_1_81_identity_validates_only_through_its_pin(self):
         raw = IDENTITY_FIXTURE.read_bytes()

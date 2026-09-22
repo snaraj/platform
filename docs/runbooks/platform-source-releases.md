@@ -226,11 +226,14 @@ table:
 
 After owner merge and successful exact-executor main CI and CodeQL, keep main at
 that executor, confirm no publisher proof is in flight, prepare the missing tags
-above, and never rerun a frozen old workflow. An executor that later becomes a
-frozen source itself is pinned as that edge's `executor_sha`, read from its
-already published immutable identity, in the same pull request that freezes the
-later edge, and every published edge's identity asset is validated against the
-new window before that pull request is reviewed. Then dispatch once per edge:
+above, and never rerun a frozen old workflow. One executor drains many edges —
+the merge of the change that froze `v0.1.92` executes eleven of them, `v0.1.82`
+through `v0.1.92` — so when an executor is itself frozen as a source later, the
+pull request that freezes it pins EVERY edge it published: each edge carries the
+`executor_sha` its own already published immutable identity records, alongside
+the re-baselined exact-table tripwire and window fingerprint, in that one pull
+request. Every published edge's identity asset is validated against the new
+window before that pull request is reviewed. Then dispatch once per edge:
 
 ```
 gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
