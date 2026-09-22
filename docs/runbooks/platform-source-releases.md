@@ -121,14 +121,13 @@ the immutable `v0.1.80` checkpoint; issue #317 freezes the eight the stalled
 publisher left behind, ending at the last merge before that change, and issue
 #391 freezes the twelfth, the merge that repaired the backlog derivation,
 because this change moves main past it. The window is a reviewed list and
-never a computed range: adding an
-edge is a reviewed commit, so CI can never widen it. The ledger derives their
-next patches; the table does not allocate tags. Both original workflow attempts
-must still be completed and successful, and every original workflow file, tree,
-parent and fragment must match the frozen policy in
-`platform_release_epoch.py`. The window spans two publisher revisions and three
-CodeQL pins, so each edge names one exact, complete workflow inventory there
-rather than sharing a single fingerprint.
+never a computed range: adding an edge is a reviewed commit, so CI can never
+widen it. The ledger derives their next patches; the table does not allocate
+tags. Both original workflow attempts must still be completed and successful,
+and every original workflow file, tree, parent and fragment must match the
+frozen policy in `platform_release_epoch.py`. The window spans two publisher
+revisions and three CodeQL pins, so each edge names one exact, complete
+workflow inventory there rather than sharing a single fingerprint.
 
 | Source | Original main CI / CodeQL (attempt 1) | Fragment |
 | --- | --- | --- |
