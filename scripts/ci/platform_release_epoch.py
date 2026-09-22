@@ -23,8 +23,54 @@ WORKFLOW = ".github/workflows/platform-release.yml@refs/heads/main"
 TERMINAL_V3_TAG = "v0.1.80"
 TERMINAL_V3_SOURCE = "4f9b29339fec6ff06b37ecc0024b48cbe857f96f"
 RECOVERY_WORKFLOW = ".github/workflows/platform-release-recovery.yml"
+PULL_REQUEST_WORKFLOW_DIGEST = (
+    "3fe60af5eb1f1e540cb2bbeda9888aa58fb85622f08c75f7246d50eb90c9d552"
+)
+HISTORICAL_WORKFLOW_PATHS = (
+    ".github/workflows/pull-request.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/platform-release.yml",
+)
+# The backlog window spans two publisher revisions and three CodeQL pins, so no
+# single shared fingerprint can cover it without dropping a file from the
+# comparison — which would be a weakening, not a generalization. Each inventory
+# below is exact and complete over the closed path set above; every frozen edge
+# names exactly one, and an unknown name or a short inventory fails closed.
+HISTORICAL_WORKFLOWS = {
+    "v3-publisher": {
+        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
+        ".github/workflows/codeql.yml":
+            "ecd647fa9c1867ef8fe162a19edf2ec978de8bdd7f8fb5d6beb74760540c91f0",
+        ".github/workflows/platform-release.yml":
+            "7964da478567a32ca68418a7b974f2f6dceeb1bddb027cee03bd8f698780aa00",
+    },
+    "recovery-publisher": {
+        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
+        ".github/workflows/codeql.yml":
+            "ecd647fa9c1867ef8fe162a19edf2ec978de8bdd7f8fb5d6beb74760540c91f0",
+        ".github/workflows/platform-release.yml":
+            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
+    },
+    "codeql-4-38-0": {
+        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
+        ".github/workflows/codeql.yml":
+            "4bc6c8a105991a9473c3c9582bf24f7a0f48fd5847f06ec4eafed4fe9e8084c5",
+        ".github/workflows/platform-release.yml":
+            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
+    },
+    "codeql-4-38-1": {
+        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
+        ".github/workflows/codeql.yml":
+            "cc5c09eae4c30249368f86845b78ac808629470dc7542adcc16099f94255e807",
+        ".github/workflows/platform-release.yml":
+            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
+    },
+}
 # These are published protected-main source/CI records, not caller-selected
 # replay inputs or allocated tags. The ordinary ledger derives each next tag.
+# The window is a frozen reviewed list and never a computed range: issue #369
+# admitted the first three edges, and issue #317 freezes the eight that the
+# stalled publisher left behind, ending at the last merge before this one.
 HISTORICAL_RELEASES = (
     {
         "source_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
@@ -34,6 +80,7 @@ HISTORICAL_RELEASES = (
         "fragment_sha256": "efcf3d946e417320cc7d75f724cc862470571946cfe5fa760404a240cd150df1",
         "main_run_id": 34283118915,
         "codeql_run_id": 34283118636,
+        "workflows": "v3-publisher",
     },
     {
         "source_sha": "9cd79f1e69cfa00eb5467822831056101629c8f8",
@@ -43,6 +90,7 @@ HISTORICAL_RELEASES = (
         "fragment_sha256": "546e5ad23459bd53a94b768668e1faa09ff1500fc1a34b5bf03d98a521d9b44a",
         "main_run_id": 34305321734,
         "codeql_run_id": 34305321809,
+        "workflows": "v3-publisher",
     },
     {
         "source_sha": "3b7a0532ba5fe2f10037023f3e26ec5876f8d191",
@@ -52,13 +100,104 @@ HISTORICAL_RELEASES = (
         "fragment_sha256": "90e877f38e58ff5e7c7caa564bc2606c2c7138229b544a59c200ba24154e8009",
         "main_run_id": 34638257426,
         "codeql_run_id": 34638258315,
+        "workflows": "v3-publisher",
+    },
+    {
+        "source_sha": "bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4",
+        "tree_sha": "ab5a09071ae145f0ad733039b6cad7dd8bb9edf5",
+        "parent_sha": "3b7a0532ba5fe2f10037023f3e26ec5876f8d191",
+        "fragment_path": "changelog.d/369-source-recovery.md",
+        "fragment_sha256": "02e4911286c2d5e4f5660ea8e833d9080c8323291bd697d7da8e1b91c6140a8d",
+        "main_run_id": 34661250611,
+        "codeql_run_id": 34661250547,
+        "workflows": "recovery-publisher",
+    },
+    {
+        "source_sha": "47fc0a1fb573983d69acfc88bcf6f950899f8772",
+        "tree_sha": "80ae88a405c8aded3f65455e42e980e2138923f0",
+        "parent_sha": "bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4",
+        "fragment_path": "changelog.d/373-reserved-evidence.md",
+        "fragment_sha256": "7bc29a7dae92fe311ffa0ce9f27428e5929da830758025d24a09a6a7c73fbc8d",
+        "main_run_id": 34667651399,
+        "codeql_run_id": 34667651395,
+        "workflows": "recovery-publisher",
+    },
+    {
+        "source_sha": "2ad053e307e43f6dfb5015de1f1bf09c3505a832",
+        "tree_sha": "1be628601c92a07bdc7f2f4dc3140d6d6195770a",
+        "parent_sha": "47fc0a1fb573983d69acfc88bcf6f950899f8772",
+        "fragment_path": "changelog.d/371-owner-prepared-recovery-tags.md",
+        "fragment_sha256": "107e8b80a7891bccadec8df0a12c2750b75071dca530d410e9e0b19d96193cb3",
+        "main_run_id": 34673797428,
+        "codeql_run_id": 34673797429,
+        "workflows": "recovery-publisher",
+    },
+    {
+        "source_sha": "57a8807d551f19b13ee9e2caea398dbaa280296f",
+        "tree_sha": "4d8933576c5112867c0f3665ffa997321619252f",
+        "parent_sha": "2ad053e307e43f6dfb5015de1f1bf09c3505a832",
+        "fragment_path": "changelog.d/377-private-connector-artifact.md",
+        "fragment_sha256": "5a0507eed2a61a086d00e24ff5ec5921091081b3988fcfcad48a0d3dd89aabd3",
+        "main_run_id": 34732230714,
+        "codeql_run_id": 34732230710,
+        "workflows": "recovery-publisher",
+    },
+    {
+        "source_sha": "64cc95f3802c8feb8567f9b607aeac5c10d8d830",
+        "tree_sha": "b5fd892756aad9c7dade17e985fcc3f25bffa585",
+        "parent_sha": "57a8807d551f19b13ee9e2caea398dbaa280296f",
+        "fragment_path": "changelog.d/379-release-draft-tags.md",
+        "fragment_sha256": "92fbe046f3337db42a7023fa9756ef7d56c9e4afed314c92e80711a99cc973b2",
+        "main_run_id": 34789838965,
+        "codeql_run_id": 34789838936,
+        "workflows": "recovery-publisher",
+    },
+    {
+        "source_sha": "2a597ce999979ae463bc575eb63d6d7d5a2a182d",
+        "tree_sha": "9b9d3038c073b4d3a8d25576aaf236693aaead38",
+        "parent_sha": "64cc95f3802c8feb8567f9b607aeac5c10d8d830",
+        "fragment_path": "changelog.d/381-codeql-4-38.md",
+        "fragment_sha256": "648a3b9d793c0ff54f5f01653eba0cb5fa8a787caea3a889e507472b4aaecdbf",
+        "main_run_id": 34932536836,
+        "codeql_run_id": 34932536855,
+        "workflows": "codeql-4-38-0",
+    },
+    {
+        "source_sha": "54ac82e692fa11999fafde52f2f4fe6ea17b47b5",
+        "tree_sha": "200afeca74abe21a6f13d6d0076f690a790abe84",
+        "parent_sha": "2a597ce999979ae463bc575eb63d6d7d5a2a182d",
+        "fragment_path": "changelog.d/383-boot-time-recovery.md",
+        "fragment_sha256": "cddfa8066293d4247cca4f5af7bdffad21e93ef068f3dfce23d9ac567ff4606b",
+        "main_run_id": 35548047591,
+        "codeql_run_id": 35548047644,
+        "workflows": "codeql-4-38-0",
+    },
+    {
+        "source_sha": "10ee0a67144675630456daafeb002755aba653d4",
+        "tree_sha": "e482a6be62d2d63042d6f0dbadbbfd00b6e30ac0",
+        "parent_sha": "54ac82e692fa11999fafde52f2f4fe6ea17b47b5",
+        "fragment_path": "changelog.d/387-codeql-4-38-1.md",
+        "fragment_sha256": "d02324260af2ef59e179e9ac65e62eaa852ab2be1ecd934576bb67fa8ed3ae89",
+        "main_run_id": 35684876122,
+        "codeql_run_id": 35684876102,
+        "workflows": "codeql-4-38-1",
     },
 )
-HISTORICAL_WORKFLOWS = {
-    ".github/workflows/pull-request.yml": "3fe60af5eb1f1e540cb2bbeda9888aa58fb85622f08c75f7246d50eb90c9d552",
-    ".github/workflows/codeql.yml": "ecd647fa9c1867ef8fe162a19edf2ec978de8bdd7f8fb5d6beb74760540c91f0",
-    ".github/workflows/platform-release.yml": "7964da478567a32ca68418a7b974f2f6dceeb1bddb027cee03bd8f698780aa00",
-}
+
+
+def historical_workflows(frozen: dict) -> dict[str, str]:
+    """Resolve one frozen edge's complete workflow inventory, or refuse.
+
+    Naming an inventory keeps every digest exact across a window in which the
+    publisher and CodeQL workflows changed. The completeness check is the point
+    of the indirection: a name that resolves to a partial inventory would skip
+    a file's comparison silently, so it refuses instead.
+    """
+    name = frozen.get("workflows")
+    inventory = HISTORICAL_WORKFLOWS.get(name) if isinstance(name, str) else None
+    if inventory is None or set(inventory) != set(HISTORICAL_WORKFLOW_PATHS):
+        raise ValueError("frozen edge names no complete workflow inventory")
+    return inventory
 
 
 def version(tag: str) -> tuple[int, int, int]:

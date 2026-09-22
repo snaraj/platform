@@ -95,7 +95,7 @@ def prove_trees(root: Path, bound: dict) -> None:
         fragment = C.validate_transition(root, frozen["parent_sha"], sha, first_parent=True)
         require((fragment.fragment_path, fragment.fragment_sha256) ==
                 (frozen["fragment_path"], frozen["fragment_sha256"]), "historical fragment differs")
-        for path, digest in E.HISTORICAL_WORKFLOWS.items():
+        for path, digest in E.historical_workflows(frozen).items():
             require(hashlib.sha256(C._git_bytes(root, "show", f"{sha}:{path}")).hexdigest() == digest,
                     "historical workflow differs from its closed inventory")
 
