@@ -116,17 +116,31 @@ the validated Git ledger unchanged and repeats only the exact GET classifiers.
 
 ## Finite historical-source recovery
 
-Issue #369 admits exactly three consecutive protected-main sources after the
-immutable `v0.1.80` checkpoint. The ledger derives their next patches; the table
-does not allocate tags. Both original workflow attempts must still be completed
-and successful, and every original workflow file, tree, parent and fragment
-must match the frozen policy in `platform_release_epoch.py`.
+Issue #369 admitted the first three consecutive protected-main sources after
+the immutable `v0.1.80` checkpoint; issue #317 freezes the eight the stalled
+publisher left behind, ending at the last merge before that change, for eleven
+in all. The window is a reviewed list and never a computed range: adding an
+edge is a reviewed commit, so CI can never widen it. The ledger derives their
+next patches; the table does not allocate tags. Both original workflow attempts
+must still be completed and successful, and every original workflow file, tree,
+parent and fragment must match the frozen policy in
+`platform_release_epoch.py`. The window spans two publisher revisions and three
+CodeQL pins, so each edge names one exact, complete workflow inventory there
+rather than sharing a single fingerprint.
 
 | Source | Original main CI / CodeQL (attempt 1) | Fragment |
 | --- | --- | --- |
 | `060c9678e130487b27cdaec395b0f1c5d74b9240` | `34283118915` / `34283118636` | `362-obsync-private-boundary.md` |
 | `9cd79f1e69cfa00eb5467822831056101629c8f8` | `34305321734` / `34305321809` | `365-obsync-staged-readiness.md` |
 | `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` | `34638257426` / `34638258315` | `367-reserved-file-storage.md` |
+| `bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4` | `34661250611` / `34661250547` | `369-source-recovery.md` |
+| `47fc0a1fb573983d69acfc88bcf6f950899f8772` | `34667651399` / `34667651395` | `373-reserved-evidence.md` |
+| `2ad053e307e43f6dfb5015de1f1bf09c3505a832` | `34673797428` / `34673797429` | `371-owner-prepared-recovery-tags.md` |
+| `57a8807d551f19b13ee9e2caea398dbaa280296f` | `34732230714` / `34732230710` | `377-private-connector-artifact.md` |
+| `64cc95f3802c8feb8567f9b607aeac5c10d8d830` | `34789838965` / `34789838936` | `379-release-draft-tags.md` |
+| `2a597ce999979ae463bc575eb63d6d7d5a2a182d` | `34932536836` / `34932536855` | `381-codeql-4-38.md` |
+| `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` | `35548047591` / `35548047644` | `383-boot-time-recovery.md` |
+| `10ee0a67144675630456daafeb002755aba653d4` | `35684876122` / `35684876102` | `387-codeql-4-38-1.md` |
 
 The current protected checkout executes the repair; the historical trees are
 data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
@@ -141,7 +155,7 @@ share one non-canceling concurrency group.
 New v4 identity assets keep original source/main-CI fields separate from
 `execution.source_sha`, `execution.tree_sha`, `execution.main_ci` and the actual
 publisher run. The external tag policy selects the recovery signing subject
-only for those three exact edges. Later ordinary releases use the ordinary
+only for those eleven exact edges. Later ordinary releases use the ordinary
 subject and require source/executor equality; downloaded identity fields cannot
 select another trust root. The v1/v2/v3 schemas and existing immutable bytes are
 unchanged. Source CI and publisher attempts are verified through exact
@@ -194,6 +208,14 @@ allocated by this table:
 | `v0.1.81` | `060c9678e130487b27cdaec395b0f1c5d74b9240` |
 | `v0.1.82` | `9cd79f1e69cfa00eb5467822831056101629c8f8` |
 | `v0.1.83` | `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` |
+| `v0.1.84` | `bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4` |
+| `v0.1.85` | `47fc0a1fb573983d69acfc88bcf6f950899f8772` |
+| `v0.1.86` | `2ad053e307e43f6dfb5015de1f1bf09c3505a832` |
+| `v0.1.87` | `57a8807d551f19b13ee9e2caea398dbaa280296f` |
+| `v0.1.88` | `64cc95f3802c8feb8567f9b607aeac5c10d8d830` |
+| `v0.1.89` | `2a597ce999979ae463bc575eb63d6d7d5a2a182d` |
+| `v0.1.90` | `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` |
+| `v0.1.91` | `10ee0a67144675630456daafeb002755aba653d4` |
 
 ### Draining the published backlog
 

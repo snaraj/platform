@@ -222,9 +222,13 @@ class RecoveryTreeTests(unittest.TestCase):
     def test_frozen_public_source_and_workflow_fingerprint(self):
         # This fingerprint was derived from the separately captured protected
         # Git trees and public run records, not computed from policy at runtime.
+        # It moved once, for issue #317's reviewed extension of the window from
+        # three edges to eleven; FrozenWindowTests re-derives every field it
+        # covers from the repository, so this line is a tripwire on the
+        # reviewed list rather than the only thing standing behind it.
         value = {"sources": R.E.HISTORICAL_RELEASES, "workflows": R.E.HISTORICAL_WORKFLOWS}
         self.assertEqual(hashlib.sha256(R.canonical(value).encode()).hexdigest(),
-                         "a2e9a7863d140ca4db14c57a3569f89baf1e504908b27bbb611be5a63d97745e")
+                         "66afb0139f2187e4e75b8071187d6c454600a4ac269c1e9677074c5270301d01")
         self.assertEqual((R.TERMINAL_TREE, R.TERMINAL_TAG_OBJECT, R.TERMINAL_RELEASE_ID,
                           R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN),
                          ("db18c40ece8fa91f9dfabb7cb99a833a34a30505",
@@ -243,15 +247,20 @@ class RecoveryTreeTests(unittest.TestCase):
             values[altered[0]] = altered[1]
         if altered and altered[0] in fragments:
             fragments[altered[0]] = altered[1]
+        # The inventory is per-edge now, so the digest fake has to answer for the
+        # SOURCE as well as the path; carrying both through the read keeps the
+        # fake honest instead of letting one shared digest satisfy every edge.
         def digest(raw):
-            path = raw.decode()
-            value = R.E.HISTORICAL_WORKFLOWS[path]
+            source, path = raw.decode().split(":", 1)
+            entry = next(x for x in R.E.HISTORICAL_RELEASES if x["source_sha"] == source)
+            value = R.E.historical_workflows(entry)[path]
             return SimpleNamespace(hexdigest=lambda: "0" * 64 if altered and altered[0] == path else value)
         def read_bytes(_root, *args):
             self.assertEqual(args[0], "show")
             source, path = args[1].split(":", 1)
             self.assertIn(source, {x["source_sha"] for x in R.E.HISTORICAL_RELEASES})
-            return path.encode()
+            self.assertIn(path, R.E.HISTORICAL_WORKFLOW_PATHS)
+            return args[1].encode()
         return values, fragments, digest, read_bytes
 
     def prove(self, altered=None, ancestor=True, current=None):
@@ -275,7 +284,7 @@ class RecoveryTreeTests(unittest.TestCase):
                 values[field] = "changed"
                 with self.subTest(source=entry["source_sha"], field=field), self.assertRaises(ValueError):
                     self.prove((entry["source_sha"], SimpleNamespace(**values)))
-        for path in R.E.HISTORICAL_WORKFLOWS:
+        for path in R.E.HISTORICAL_WORKFLOW_PATHS:
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.prove((path, "changed"))
         with self.assertRaises(ValueError):
@@ -289,6 +298,87 @@ class RecoveryTreeTests(unittest.TestCase):
         for sha in (R.E.TERMINAL_V3_SOURCE, *(x["source_sha"] for x in R.E.HISTORICAL_RELEASES)):
             with self.subTest(sha=sha), self.assertRaises(ValueError):
                 self.prove((("rev-parse", "HEAD"), sha), current={**bound(), "executor_sha": sha})
+
+
+class FrozenWindowTests(unittest.TestCase):
+    """The frozen window is a reviewed list; these tests prove it is also true.
+
+    Nothing here derives the window — that would turn a reviewed list into a
+    computed range and defeat its purpose. Each test reads what the list
+    ASSERTS and checks it against the repository the recovery will execute
+    against, so a transcription error in a source SHA, a parent, a tree, a
+    fragment or a workflow digest fails here rather than mid-publication.
+    """
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
+                              capture_output=True, text=True, timeout=60).stdout.strip()
+
+    def test_the_window_is_eleven_contiguous_edges_ending_before_this_change(self):
+        window = R.E.HISTORICAL_RELEASES
+        self.assertEqual(len(window), 11)
+        tags = [f"v0.1.{81 + index}" for index in range(len(window))]
+        self.assertEqual(tags[0], R.E.FIRST_V4_TAG)
+        self.assertEqual(tags[-1], "v0.1.91")
+        previous = R.E.TERMINAL_V3_SOURCE
+        for tag, entry in zip(tags, window):
+            self.assertIs(R.E.historical_release(tag), entry)
+            self.assertEqual(entry["parent_sha"], previous)
+            previous = entry["source_sha"]
+        # Neither end grows by accident: one tag before and one after refuse.
+        self.assertIsNone(R.E.historical_release(R.E.TERMINAL_V3_TAG))
+        self.assertIsNone(R.E.historical_release(R.E.next_tag(tags[-1])))
+        # The executor must descend from the whole window, so the last frozen
+        # source can never be the checkout that publishes it.
+        self.assertEqual(self.git("rev-list", "--count", f"{previous}..HEAD").isdigit(), True)
+        self.assertGreater(int(self.git("rev-list", "--count", f"{previous}..HEAD")), 0)
+
+    def test_every_frozen_edge_matches_the_repository_it_names(self):
+        for entry in R.E.HISTORICAL_RELEASES:
+            sha = entry["source_sha"]
+            with self.subTest(source=sha):
+                self.assertEqual(
+                    self.git("rev-list", "--parents", "-n", "1", sha).split(),
+                    [sha, entry["parent_sha"]],
+                )
+                self.assertEqual(self.git("rev-parse", f"{sha}^{{tree}}"), entry["tree_sha"])
+                fragment = R.C.validate_transition(
+                    ROOT, entry["parent_sha"], sha, first_parent=True
+                )
+                self.assertEqual(
+                    (fragment.fragment_path, fragment.fragment_sha256),
+                    (entry["fragment_path"], entry["fragment_sha256"]),
+                )
+                inventory = R.E.historical_workflows(entry)
+                self.assertEqual(set(inventory), set(R.E.HISTORICAL_WORKFLOW_PATHS))
+                for path, digest in inventory.items():
+                    blob = subprocess.run(
+                        ["git", "-C", str(ROOT), "show", f"{sha}:{path}"],
+                        check=True, capture_output=True, timeout=60,
+                    ).stdout
+                    self.assertEqual(hashlib.sha256(blob).hexdigest(), digest)
+
+    def test_a_named_inventory_must_be_known_and_complete(self):
+        entry = R.E.HISTORICAL_RELEASES[0]
+        self.assertEqual(
+            R.E.historical_workflows(entry),
+            R.E.HISTORICAL_WORKFLOWS[entry["workflows"]],
+        )
+        for name in ("", "unknown", None, 3, [], {"a": 1}):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                R.E.historical_workflows({**entry, "workflows": name})
+        with self.subTest(case="missing"), self.assertRaises(ValueError):
+            R.E.historical_workflows({})
+        partial = dict(R.E.HISTORICAL_WORKFLOWS[entry["workflows"]])
+        partial.pop(R.E.HISTORICAL_WORKFLOW_PATHS[-1])
+        with mock.patch.dict(R.E.HISTORICAL_WORKFLOWS, {"partial": partial}), \
+                self.assertRaises(ValueError):
+            R.E.historical_workflows({**entry, "workflows": "partial"})
+
+    def test_each_inventory_is_named_by_at_least_one_edge(self):
+        """An unused inventory is a transcription that nothing proves."""
+        named = {entry["workflows"] for entry in R.E.HISTORICAL_RELEASES}
+        self.assertEqual(named, set(R.E.HISTORICAL_WORKFLOWS))
 
 
 class RecoverySelectionTests(unittest.TestCase):

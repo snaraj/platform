@@ -18,6 +18,14 @@ C = load_script("ci/platform_release_contract.py", module_name="release_v4_contr
 E = C.EPOCH
 EXECUTOR = "e" * 40
 EXECUTOR_TREE = "f" * 40
+# Derived from the frozen window's own length so the fixtures follow it when a
+# reviewed edge is added, rather than silently testing an already-frozen tag as
+# if it were still ordinary.
+FROZEN_TAGS = tuple(
+    f"v0.1.{81 + index}" for index in range(len(E.HISTORICAL_RELEASES))
+)
+LAST_FROZEN_TAG = FROZEN_TAGS[-1]
+FIRST_ORDINARY_V4_TAG = E.next_tag(LAST_FROZEN_TAG)
 
 
 def main_ci(source, run_id):
@@ -30,14 +38,14 @@ def evidence(recovering=True):
     frozen = E.HISTORICAL_RELEASES[0]
     source = frozen["source_sha"] if recovering else EXECUTOR
     tree = frozen["tree_sha"] if recovering else EXECUTOR_TREE
-    tag = "v0.1.81" if recovering else "v0.1.84"
+    tag = "v0.1.81" if recovering else FIRST_ORDINARY_V4_TAG
     original_ci = main_ci(source, frozen["main_run_id"] if recovering else 400)
     return {
         "schema": "https://snaraj.dev/schemas/platform-release-identity/v4",
         "repository": "snaraj/platform", "repository_id": 1327645656,
         "source": {"merge_sha": source, "tree_sha": tree, "protected_ref": "refs/heads/main"},
         "tag": {"name": tag, "object_sha": "b" * 40, "object_type": "tag", "peeled_commit": source},
-        "predecessor": {"tag": "v0.1.80" if recovering else "v0.1.83",
+        "predecessor": {"tag": "v0.1.80" if recovering else LAST_FROZEN_TAG,
                         "peeled_commit": frozen["parent_sha"] if recovering else E.HISTORICAL_RELEASES[-1]["source_sha"]},
         "changelog": {"fragment_path": frozen["fragment_path"] if recovering else "changelog.d/1-example.md",
                       "fragment_sha256": "sha256:" + (frozen["fragment_sha256"] if recovering else "a" * 64)},
@@ -208,11 +216,12 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                 with self.subTest(source=source, parent=parent), self.assertRaises(ValueError):
                     E.publication(E.NEW_REPOSITORY, E.REPOSITORY_ID, tag, f"v0.1.{80 + index}", parent, source)
             with self.assertRaises(ValueError):
-                E.publication(E.NEW_REPOSITORY, E.REPOSITORY_ID, "v0.1.84", "v0.1.83", "a" * 40, entry["source_sha"])
+                E.publication(E.NEW_REPOSITORY, E.REPOSITORY_ID, FIRST_ORDINARY_V4_TAG,
+                              LAST_FROZEN_TAG, "a" * 40, entry["source_sha"])
             with self.assertRaises(ValueError):
                 E.release_target(tag, "a" * 40)
         for argv in (["epoch", "v0.1.80", "--historical-main-run"],
-                     ["epoch", "v0.1.84", "--historical-main-run"],
+                     ["epoch", FIRST_ORDINARY_V4_TAG, "--historical-main-run"],
                      ["epoch", "v0.1.81", "--historical-main-run", "--source-sha", "a" * 40]):
             with self.subTest(argv=argv), mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new_callable=io.StringIO):
                 self.assertEqual(E.main(), 1)
@@ -263,15 +272,19 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                 E.validate_execution(value)
 
     def test_policy_preserves_old_epochs_and_closes_recovery_subjects(self):
-        for tag, version in (("v0.1.69", 1), ("v0.1.77", 2), ("v0.1.80", 3), ("v0.1.81", 4), ("v0.1.84", 4)):
+        for tag, version in (("v0.1.69", 1), ("v0.1.77", 2), ("v0.1.80", 3), ("v0.1.81", 4),
+                             (FIRST_ORDINARY_V4_TAG, 4)):
             self.assertEqual(E.identity(tag)["version"], version)
-        for tag in ("v0.1.81", "v0.1.82", "v0.1.83"):
+        # The whole frozen window carries the recovery subject, not just its
+        # first three edges: issue #317 extended it through v0.1.91.
+        self.assertEqual(LAST_FROZEN_TAG, "v0.1.91")
+        for tag in FROZEN_TAGS:
             selected = E.identity(tag)
             self.assertEqual(selected["publisher_workflow"], ".github/workflows/platform-release-recovery.yml")
             self.assertEqual(selected["publisher_event"], "workflow_dispatch")
             self.assertEqual(selected["subject"], "https://github.com/snaraj/platform/.github/workflows/platform-release-recovery.yml@refs/heads/main")
-        self.assertEqual(E.identity("v0.1.84")["publisher_event"], "workflow_run")
-        self.assertEqual(E.identity("v0.1.84")["subject"], "https://github.com/snaraj/platform/.github/workflows/platform-release.yml@refs/heads/main")
+        self.assertEqual(E.identity(FIRST_ORDINARY_V4_TAG)["publisher_event"], "workflow_run")
+        self.assertEqual(E.identity(FIRST_ORDINARY_V4_TAG)["subject"], "https://github.com/snaraj/platform/.github/workflows/platform-release.yml@refs/heads/main")
 
     def test_historical_and_ordinary_assets_and_actual_run_bindings_pass(self):
         validate(evidence())
@@ -413,12 +426,15 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                     C.render_release_identity(ROOT, source, "v0.1.81", **{**kwargs, **change})
         self.assertEqual(json.loads(rendered), expected)
         ordinary = evidence(False)
-        window = C.TransitionWindow(ordinary["predecessor"]["peeled_commit"], "v0.1.83",
-                                    C.Intent(EXECUTOR, C.Version(0, 1, 84)), "changelog.d/1-example.md", "a" * 64)
+        window = C.TransitionWindow(
+            ordinary["predecessor"]["peeled_commit"], LAST_FROZEN_TAG,
+            C.Intent(EXECUTOR, C.Version.parse(FIRST_ORDINARY_V4_TAG.removeprefix("v"))),
+            "changelog.d/1-example.md", "a" * 64)
         with mock.patch.object(C, "_exact_commit", side_effect=lambda _repo, sha, _field: sha), \
                 mock.patch.object(C, "_git", return_value=EXECUTOR_TREE), \
                 mock.patch.object(C, "discover_transition_window", return_value=window):
-            rendered = C.render_release_identity(ROOT, EXECUTOR, "v0.1.84", expected_base_sha=window.base_sha,
+            rendered = C.render_release_identity(ROOT, EXECUTOR, FIRST_ORDINARY_V4_TAG,
+                expected_base_sha=window.base_sha,
                 expected_base_tag=window.base_tag, tag_object_sha="b" * 40, release_id=300,
                 main_run_id=400, main_run_attempt=1, platform_run_id=500, platform_run_attempt=1,
                 github_repository="snaraj/platform", github_repository_id=1327645656)
