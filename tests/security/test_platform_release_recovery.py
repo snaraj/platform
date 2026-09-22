@@ -999,6 +999,10 @@ class RecoveryReadBudgetTests(unittest.TestCase):
         # The dearest walk proves every published edge and still selects one.
         self.assertEqual(max(counts), counts[edges - 1])
         self.assertLessEqual(max(counts), derived)
+        # The reviewed floor is stated here, not read from the constant under
+        # test: comparing the cap against its own headroom figure is satisfied
+        # by a headroom of nothing.
+        self.assertGreaterEqual(R.HEADROOM_PERCENT, 25)
         self.assertGreaterEqual(R.MAX_READS * 100, derived * (100 + R.HEADROOM_PERCENT))
         # A complete window costs less: it refuses before both CI proofs and
         # the prepared-tag proof, so the selecting walk is the bound to hold.
