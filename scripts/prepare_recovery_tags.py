@@ -15,6 +15,9 @@ The plan is derived from the immutable tag ledger by
 every object this command is about to create is checked against the
 publisher's own validators before a single ref is pushed:
 
+* ``--head`` accepts only a commit ``refs/remotes/<remote>/main`` already
+  contains, so an operator-supplied head can never bind a side branch into a
+  ledger the ruleset then keeps forever;
 * the target must be the exact untagged first-parent main commit the ledger
   derives, so a tag can never land on a non-first-parent or skipped commit;
 * the tagger identity must be the release tagger constant;
@@ -174,6 +177,17 @@ def prepare(repository: Path, head: str, *, push: bool, remote: str,
                 "release tags are prepared by the owner, never in CI (issue #375)"
             )
     head_sha = B.resolve(repository, head)
+    # ``--head`` is operator-supplied and every tag this run creates is accepted
+    # by the immutable ruleset forever. Only history the protected branch
+    # already carries may be tagged; an absent tracking ref refuses here too.
+    if subprocess.run(
+        ["git", "-C", str(repository), "merge-base", "--is-ancestor",
+         head_sha, f"refs/remotes/{remote}/main"],
+        capture_output=True, text=True, timeout=120, env=environment(),
+    ).returncode:
+        raise C.ContractError(
+            f"head {head_sha} is not an ancestor of refs/remotes/{remote}/main"
+        )
     # Deriving the plan walks the whole post-floor ledger first, so an already
     # present tag is either exact — in which case it is a ledger boundary and
     # this plan starts after it — or it stops the run right here. A disagreeing

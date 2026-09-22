@@ -248,6 +248,12 @@ class PreparedTagTests(unittest.TestCase):
     """The owner's one command creates only exact tags, and only locally first."""
 
     def remote(self, ledger: Ledger, temporary: Path) -> Path:
+        """A bare origin whose `main` the command's ancestry guard reads.
+
+        The tracking ref is part of the fixture, not decoration: the command
+        refuses any head `refs/remotes/origin/main` does not already contain,
+        so a fixture without one would only ever exercise that refusal.
+        """
         bare = temporary / "remote.git"
         subprocess.run(
             ["git", "init", "-q", "--bare", str(bare)],
@@ -255,7 +261,16 @@ class PreparedTagTests(unittest.TestCase):
             env=hermetic_git_environment(),
         )
         ledger.git("remote", "add", "origin", str(bare))
+        ledger.git("push", "-q", "origin", "refs/heads/main:refs/heads/main")
+        ledger.git("fetch", "-q", "origin")
         return bare
+
+    def remote_tags(self, bare: Path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(bare), "tag", "--list"],
+            check=True, capture_output=True, text=True, timeout=60,
+            env=hermetic_git_environment(),
+        ).stdout.strip()
 
     def run_prepare(self, ledger: Ledger, *, push: bool):
         # This battery runs inside CI, where the runner markers the command
@@ -319,12 +334,14 @@ class PreparedTagTests(unittest.TestCase):
             root = Path(temporary) / "work"
             root.mkdir()
             ledger, _, _ = self.two_pending(root)
+            bare = self.remote(ledger, Path(temporary))
             code, output = self.run_prepare(ledger, push=False)
             self.assertEqual(code, 0)
             self.assertIn("v0.1.11", output)
             self.assertIn("Ledger edges pending a tag: 2", output)
             self.assertNotIn("pushed", output)
             self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
+            self.assertEqual(self.remote_tags(bare), "")
 
     def test_an_already_exact_tag_is_a_ledger_boundary_and_is_never_rewritten(self):
         """A present exact tag leaves the plan; only the remaining edge is cut."""
@@ -388,6 +405,98 @@ class PreparedTagTests(unittest.TestCase):
                     ledger.tag("v0.1.13", third)
                 with self.assertRaises(CONTRACT.ContractError):
                     self.run_prepare(ledger, push=True)
+
+    def test_the_post_create_ledger_rewalk_refuses_before_any_ref_is_pushed(self):
+        """The whole post-floor ledger is re-walked over the new objects.
+
+        Per-object verification and the re-walk are different guards: the first
+        judges one tag against its own derived edge, the second judges the
+        refs together. With `verify` stubbed out, only the re-walk stands
+        between a mis-targeted object and the remote.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "work"
+            root.mkdir()
+            ledger, _, third = self.two_pending(root)
+            bare = self.remote(ledger, Path(temporary))
+            third_date = ledger.git("show", "-s", "--format=%cI", third)
+            authentic = PREPARE.create
+
+            def mis_target(repository, edge):
+                # v0.1.11 belongs to `second`; cutting it at `third` skips an
+                # edge the ledger must still bind. Every other field stays
+                # exact, so nothing but the re-walk can notice.
+                if edge.tag == "v0.1.11":
+                    edge = BACKLOG.Edge(
+                        edge.tag, third, edge.base_tag, edge.base_sha,
+                        edge.fragment_path, third_date,
+                    )
+                authentic(repository, edge)
+
+            with mock.patch.object(PREPARE, "verify"), mock.patch.object(
+                PREPARE, "create", mis_target
+            ), self.assertRaises(CONTRACT.ContractError) as refusal:
+                self.run_prepare(ledger, push=True)
+            self.assertIn("must bind exactly one fragment", str(refusal.exception))
+            self.assertEqual(self.remote_tags(bare), "")
+
+    def test_a_conflicting_remote_tag_refuses_the_push_and_never_moves_it(self):
+        """The refspec push is never forced, so a remote tag is never replaced.
+
+        The remote is the immutable side: a ref that already exists there is
+        exactly the object the ruleset keeps forever, and repairing it is not
+        this command's authority.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "work"
+            root.mkdir()
+            ledger, _, _ = self.two_pending(root)
+            bare = self.remote(ledger, Path(temporary))
+            first = ledger.git("rev-parse", "v0.1.10^{commit}")
+            # A foreign v0.1.11 already published at a different target, then
+            # dropped locally so the plan still derives the edge it disagrees
+            # with — the shape a second operator's earlier run would leave.
+            ledger.tag("v0.1.11", first,
+                       message=f"Platform release v0.1.11 from {first}")
+            ledger.git("push", "-q", "origin", "refs/tags/v0.1.11:refs/tags/v0.1.11")
+            published = subprocess.run(
+                ["git", "-C", str(bare), "rev-parse", "refs/tags/v0.1.11"],
+                check=True, capture_output=True, text=True, timeout=60,
+                env=hermetic_git_environment(),
+            ).stdout.strip()
+            ledger.git("tag", "-d", "v0.1.11")
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_prepare(ledger, push=True)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(bare), "rev-parse", "refs/tags/v0.1.11"],
+                    check=True, capture_output=True, text=True, timeout=60,
+                    env=hermetic_git_environment(),
+                ).stdout.strip(),
+                published,
+            )
+            # The refused push stops the run; the later edge never ships either.
+            self.assertEqual(self.remote_tags(bare), "v0.1.11")
+
+    def test_a_head_the_protected_branch_does_not_hold_is_refused(self):
+        """`--head` is operator input, and the ledger it feeds is permanent."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "work"
+            root.mkdir()
+            ledger, second, _ = self.two_pending(root)
+            bare = self.remote(ledger, Path(temporary))
+            ledger.git("checkout", "-q", "-b", "side", second)
+            ledger.fragment(304, "side-only")
+            with self.assertRaises(CONTRACT.ContractError) as refusal:
+                self.run_prepare(ledger, push=True)
+            self.assertIn("refs/remotes/origin/main", str(refusal.exception))
+            self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
+            self.assertEqual(self.remote_tags(bare), "")
+            # The head the runbook documents is still planned, unchanged.
+            ledger.git("checkout", "-q", "main")
+            code, output = self.run_prepare(ledger, push=False)
+            self.assertEqual(code, 0)
+            self.assertIn("Ledger edges pending a tag: 2", output)
 
     def test_the_command_refuses_to_run_inside_a_hosted_runner(self):
         for marker in PREPARE.CI_MARKERS:
@@ -703,17 +812,26 @@ class ReaderTransportTests(unittest.TestCase):
                 BACKLOG.Reader(token, repository)
 
     def test_foreign_paths_budget_and_methods_refuse(self):
+        # `ContractError` is also what a real HTTP failure raises, so the
+        # refusal alone proves nothing: an admitted path would reach the
+        # network and still land in `assertRaises`. Each refusal is therefore
+        # asserted against `urlopen` never having been entered at all.
         api = self.reader()
-        for path in ("repos/x", "/repos/../x", "/repos/x\n", "/repos/x#y"):
-            with self.subTest(path=path), self.assertRaises(CONTRACT.ContractError):
-                api.get(path)
-        with self.assertRaises(CONTRACT.ContractError):
-            api.write("/repos/owner/name/issues", {}, method="DELETE")
+        with mock.patch.object(BACKLOG.urllib.request, "urlopen") as opened:
+            for path in ("repos/x", "/repos/../x", "/repos/x\n", "/repos/x#y"):
+                with self.subTest(path=path), self.assertRaises(
+                    CONTRACT.ContractError
+                ):
+                    api.get(path)
+            with self.assertRaises(CONTRACT.ContractError):
+                api.write("/repos/owner/name/issues", {}, method="DELETE")
+            opened.assert_not_called()
         api.requests = BACKLOG.MAX_REQUESTS
-        with mock.patch.object(BACKLOG.urllib.request, "urlopen"), self.assertRaises(
-            CONTRACT.ContractError
-        ):
+        with mock.patch.object(
+            BACKLOG.urllib.request, "urlopen"
+        ) as opened, self.assertRaises(CONTRACT.ContractError):
             api.get("/repos/owner/name/issues")
+        opened.assert_not_called()
 
     def test_absent_is_only_honoured_for_an_expected_absence(self):
         api = self.reader()

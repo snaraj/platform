@@ -190,18 +190,20 @@ python3 -I -B scripts/prepare_recovery_tags.py --repository . --head origin/main
 ```
 
 Without `--push` it prints the plan and writes nothing; it refuses inside a
-hosted runner; and it refuses rather than repairing when the ledger or a present
-tag disagrees. Before pushing any ref it proves, through the publisher's own
-validators, the ledger-derived target, the release-tagger identity, the source
-commit's committer instant and the exact `Platform release <tag> from <source>`
-message, then re-walks the complete post-floor ledger. It never deletes, moves or
-force-updates a ref, never touches a Release, and leaves the owner the API actor;
-the annotation claims no bot action and no signed tag. Only after a completed
-immutable release may the next edge be prepared; this is no general tag-creation
-exception. The message is accepted in exactly the two encodings git produces for
-it — the publisher's unterminated form and `git tag -a -m`'s single trailing
-newline — nothing looser. The finite issue #369 edges, ledger-derived and never
-allocated by this table:
+hosted runner; it accepts only a `--head` that `refs/remotes/<remote>/main`
+already contains; and it refuses rather than repairing when the ledger or a
+present tag disagrees. Before pushing any ref it proves, through the publisher's
+own validators, the ledger-derived target, the release-tagger identity, the
+source commit's committer instant and the exact `Platform release <tag> from
+<source>` message, then re-walks the complete post-floor ledger. It never
+deletes, moves or force-updates a ref, never touches a Release, and leaves the
+owner the API actor; the annotation claims no bot action and no signed tag.
+Preparing every missing tag in one run is no general tag-creation exception; the
+published backlog is still drained one edge at a time below. The message is
+accepted in exactly the two encodings git produces for it — the publisher's
+unterminated form and `git tag -a -m`'s single trailing newline — nothing
+looser. The finite issue #369 edges, ledger-derived and never allocated by this
+table:
 
 | Tag | Historical source |
 |---|---|
