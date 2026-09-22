@@ -544,6 +544,22 @@ def _validate_unpublished_fragment_edit(
     return head_intent
 
 
+def _exact_tag_message(actual: object, expected: str) -> bool:
+    """Accept only the two encodings git itself produces for one exact message.
+
+    The publisher creates its tag object through the REST API and stores the
+    message with no terminator; ``git tag -a -m`` stores the identical text
+    with git's canonical single trailing newline. Both spell the same
+    message, and the release binding is the target commit, the tagger
+    identity and the tagger instant rather than this descriptive text, so
+    refusing the newline form would permanently strand an otherwise exact
+    owner-prepared tag against an immutable tag ruleset. Nothing looser is
+    admitted: two terminators, a leading newline, CRLF, trailing spaces or
+    any other text difference still fail closed.
+    """
+    return isinstance(actual, str) and actual in (expected, expected + "\n")
+
+
 def _platform_tag_boundaries(repository: Path) -> tuple[TagBoundary, ...]:
     raw = _git(repository, "tag", "--list", "v*")
     names = raw.splitlines() if raw else []
@@ -596,7 +612,7 @@ def _platform_tag_boundaries(repository: Path) -> tuple[TagBoundary, ...]:
             or tagger_name != RELEASE_TAGGER_NAME
             or tagger_email != f"<{RELEASE_TAGGER_EMAIL}>"
             or tagger_date != expected_date
-            or message != expected_message
+            or not _exact_tag_message(message, expected_message)
         ):
             raise ContractError(f"platform tag {name} metadata is not exact")
         boundaries.append(TagBoundary(version, name, source_sha))
@@ -2062,7 +2078,7 @@ def validate_tag_record(
     target = _object(tag_record.get("object"), "annotated tag target")
     if target.get("type") != "commit" or target.get("sha") != source_sha:
         raise ContractError("annotated tag target is not the exact source commit")
-    if tag_record.get("message") != message:
+    if not _exact_tag_message(tag_record.get("message"), message):
         raise ContractError("annotated tag message is not exact")
     if (
         tagger_name != "github-actions[bot]"

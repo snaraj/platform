@@ -1797,6 +1797,46 @@ class ImmutableMetadataTests(unittest.TestCase):
             ):
                 MODULE.validate_tag_record(changed_ref, changed_tag, **expected)
 
+    def test_tag_message_accepts_only_gits_two_canonical_encodings(self):
+        """``git tag -a -m`` terminates the message; the REST publisher does not.
+
+        Both spell one exact message. Every other byte difference — a second
+        terminator, a leading newline, CRLF, trailing space, different text —
+        must still refuse, because the acceptance is an encoding allowance and
+        never a substring or prefix match.
+        """
+        for accepted in (self.MESSAGE, self.MESSAGE + "\n"):
+            ref, tag = exact_tag_records(
+                self.TAG, self.SOURCE, accepted, self.DATE
+            )
+            with self.subTest(accepted=accepted):
+                MODULE.validate_tag_record(ref, tag, **self.tag_expected())
+        for refused in (
+            self.MESSAGE + "\n\n",
+            "\n" + self.MESSAGE,
+            self.MESSAGE + "\r\n",
+            self.MESSAGE.replace("\n", "") + "\n ",
+            self.MESSAGE + " ",
+            self.MESSAGE.replace("from", "FROM"),
+            self.MESSAGE[:-1],
+            self.MESSAGE + "\nforeign",
+            "",
+        ):
+            ref, tag = exact_tag_records(
+                self.TAG, self.SOURCE, refused, self.DATE
+            )
+            with self.subTest(refused=refused), self.assertRaises(
+                MODULE.ContractError
+            ):
+                MODULE.validate_tag_record(ref, tag, **self.tag_expected())
+        for foreign in (None, 3, [self.MESSAGE], {"message": self.MESSAGE}):
+            ref, tag = exact_tag_records(self.TAG, self.SOURCE, "", self.DATE)
+            tag["message"] = foreign
+            with self.subTest(foreign=foreign), self.assertRaises(
+                MODULE.ContractError
+            ):
+                MODULE.validate_tag_record(ref, tag, **self.tag_expected())
+
     def test_release_metadata_and_zero_asset_inventory_are_exact(self):
         exact = self.release()
         MODULE.validate_release_record(
@@ -3926,6 +3966,49 @@ class GitTransitionTests(unittest.TestCase):
                 head = self.commit(root, operation + " an existing fragment")
                 with self.assertRaises(MODULE.ContractError):
                     MODULE.validate_transition(root, base, head, first_parent=True)
+
+    def test_ledger_walk_accepts_a_newline_terminated_owner_prepared_tag(self):
+        """An owner tag made with ``git tag -a -m`` must still walk the ledger.
+
+        ``for-each-ref %(contents)`` returns git's canonical terminator, so a
+        byte-exact comparison against the publisher's unterminated message
+        stranded ten immutable owner-prepared tags in issue #317. Both
+        encodings walk; everything else still refuses, and the refusal is
+        proved here on real Git objects rather than on a REST record.
+        """
+        for message_suffix, accepted in (("", True), ("\n", True),
+                                         ("\n\n", False), (" ", False),
+                                         ("\r\n", False)):
+            with self.subTest(suffix=repr(message_suffix)), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                floor = self.initialize(root)
+                head = self.add_fragment(root, 317, "backlog", "Backlog edge.")
+                first = MODULE.next_version(
+                    MODULE.Version.parse(
+                        MODULE.TAG_LEDGER_FLOOR_TAG.removeprefix("v")
+                    )
+                )
+                self.tag(
+                    root,
+                    first.tag,
+                    head,
+                    message=(
+                        f"Platform release {first.tag} from {head}"
+                        + message_suffix
+                    ),
+                )
+                with mock.patch.object(MODULE, "TAG_LEDGER_FLOOR_SHA", floor):
+                    if accepted:
+                        ledger = MODULE._platform_tag_boundaries(root)
+                        self.assertEqual(
+                            [boundary.tag for boundary in ledger],
+                            [MODULE.TAG_LEDGER_FLOOR_TAG, first.tag],
+                        )
+                        self.assertEqual(ledger[-1].source_sha, head)
+                    else:
+                        with self.assertRaises(MODULE.ContractError):
+                            MODULE._platform_tag_boundaries(root)
 
     def test_one_still_unpublished_fragment_can_be_edited_in_place(self):
         with tempfile.TemporaryDirectory() as temporary:

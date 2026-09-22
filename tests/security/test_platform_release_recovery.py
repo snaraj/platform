@@ -458,6 +458,13 @@ class RecoverySelectionTests(unittest.TestCase):
                 with mock.patch.object(R, "prove_release", side_effect=prior), \
                         mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
                     self.assertEqual(R.selection(ROOT, self.prepared_api(index), bound(), supplied), value)
+                # An owner tag written with `git tag -a -m` carries git's own
+                # single terminator; the same edge must still be selectable.
+                terminated = self.prepared_api(index)
+                terminated.records[f"/git/tags/{TREE}"]["message"] += "\n"
+                with mock.patch.object(R, "prove_release", side_effect=prior), \
+                        mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
+                    self.assertEqual(R.selection(ROOT, terminated, bound(), supplied), value)
                 for change in ("absent", "lightweight", "source", "message", "tagger", "instant", "fetched"):
                     api = self.prepared_api(index)
                     ref = api.records[f"/git/ref/tags/{value['tag']}"]
@@ -469,7 +476,7 @@ class RecoverySelectionTests(unittest.TestCase):
                     elif change == "source":
                         annotated["object"]["sha"] = SOURCE
                     elif change == "message":
-                        annotated["message"] += "\n"
+                        annotated["message"] += "\n\n"
                     elif change == "tagger":
                         annotated["tagger"]["name"] = "other"
                     elif change == "instant":
