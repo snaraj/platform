@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -222,13 +223,15 @@ class RecoveryTreeTests(unittest.TestCase):
     def test_frozen_public_source_and_workflow_fingerprint(self):
         # This fingerprint was derived from the separately captured protected
         # Git trees and public run records, not computed from policy at runtime.
-        # It moved once, for issue #317's reviewed extension of the window from
-        # three edges to eleven; FrozenWindowTests re-derives every field it
+        # It has moved twice, for issue #317's reviewed extension of the window
+        # from three edges to eleven and for issue #391's twelfth edge and
+        # v0.1.81 executor pin; FrozenWindowTests re-derives every field it
         # covers from the repository, so this line is a tripwire on the
-        # reviewed list rather than the only thing standing behind it.
+        # reviewed list rather than the only thing standing behind it. The run
+        # IDs and the pin, which Git cannot re-derive, are covered here alone.
         value = {"sources": R.E.HISTORICAL_RELEASES, "workflows": R.E.HISTORICAL_WORKFLOWS}
         self.assertEqual(hashlib.sha256(R.canonical(value).encode()).hexdigest(),
-                         "66afb0139f2187e4e75b8071187d6c454600a4ac269c1e9677074c5270301d01")
+                         "c9b43c48ffb56cc641459ac341c92fc5c7af2bd9c046acae43d79ffe9f04a7f1")
         self.assertEqual((R.TERMINAL_TREE, R.TERMINAL_TAG_OBJECT, R.TERMINAL_RELEASE_ID,
                           R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN),
                          ("db18c40ece8fa91f9dfabb7cb99a833a34a30505",
@@ -314,12 +317,12 @@ class FrozenWindowTests(unittest.TestCase):
         return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
                               capture_output=True, text=True, timeout=60).stdout.strip()
 
-    def test_the_window_is_eleven_contiguous_edges_ending_before_this_change(self):
+    def test_the_window_is_twelve_contiguous_edges_ending_before_this_change(self):
         window = R.E.HISTORICAL_RELEASES
-        self.assertEqual(len(window), 11)
+        self.assertEqual(len(window), 12)
         tags = [f"v0.1.{81 + index}" for index in range(len(window))]
         self.assertEqual(tags[0], R.E.FIRST_V4_TAG)
-        self.assertEqual(tags[-1], "v0.1.91")
+        self.assertEqual(tags[-1], "v0.1.92")
         previous = R.E.TERMINAL_V3_SOURCE
         for tag, entry in zip(tags, window):
             self.assertIs(R.E.historical_release(tag), entry)
@@ -357,6 +360,21 @@ class FrozenWindowTests(unittest.TestCase):
                         check=True, capture_output=True, timeout=60,
                     ).stdout
                     self.assertEqual(hashlib.sha256(blob).hexdigest(), digest)
+
+    def test_the_runbook_table_names_exactly_the_window_it_documents(self):
+        """A stale table is a false map of a window nothing can re-publish."""
+        runbook = (ROOT / "docs/runbooks/platform-source-releases.md").read_text()
+        section = runbook.split("## Finite historical-source recovery\n", 1)[1]
+        section = section.split("### Owner-prepared historical tags", 1)[0]
+        rows = re.findall(
+            r"^\| `([0-9a-f]{40})` \| `([0-9]+)` / `([0-9]+)` \| `([^`]+)` \|$", section, re.M
+        )
+        self.assertEqual(rows, [(entry["source_sha"], str(entry["main_run_id"]),
+                                 str(entry["codeql_run_id"]),
+                                 entry["fragment_path"].removeprefix("changelog.d/"))
+                                for entry in R.E.HISTORICAL_RELEASES])
+        # The pin is a published fact a reader must be able to look up.
+        self.assertIn("`executor_sha`", runbook)
 
     def test_a_named_inventory_must_be_known_and_complete(self):
         entry = R.E.HISTORICAL_RELEASES[0]
@@ -928,7 +946,7 @@ class RecoveryCLITests(unittest.TestCase):
             arguments = execute.call_args.args[0]
             for flag, expected in (("--certificate-identity", "https://github.com/snaraj/platform/.github/workflows/platform-release-recovery.yml@refs/heads/main"),
                                    ("--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"),
-                                   ("--certificate-github-workflow-sha", SOURCE),
+                                   ("--certificate-github-workflow-sha", value["execution"]["source_sha"]),
                                    ("--certificate-github-workflow-trigger", "workflow_dispatch"), ("--timeout", "30s")):
                 self.assertEqual(arguments[arguments.index(flag) + 1], expected)
             self.assertTrue(execute.call_args.kwargs["check"])

@@ -18,6 +18,15 @@ C = load_script("ci/platform_release_contract.py", module_name="release_v4_contr
 E = C.EPOCH
 EXECUTOR = "e" * 40
 EXECUTOR_TREE = "f" * 40
+# v0.1.81 is the one frozen edge whose published identity records an executor
+# the window later froze as a source, so its fixtures must carry the pinned
+# fact rather than a synthetic executor: with the pin in force nothing else
+# validates for that tag (issue #391).
+PINNED_TAG = "v0.1.81"
+PINNED_EXECUTOR = E.PINNED_EXECUTIONS[PINNED_TAG]["executor_sha"]
+PINNED_RELEASE_ID = E.PINNED_EXECUTIONS[PINNED_TAG]["release_id"]
+IDENTITY_FIXTURE = (Path(__file__).resolve().parent / "fixtures_release_identity"
+                    / "v0.1.81-platform-release-identity.v4.json")
 # Derived from the frozen window's own length so the fixtures follow it when a
 # reviewed edge is added, rather than silently testing an already-frozen tag as
 # if it were still ordinary.
@@ -38,7 +47,9 @@ def evidence(recovering=True):
     frozen = E.HISTORICAL_RELEASES[0]
     source = frozen["source_sha"] if recovering else EXECUTOR
     tree = frozen["tree_sha"] if recovering else EXECUTOR_TREE
-    tag = "v0.1.81" if recovering else FIRST_ORDINARY_V4_TAG
+    tag = PINNED_TAG if recovering else FIRST_ORDINARY_V4_TAG
+    executor = PINNED_EXECUTOR if recovering else EXECUTOR
+    release_id = PINNED_RELEASE_ID if recovering else 300
     original_ci = main_ci(source, frozen["main_run_id"] if recovering else 400)
     return {
         "schema": "https://snaraj.dev/schemas/platform-release-identity/v4",
@@ -49,12 +60,12 @@ def evidence(recovering=True):
                         "peeled_commit": frozen["parent_sha"] if recovering else E.HISTORICAL_RELEASES[-1]["source_sha"]},
         "changelog": {"fragment_path": frozen["fragment_path"] if recovering else "changelog.d/1-example.md",
                       "fragment_sha256": "sha256:" + (frozen["fragment_sha256"] if recovering else "a" * 64)},
-        "release": {"id": 300, "asset_count": 2, "draft": False, "immutable": True,
+        "release": {"id": release_id, "asset_count": 2, "draft": False, "immutable": True,
                     "prerelease": False, "tag_name": tag, "target_commitish": "main" if recovering else source},
         "main_ci": original_ci,
-        "execution": {"source_sha": EXECUTOR, "tree_sha": EXECUTOR_TREE, "main_ci": main_ci(EXECUTOR, 400)},
+        "execution": {"source_sha": executor, "tree_sha": EXECUTOR_TREE, "main_ci": main_ci(executor, 400)},
         "platform_release": {
-            "event": "workflow_dispatch" if recovering else "workflow_run", "head_sha": EXECUTOR,
+            "event": "workflow_dispatch" if recovering else "workflow_run", "head_sha": executor,
             "ref": "refs/heads/main", "run_id": 500, "run_attempt": 1,
             "workflow": ".github/workflows/platform-release-recovery.yml" if recovering else ".github/workflows/platform-release.yml",
         },
@@ -226,6 +237,108 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             with self.subTest(argv=argv), mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new_callable=io.StringIO):
                 self.assertEqual(E.main(), 1)
 
+    def frozen_evidence(self, index):
+        """Evidence for another frozen edge, so the unpinned rule is exercised.
+
+        The generic fixture is v0.1.81, the one edge carrying a pin; without a
+        second edge the membership refusal could be deleted and still pass.
+        """
+        frozen = E.HISTORICAL_RELEASES[index]
+        tag = f"v0.1.{81 + index}"
+        value = evidence()
+        value["tag"].update(name=tag, peeled_commit=frozen["source_sha"])
+        value["release"].update(id=300 + index, tag_name=tag)
+        value["predecessor"] = {"tag": f"v0.1.{80 + index}", "peeled_commit": frozen["parent_sha"]}
+        value["source"].update(merge_sha=frozen["source_sha"], tree_sha=frozen["tree_sha"])
+        value["changelog"] = {"fragment_path": frozen["fragment_path"],
+                              "fragment_sha256": "sha256:" + frozen["fragment_sha256"]}
+        value["main_ci"] = main_ci(frozen["source_sha"], frozen["main_run_id"])
+        value["execution"] = {"source_sha": EXECUTOR, "tree_sha": EXECUTOR_TREE,
+                              "main_ci": main_ci(EXECUTOR, 400)}
+        value["platform_release"]["head_sha"] = EXECUTOR
+        return value
+
+    def test_a_frozen_pin_is_a_published_fact_and_never_a_forward_allowance(self):
+        # Exactly one edge is pinned, at exactly one value. Offline code cannot
+        # ask GitHub whether a Release exists, so the reviewed table is the
+        # control and this equality is the tripwire on it: a second pin, or a
+        # moved one, is a deliberate edit here and in the window fingerprint.
+        self.assertEqual(E.PINNED_EXECUTIONS, {
+            "v0.1.81": {"release_id": 387789735,
+                        "executor_sha": "10ee0a67144675630456daafeb002755aba653d4"},
+        })
+        entry = dict(E.HISTORICAL_RELEASES[0])
+        self.assertEqual(E.frozen_executor(PINNED_TAG, entry), PINNED_EXECUTOR)
+        for change in ({"executor_sha": "a" * 40}, {"executor_sha": PINNED_EXECUTOR.upper()},
+                       {"executor_sha": None}, {"executor_sha": 0}, {"extra": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                E.frozen_executor(PINNED_TAG, {**entry, **change})
+        with self.assertRaisesRegex(ValueError, "drops its recorded executor pin"):
+            E.frozen_executor(PINNED_TAG, {k: v for k, v in entry.items() if k != "executor_sha"})
+        for recorded in ({"executor_sha": PINNED_EXECUTOR},
+                         {"release_id": True, "executor_sha": PINNED_EXECUTOR},
+                         {"release_id": 0, "executor_sha": PINNED_EXECUTOR},
+                         {"release_id": PINNED_RELEASE_ID, "executor_sha": PINNED_EXECUTOR, "extra": 1}):
+            with self.subTest(recorded=recorded), mock.patch.dict(
+                    E.PINNED_EXECUTIONS, {PINNED_TAG: recorded}), self.assertRaises(ValueError):
+                E.frozen_executor(PINNED_TAG, entry)
+        # Every other edge is unpinned, and a pin cannot be granted to one no
+        # published Release records — the twelfth edge frozen here included.
+        for index in range(1, len(E.HISTORICAL_RELEASES)):
+            tag = f"v0.1.{81 + index}"
+            other = dict(E.HISTORICAL_RELEASES[index])
+            self.assertIsNone(E.frozen_executor(tag, other))
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "no published Release"):
+                E.frozen_executor(tag, {**other, "executor_sha": PINNED_EXECUTOR})
+
+    def test_the_window_sweep_refuses_an_unbacked_pin_for_every_entry_point(self):
+        window = E.HISTORICAL_RELEASES
+        E.validate_window()
+        cases = {
+            "pinned unpublished edge": (*window[:-1], {**window[-1], "executor_sha": PINNED_EXECUTOR}),
+            "pin dropped": tuple({k: v for k, v in entry.items() if k != "executor_sha"}
+                                 for entry in window),
+            "foreign field": ({**window[0], "extra": 1}, *window[1:]),
+        }
+        for name, mutated in cases.items():
+            with self.subTest(case=name), mock.patch.object(E, "HISTORICAL_RELEASES", mutated), \
+                    self.assertRaises(ValueError):
+                E.validate_window()
+        with mock.patch.dict(E.PINNED_EXECUTIONS, {"v0.1.70": {"release_id": 1, "executor_sha": "a" * 40}}), \
+                self.assertRaisesRegex(ValueError, "names no frozen edge"):
+            E.validate_window()
+
+    def test_the_published_v0_1_81_identity_validates_only_through_its_pin(self):
+        raw = IDENTITY_FIXTURE.read_bytes()
+        # The digest the REST record reports for the immutable asset: an edited
+        # copy of these bytes fails here before it can prove anything.
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "4e9cfb1bdbdd27cf8fac42905f5832e3f24a5a24fe2c6636cf63cdabb95db119")
+        published = json.loads(raw)
+        self.assertEqual(published["tag"]["name"], PINNED_TAG)
+        self.assertEqual(published["execution"]["source_sha"], PINNED_EXECUTOR)
+        self.assertEqual(published["release"]["id"], PINNED_RELEASE_ID)
+        E.validate_execution(published)
+        unpinned = tuple({k: v for k, v in entry.items() if k != "executor_sha"}
+                         for entry in E.HISTORICAL_RELEASES)
+        # The rule this change replaces — the same window with no pin — refuses
+        # these exact published bytes, because the executor they record became
+        # v0.1.91's frozen source. The pinned path is what admits them.
+        with mock.patch.object(E, "HISTORICAL_RELEASES", unpinned), \
+                mock.patch.dict(E.PINNED_EXECUTIONS, {}, clear=True), \
+                self.assertRaisesRegex(ValueError, "historical execution"):
+            E.validate_execution(published)
+        moved = ({**E.HISTORICAL_RELEASES[0], "executor_sha": "a" * 40}, *E.HISTORICAL_RELEASES[1:])
+        with mock.patch.object(E, "HISTORICAL_RELEASES", moved), \
+                mock.patch.dict(E.PINNED_EXECUTIONS,
+                                {PINNED_TAG: {"release_id": PINNED_RELEASE_ID, "executor_sha": "a" * 40}}), \
+                self.assertRaisesRegex(ValueError, "historical execution"):
+            E.validate_execution(published)
+        # The pin binds the Release that recorded it, not just the SHA.
+        with self.assertRaisesRegex(ValueError, "historical execution"):
+            E.validate_execution({**published,
+                                  "release": {**published["release"], "id": PINNED_RELEASE_ID + 1}})
+
     def test_execution_semantics_refuse_unknown_fields_and_historical_executors(self):
         exact = evidence()
         changes = [({"extra": True}, "execution"), ({"extra": True}, "main_ci")]
@@ -258,12 +371,29 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             value["source"]["merge_sha"] = "a" * 40
             with self.subTest(source=recovering), self.assertRaises(ValueError):
                 E.validate_execution(value)
+        # The pinned edge admits exactly the executor its published identity
+        # records; the terminal checkpoint and every other frozen source still
+        # refuse, so the pin narrows the membership rule rather than relaxing it.
+        E.validate_execution(copy.deepcopy(exact))
         for sha in (E.TERMINAL_V3_SOURCE, *(row["source_sha"] for row in E.HISTORICAL_RELEASES)):
+            if sha == PINNED_EXECUTOR:
+                continue
             value = copy.deepcopy(exact)
             value["execution"]["source_sha"] = sha
             value["execution"]["main_ci"]["head_sha"] = sha
             value["platform_release"]["head_sha"] = sha
             with self.subTest(sha=sha), self.assertRaisesRegex(ValueError, "historical execution"):
+                E.validate_execution(value)
+        # An UNPINNED frozen edge keeps the untouched membership refusal: a
+        # frozen source can never present itself as another edge's executor.
+        unpinned = self.frozen_evidence(1)
+        E.validate_execution(copy.deepcopy(unpinned))
+        for sha in (E.TERMINAL_V3_SOURCE, *(row["source_sha"] for row in E.HISTORICAL_RELEASES)):
+            value = copy.deepcopy(unpinned)
+            value["execution"]["source_sha"] = sha
+            value["execution"]["main_ci"]["head_sha"] = sha
+            value["platform_release"]["head_sha"] = sha
+            with self.subTest(unpinned=sha), self.assertRaisesRegex(ValueError, "historical execution"):
                 E.validate_execution(value)
         for key, replacement in (("tree_sha", "a" * 40), ("main_ci", main_ci(EXECUTOR, 401))):
             value = evidence(False)
@@ -276,8 +406,9 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                              (FIRST_ORDINARY_V4_TAG, 4)):
             self.assertEqual(E.identity(tag)["version"], version)
         # The whole frozen window carries the recovery subject, not just its
-        # first three edges: issue #317 extended it through v0.1.91.
-        self.assertEqual(LAST_FROZEN_TAG, "v0.1.91")
+        # first three edges: issue #317 extended it through v0.1.91 and issue
+        # #391 freezes the twelfth edge, v0.1.92.
+        self.assertEqual(LAST_FROZEN_TAG, "v0.1.92")
         for tag in FROZEN_TAGS:
             selected = E.identity(tag)
             self.assertEqual(selected["publisher_workflow"], ".github/workflows/platform-release-recovery.yml")
@@ -411,12 +542,18 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             return expected["source"]["tree_sha"] if args[-1] == source + "^{tree}" else EXECUTOR_TREE
         with mock.patch.object(C, "_exact_commit", side_effect=lambda _repo, sha, _field: sha), mock.patch.object(C, "_git", side_effect=git), mock.patch.object(C, "discover_transition_window", return_value=window):
             kwargs = dict(expected_base_sha=window.base_sha, expected_base_tag=window.base_tag,
-                tag_object_sha="b" * 40, release_id=300, main_run_id=expected["main_ci"]["run_id"],
+                tag_object_sha="b" * 40, release_id=PINNED_RELEASE_ID,
+                main_run_id=expected["main_ci"]["run_id"],
                 main_run_attempt=1, platform_run_id=500, platform_run_attempt=1,
                 github_repository="snaraj/platform", github_repository_id=1327645656,
-                execution_sha=EXECUTOR, execution_main_run_id=400, execution_main_run_attempt=1,
+                # The pinned edge renders only its recorded executor and
+                # Release; a re-render claiming another one is refused.
+                execution_sha=PINNED_EXECUTOR, execution_main_run_id=400, execution_main_run_attempt=1,
             )
-            rendered = C.render_release_identity(ROOT, source, "v0.1.81", **kwargs)
+            rendered = C.render_release_identity(ROOT, source, PINNED_TAG, **kwargs)
+            for change in ({"execution_sha": EXECUTOR}, {"release_id": 300}):
+                with self.subTest(pinned=change), self.assertRaisesRegex(C.ContractError, "release identity epoch"):
+                    C.render_release_identity(ROOT, source, PINNED_TAG, **{**kwargs, **change})
             for change in ({"github_repository": None, "github_repository_id": None},
                            {"execution_main_run_id": None}, {"execution_main_run_id": True},
                            {"execution_main_run_id": 0}, {"execution_main_run_attempt": None},

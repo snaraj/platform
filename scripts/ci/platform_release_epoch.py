@@ -66,11 +66,31 @@ HISTORICAL_WORKFLOWS = {
             "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
     },
 }
+# A published edge's own executor can later become a frozen source, because the
+# backlog drains behind main: the run that published v0.1.81 executed at
+# 10ee0a67, which issue #317 then froze as v0.1.91's source. The membership
+# refusal in validate_execution exists to stop a REPLAY of an old workflow, so
+# it is never relaxed; the recorded executor of an ALREADY PUBLISHED edge is
+# pinned here instead, read from that edge's immutable identity asset. Each row
+# names the Release the fact was read from, so an edge that has no published
+# Release has no executor to record and a pin can never become a forward
+# allowance for one the publisher has not taken yet (issue #391).
+PINNED_EXECUTIONS = {
+    "v0.1.81": {
+        "release_id": 387789735,
+        "executor_sha": "10ee0a67144675630456daafeb002755aba653d4",
+    },
+}
+FROZEN_EDGE_FIELDS = frozenset({
+    "source_sha", "tree_sha", "parent_sha", "fragment_path", "fragment_sha256",
+    "main_run_id", "codeql_run_id", "workflows",
+})
 # These are published protected-main source/CI records, not caller-selected
 # replay inputs or allocated tags. The ordinary ledger derives each next tag.
 # The window is a frozen reviewed list and never a computed range: issue #369
-# admitted the first three edges, and issue #317 freezes the eight that the
-# stalled publisher left behind, ending at the last merge before this one.
+# admitted the first three edges, issue #317 froze the eight the stalled
+# publisher left behind, and issue #391 freezes the twelfth, the merge that
+# repaired the derivation, because this change moves main past it.
 HISTORICAL_RELEASES = (
     {
         "source_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
@@ -81,6 +101,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34283118915,
         "codeql_run_id": 34283118636,
         "workflows": "v3-publisher",
+        "executor_sha": "10ee0a67144675630456daafeb002755aba653d4",
     },
     {
         "source_sha": "9cd79f1e69cfa00eb5467822831056101629c8f8",
@@ -182,6 +203,16 @@ HISTORICAL_RELEASES = (
         "codeql_run_id": 35684876102,
         "workflows": "codeql-4-38-1",
     },
+    {
+        "source_sha": "f71fc1f37f9ca1883e10286a13132cd70a17cf9f",
+        "tree_sha": "3b1b144a12247006cb0ef065e1e2f1d4fe3d040b",
+        "parent_sha": "10ee0a67144675630456daafeb002755aba653d4",
+        "fragment_path": "changelog.d/317-release-backlog-automation.md",
+        "fragment_sha256": "1d0cd44be2be75974f003da46df4116f8fd1461569164e45de4e4b9cb53ada58",
+        "main_run_id": 35773664240,
+        "codeql_run_id": 35773664214,
+        "workflows": "codeql-4-38-1",
+    },
 )
 
 
@@ -198,6 +229,34 @@ def historical_workflows(frozen: dict) -> dict[str, str]:
     if inventory is None or set(inventory) != set(HISTORICAL_WORKFLOW_PATHS):
         raise ValueError("frozen edge names no complete workflow inventory")
     return inventory
+
+
+def frozen_executor(tag: str, frozen: dict) -> str | None:
+    """Resolve one frozen edge's pinned executor, or refuse an unbacked pin.
+
+    The shape is closed in both directions. An entry is exactly the reviewed
+    fields, or exactly those plus `executor_sha`; a pin is admitted only for a
+    tag PINNED_EXECUTIONS records, with that exact value, so the field can only
+    ever transcribe an immutable published identity. Dropping a recorded pin
+    refuses here as well: losing it silently would put an already published
+    edge back under the membership refusal that issue #391 repairs.
+    """
+    if set(frozen) not in (set(FROZEN_EDGE_FIELDS),
+                           set(FROZEN_EDGE_FIELDS) | {"executor_sha"}):
+        raise ValueError("frozen edge fields are foreign")
+    recorded = PINNED_EXECUTIONS.get(tag)
+    pinned = frozen.get("executor_sha")
+    if pinned is None:
+        if recorded is not None:
+            raise ValueError("frozen edge drops its recorded executor pin")
+        return None
+    if (recorded is None
+            or set(recorded) != {"release_id", "executor_sha"}
+            or type(recorded["release_id"]) is not int or recorded["release_id"] <= 0
+            or pinned != recorded["executor_sha"]
+            or re.fullmatch(r"[0-9a-f]{40}", pinned) is None):
+        raise ValueError("frozen edge pins an executor no published Release records")
+    return pinned
 
 
 def version(tag: str) -> tuple[int, int, int]:
@@ -228,6 +287,27 @@ def historical_release(tag: str) -> dict | None:
             return source
         candidate = next_tag(candidate)
     return None
+
+
+def validate_window() -> None:
+    """Refuse this module outright if a frozen edge is not a reviewed shape.
+
+    Sweeping the whole window at import, rather than only the edge a caller
+    happens to select, means a pin added to an edge the publisher has not taken
+    yet fails every entry point instead of waiting for that edge's turn.
+    """
+    tags = []
+    candidate = FIRST_V4_TAG
+    for frozen in HISTORICAL_RELEASES:
+        historical_workflows(frozen)
+        frozen_executor(candidate, frozen)
+        tags.append(candidate)
+        candidate = next_tag(candidate)
+    if set(PINNED_EXECUTIONS) - set(tags):
+        raise ValueError("an executor pin names no frozen edge")
+
+
+validate_window()
 
 
 def release_target(tag: str, source_sha: str) -> str:
@@ -361,8 +441,22 @@ def validate_execution(evidence: dict) -> None:
     ):
         raise ValueError("publication execution main CI is foreign")
     source = evidence["source"]
-    frozen = historical_release(evidence["tag"]["name"])
+    tag = evidence["tag"]["name"]
+    frozen = historical_release(tag)
     if frozen is not None:
+        pinned = frozen_executor(tag, frozen)
+        if pinned is None:
+            # Unchanged for every unpinned edge: a frozen source can never
+            # present itself as the current executor of another edge, which is
+            # what a replay of an old workflow would look like.
+            foreign_executor = execution["source_sha"] in {
+                entry["source_sha"] for entry in HISTORICAL_RELEASES}
+        else:
+            # A pin is exact equality with the fact this edge's own immutable
+            # Release already records, so it is strictly narrower than the
+            # membership refusal it replaces for that one edge.
+            foreign_executor = (execution["source_sha"] != pinned
+                                or evidence["release"]["id"] != PINNED_EXECUTIONS[tag]["release_id"])
         if (
             source["merge_sha"] != frozen["source_sha"]
             or source["tree_sha"] != frozen["tree_sha"]
@@ -374,7 +468,7 @@ def validate_execution(evidence: dict) -> None:
             or evidence["main_ci"]["run_id"] != frozen["main_run_id"]
             or evidence["main_ci"]["run_attempt"] != 1
             or evidence["platform_release"]["run_attempt"] != 1
-            or execution["source_sha"] in {entry["source_sha"] for entry in HISTORICAL_RELEASES}
+            or foreign_executor
             or execution["source_sha"] == TERMINAL_V3_SOURCE
         ):
             raise ValueError("historical execution or original evidence is foreign")
