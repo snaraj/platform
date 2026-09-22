@@ -53,6 +53,9 @@ PINNED_CRON_INVENTORY = {
     "scheduled-security.yml": ("19 10 * * 6",),
     # Daily read-only release metadata audit; no build, artifact or deployment.
     "software-currency.yml": ("41 10 * * *",),
+    # Daily on purpose (issue #317): a stalled publisher queued ten merges for
+    # two weeks. One bounded API sweep per day, no build and no artifact.
+    "release-backlog.yml": ("17 11 * * *",),
 }
 
 _KEY_LINE = re.compile(
@@ -362,6 +365,7 @@ class ActionsZeroSpendExposureTests(unittest.TestCase):
         names = {path.name for path in workflow_files(WORKFLOW_ROOT)}
         self.assertEqual(set(PINNED_CRON_INVENTORY), {
             "codeql.yml",
+            "release-backlog.yml",
             "scheduled-security.yml",
             "software-currency.yml",
         })

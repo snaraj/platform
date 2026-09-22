@@ -133,10 +133,10 @@ data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
 incomplete edge once and binds its source, tag, predecessor, executor, repository
 object, run ID, attempt and executor CI in a canonical receipt. Every later job
 rechecks that receipt, original source CI, successful current-executor main CI
-and CodeQL, the current main ref, and the complete immutable predecessor. A
-fresh dispatch cannot overtake a still-running original publisher. Only attempt
-1 is admitted; rerunning jobs cannot borrow an earlier settings attestation or
-selection. Dispatches share one non-canceling concurrency group.
+and CodeQL, the current main ref, and the complete immutable predecessor. A fresh
+dispatch cannot overtake a still-running original publisher; only attempt 1 is
+admitted, no rerun borrows an earlier attestation or selection, and dispatches
+share one non-canceling concurrency group.
 
 New v4 identity assets keep original source/main-CI fields separate from
 `execution.source_sha`, `execution.tree_sha`, `execution.main_ci` and the actual
@@ -165,7 +165,29 @@ stop delivery. No token-scope expansion or automatic tag fallback is permitted.
 
 ### Owner-prepared historical tags
 
-Only the owner may prepare the next exact annotated tag for this closed window:
+Only the owner may prepare the next exact annotated tag, and only with the
+owner's own credentials: CI never creates one (issue #375).
+Agents never create tag objects or refs.
+The owner must not create the Release or its assets.
+One command derives every missing tag from the immutable ledger and prepares it:
+
+```
+python3 -I -B scripts/prepare_recovery_tags.py --repository . --head origin/main --push
+```
+
+Without `--push` it prints the plan and writes nothing; it refuses inside a
+hosted runner; and it refuses rather than repairing when the ledger or a present
+tag disagrees. Before pushing any ref it proves, through the publisher's own
+validators, the ledger-derived target, the release-tagger identity, the source
+commit's committer instant and the exact `Platform release <tag> from <source>`
+message, then re-walks the complete post-floor ledger. It never deletes, moves or
+force-updates a ref, never touches a Release, and leaves the owner the API actor;
+the annotation claims no bot action and no signed tag. Only after a completed
+immutable release may the next edge be prepared; this is no general tag-creation
+exception. The message is accepted in exactly the two encodings git produces for
+it — the publisher's unterminated form and `git tag -a -m`'s single trailing
+newline — nothing looser. The finite issue #369 edges, ledger-derived and never
+allocated by this table:
 
 | Tag | Historical source |
 |---|---|
@@ -173,58 +195,38 @@ Only the owner may prepare the next exact annotated tag for this closed window:
 | `v0.1.82` | `9cd79f1e69cfa00eb5467822831056101629c8f8` |
 | `v0.1.83` | `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` |
 
-This exception becomes operative only after owner merge of its reviewed source
-and successful exact-executor main CI and CodeQL. Before each owner action,
-independently verify a single-edge packet against the existing frozen source,
-parent, tree, fragment, original main/CodeQL attempts and current executor.
-Require the exact immutable predecessor and current tag protections, no active
-publisher for the edge, and an absent ref and Release. Use the canonical
-`prove_trees`, `prove_ci`, `prove_release` and `validate_tag_record` checks;
-tag existence and a successful job alone are insufficient evidence.
+### Draining the published backlog
 
-The packet fixes the annotation object hash, exact source, message
-`Platform release <tag> from <source>`, existing release-tagger constants and
-source committer instant. The owner may reuse a verified exact dangling object
-or prepare that exact object, then create only the single absent tag reference.
-The owner remains the API actor; annotation metadata does not claim a bot action
-or a signed tag. Agents never create tag objects or refs. No temporary branch,
-lightweight tag, force update, deletion, credential or protection change is
-permitted. The owner must not create the Release or its assets. A permission
-refusal or ambiguous response stops for authoritative readback, never a retry.
+After owner merge and successful exact-executor main CI and CodeQL, keep main at
+that executor, confirm no publisher proof is in flight, prepare the missing tags
+above, and never rerun a frozen old workflow. Then dispatch once per edge:
 
-Read back the exact annotation/ref, compare the packet's object hash and peeled
-source, require Release still absent, and fetch the exact tag for local/API
-object equality. An already prepared exact tag is verified without another
-write. Prepare and verify refuse a missing or inexact tag before privileged
-jobs; the publisher independently refuses before either tag-creation POST.
-An unreferenced annotation object alone does not meet the prerequisite.
-Recovery retains all original-source/executor CI, first-attempt, settings,
-OIDC, immutable two-asset and original-publisher proofs. Only after a completed
-immutable release may the owner prepare the next edge. This is not a general
-tag-creation exception and does not extend to later ordinary releases.
+```
+gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
 
-After owner merge and successful exact-executor main CI and CodeQL:
+A lost dispatch response requires readback of matching runs, never a duplicate
+POST. After each, independently read back the annotated tag, the immutable
+non-draft/non-prerelease Release and its two assets — size/digest/canonical
+identity, Sigstore subject, issuer, actual executor SHA/event, every signed
+original attempt. Only completed success makes an edge a predecessor. When the
+window is complete, let the repair's own ordinary publisher finish, or rerun
+that whole workflow (never failed-jobs-only) if its wait timed out.
 
-1. Keep main at that executor. Confirm the prior dispatch is terminal and there
-   is no incomplete publisher proof. Do not rerun any of the frozen old
-   workflows: their source cannot acquire this repair. Complete the exact
-   owner-prepared tag prerequisite above for the oldest incomplete edge.
-2. Dispatch the no-input recovery workflow at `main` once. The Actions REST
-   dispatch endpoint, using API version `2026-03-10` and body `{"ref":"main"}`,
-   returns the new `workflow_run_id`; bind the returned ID, attempt 1, main
-   SHA and workflow path before following its jobs. A lost response requires
-   readback of matching dispatch runs, never an immediate duplicate POST.
-3. Require all jobs to succeed, then independently read back the selected
-   annotated tag, immutable non-draft/non-prerelease Release and exact two
-   assets. Verify downloaded size/digest/canonical identity, Sigstore subject,
-   issuer and actual executor SHA/event, plus all signed original run attempts.
-   Only completed success makes this edge a predecessor. Repeat steps 1–3 for
-   the next edge, at most three dispatches with actual publications.
-4. When the three predecessors are complete, let the ordinary publisher for
-   the repair's own source finish. If its bounded predecessor wait already
-   timed out, rerun that whole repaired-source workflow so every proof job
-   executes again. Do not use a failed-jobs-only rerun. Require the same final
-   tag, identity, original-attempt and immutable-Release readback.
+A publisher that died mid-upload leaves a draft with a stale identity asset pair
+and recovery refuses `draft Release asset inventory count is not exact`. Deleting
+those two assets stays an owner step: that shape is also the legitimate staged
+state immediately before publication.
+
+```
+gh api "repos/snaraj/platform/releases/<draft id>/assets" --jq '.[].id' | xargs -I{} gh api -X DELETE "repos/snaraj/platform/releases/assets/{}"
+```
+
+`release-backlog.yml` derives this same backlog daily, read-only, and records it
+as one `deploy-assurance[release-backlog]` issue carrying the pending count, the
+oldest pending source and the command above, closing it when the backlog clears.
+That job holds `issues: write` and nothing else — no contents, id-token or
+actions write, no App token, no secret — it reports and never acts.
 
 An immutable asset may become visible before its original publisher finishes.
 A reader waits for that exact attempt; a failed, cancelled, missing or unknown
