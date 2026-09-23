@@ -30,9 +30,12 @@ tag/Release transaction; OIDC signs the actual executor identity. Main-only
 first-attempt guards, shared non-canceling concurrency and a canonical
 run-bound selection prevent cross-run settings or source reuse.
 
-The [finite recovery procedure](platform-source-releases.md#finite-historical-source-recovery)
-defines the closed sources, default-target Release payload and original-run
-delivery holds. Source review requires modeled success and HTTP 403/404 denial
+The [tag-derived recovery procedure](platform-source-releases.md#tag-derived-source-recovery)
+defines the derivation, the default-target Release payload and the original-run
+delivery holds. The freeze is the owner-prepared annotated tag under the
+immutable tag ruleset, not a reviewed list in code (issue #395): every fact a
+list used to transcribe is re-derived from git and the API at run time, and one
+dispatch drains every pending edge in ledger order. Source review requires modeled success and HTTP 403/404 denial
 without broader credentials. Actual ordinary-token creation capability is
 proved only by the protected post-merge execution. A refusal stops delivery;
 it never authorizes changing App scope, a manual tag, or a replacement signed
@@ -377,9 +380,9 @@ authority unavailable to `GITHUB_TOKEN`. A disposable-repository canary must
 still prove this exact existing-tag path before Ready; documentation is not a
 substitute for observed API behavior.
 
-The separate [finite historical-source prerequisite](platform-source-releases.md#owner-prepared-historical-tags)
-permits only the owner to prepare each of the three fixed annotated tags after
-reviewed merge and fresh source, executor, predecessor and settings proofs.
+The separate [owner-prepared tag prerequisite](platform-source-releases.md#owner-prepared-historical-tags)
+permits only the owner to prepare each missing annotated tag after reviewed
+merge and fresh source, executor, predecessor and settings proofs.
 Agents never create tag objects or refs. That prerequisite retains the current
 publisher's ordinary token and its exact two authenticated assets; it does not
 inherit v0.1.0's zero-asset format or grant a general manual recovery path.

@@ -114,90 +114,106 @@ byte-identical. A created, retargeted, or replaced tag changes the key and force
 full validation before the next REST read. A Release-only state change leaves
 the validated Git ledger unchanged and repeats only the exact GET classifiers.
 
-## Finite historical-source recovery
+## Tag-derived source recovery
 
-Issue #369 admitted the first three consecutive protected-main sources after
-the immutable `v0.1.80` checkpoint; issue #317 freezes the eight the stalled
-publisher left behind, ending at the last merge before that change, issue #391
-freezes the twelfth, the merge that repaired the backlog derivation, and issue
-#393 freezes the thirteenth, the merge that derives the reader's per-run bounds
-from this list, because each change moves main past its predecessor. The window
-is a reviewed list and never a computed range: adding an edge is a reviewed
-commit, so CI can never widen it. The ledger derives their next patches; the table does not allocate
-tags. Both original workflow attempts must still be completed and successful,
-and every original workflow file, tree, parent and fragment must match the
-frozen policy in `platform_release_epoch.py`. The window spans two publisher
-revisions and three CodeQL pins, so each edge names one exact, complete
-workflow inventory there rather than sharing a single fingerprint.
+An owner-prepared annotated tag IS the freeze (issue #395). Everything the
+retired reviewed window transcribed by hand — source, tree, first parent,
+fragment path and SHA-256, the original main-CI and CodeQL run IDs, the
+workflow inventory — is bound by that tag under the immutable tag ruleset and
+re-derived at run time from git and the API. There is no table to edit, and no
+per-edge pin: adding a backlog edge is pushing its tag.
 
-| Source | Original main CI / CodeQL (attempt 1) | Fragment |
-| --- | --- | --- |
-| `060c9678e130487b27cdaec395b0f1c5d74b9240` | `34283118915` / `34283118636` | `362-obsync-private-boundary.md` |
-| `9cd79f1e69cfa00eb5467822831056101629c8f8` | `34305321734` / `34305321809` | `365-obsync-staged-readiness.md` |
-| `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` | `34638257426` / `34638258315` | `367-reserved-file-storage.md` |
-| `bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4` | `34661250611` / `34661250547` | `369-source-recovery.md` |
-| `47fc0a1fb573983d69acfc88bcf6f950899f8772` | `34667651399` / `34667651395` | `373-reserved-evidence.md` |
-| `2ad053e307e43f6dfb5015de1f1bf09c3505a832` | `34673797428` / `34673797429` | `371-owner-prepared-recovery-tags.md` |
-| `57a8807d551f19b13ee9e2caea398dbaa280296f` | `34732230714` / `34732230710` | `377-private-connector-artifact.md` |
-| `64cc95f3802c8feb8567f9b607aeac5c10d8d830` | `34789838965` / `34789838936` | `379-release-draft-tags.md` |
-| `2a597ce999979ae463bc575eb63d6d7d5a2a182d` | `34932536836` / `34932536855` | `381-codeql-4-38.md` |
-| `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` | `35548047591` / `35548047644` | `383-boot-time-recovery.md` |
-| `10ee0a67144675630456daafeb002755aba653d4` | `35684876122` / `35684876102` | `387-codeql-4-38-1.md` |
-| `f71fc1f37f9ca1883e10286a13132cd70a17cf9f` | `35773664240` / `35773664214` | `317-release-backlog-automation.md` |
-| `76f60b306d028f5a2febcbf7b35c8ab16b0dd139` | `35788330613` / `35788330655` | `391-frozen-executor-pin.md` |
+The trust root is unchanged. The owner prepares every release tag with the
+owner's own credentials, the tag ruleset is immutable with no bypass, and a
+derived edge is refused unless every derived fact re-verifies at run time:
 
-A row whose Release already exists and whose executor this window later froze
-as a source also carries that executor as `executor_sha`, recorded in
-`PINNED_EXECUTIONS` beside the Release ID it was read from. Those pins, and
-nothing else, are what keep an already published edge out of the membership
-refusal below; an edge no publisher has taken yet has no executor to pin.
+- **git-derived** (`scripts/ci/release_backlog.py`, `Edge` and
+  `published_edges`; `platform_release_contract.py`,
+  `discover_transition_window` and `validate_tag_record`): the ledger walk
+  proves each tag's tagger identity, instant and exact message, one contiguous
+  first-parent chain, and exactly one changelog fragment per adjacent edge. A
+  tag on a merge commit, on a commit main only reached through a merge, on a
+  commit past `--head`, skipping or duplicating a fragment, or leaving a gap in
+  the patch sequence refuses there.
+- **API-derived** (bounded GET-only `PublicAPI`): for each pending edge, the
+  listing for `head_sha=<source>, branch=main, event=push` must hold exactly
+  one run of `pull-request.yml` and one of `codeql.yml`, each concluded
+  `success` on its latest attempt — the same attempt the ordinary publisher
+  consumes, because `workflow_run` fires on the completed attempt. That is
+  parity with the ordinary path rather than a relaxation: `prove_ci` still
+  builds the required-jobs receipt with `build_main_ci_jobs_receipt`, the same
+  function `verify-platform-release-main-jobs.sh` runs for an ordinary release.
+- **workflow digests**: the three workflow blob digests of the source tree are
+  recorded per edge in the selection for audit. They are informational. The tag
+  binds the commit and the commit binds the tree that contains those blobs, and
+  the behavioural control is the required-jobs receipt above.
 
-| Published edge | Release | Executor pinned |
-| --- | --- | --- |
-| `v0.1.81` | `387789735` | `10ee0a67` |
-| `v0.1.82` | `394156049` | `76f60b30` |
-| `v0.1.83` | `394157866` | `76f60b30` |
-| `v0.1.84` | `394159524` | `76f60b30` |
-| `v0.1.85` | `394161048` | `76f60b30` |
-| `v0.1.86` | `394162468` | `76f60b30` |
-| `v0.1.87` | `394164673` | `76f60b30` |
-| `v0.1.88` | `394166552` | `76f60b30` |
-| `v0.1.89` | `394168254` | `76f60b30` |
+### The executor relation
 
-The current protected checkout executes the repair; the historical trees are
-data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
-incomplete edge once and binds its source, tag, predecessor, executor, repository
-object, run ID, attempt and executor CI in a canonical receipt. Every later job
-rechecks that receipt, original source CI, successful current-executor main CI
-and CodeQL, the current main ref, and the complete immutable predecessor. A fresh
-dispatch cannot overtake a still-running original publisher; only attempt 1 is
-admitted, no rerun borrows an earlier attestation or selection, and dispatches
-share one non-canceling concurrency group.
+An ordinary publication runs at the commit it releases, so `execution.source_sha`
+equals `source.merge_sha`. A recovery publication runs behind main, so its
+executor is a STRICT first-parent descendant of the edge's source that current
+protected main still contains. That relation replaces the membership refusal
+and the per-edge executor pins: one executor drains many edges and later becomes
+a source itself, which is the ordinary case rather than a replay. A replay of an
+old workflow is refused by construction, because every earlier source is an
+ancestor of the executor rather than a descendant of it, and the terminal
+`v0.1.80` source precedes every v4 source. `validate_execution` is git-free and
+refuses recovery-shaped evidence that arrives without an ancestry proof; the
+caller proves it with `platform_release_contract.executor_descends` against the
+checkout, which is pinned to current protected main.
 
 New v4 identity assets keep original source/main-CI fields separate from
 `execution.source_sha`, `execution.tree_sha`, `execution.main_ci` and the actual
-publisher run. The external tag policy selects the recovery signing subject
-only for those thirteen exact edges. Later ordinary releases use the ordinary
-subject and require source/executor equality; downloaded identity fields cannot
-select another trust root. The v1/v2/v3 schemas and existing immutable bytes are
-unchanged. Source CI and publisher attempts are verified through exact
-attempt-specific API records, including the original attempts named by the
-terminal checkpoint.
+publisher run. The signing subject follows that relation, not the tag number:
+an identity whose recorded `publisher_workflow` or `publisher_event` disagrees
+with its own executor relation is refused. The v1/v2/v3 schemas and existing
+immutable bytes are unchanged.
 
-After owner preparation of the exact annotated tag, recovery creates a draft with only
-`tag_name`, `name`, `body`, `draft:true` and `prerelease:false`. It omits
-`target_commitish` and requires GitHub's returned default-target hint to be
-exactly `main`; the tag object and peeled commit bind the historical source.
-The notes PATCH contains only `body`; the publish PATCH contains only the
-selected `tag_name` and `draft:false`, with no `target_commitish`. A staged
-record may expose the canonical tag or GitHub's temporary `untagged-<20 hex>`
-tag matching both staged asset URL tokens. The signed intended tag and exact
-annotated object remain fixed; final immutable validation accepts only that
-canonical tag and its final asset URLs. Before and after each Release or asset write, the publisher
-rechecks the unchanged tag object, source, predecessor and selected executor.
-An exact zero-asset draft may resume on a fresh dispatch. Partial assets,
-foreign custody, a moved tag, a missing settings proof or permission refusal
-stop delivery. No token-scope expansion or automatic tag fallback is permitted.
+### What one dispatch proves
+
+`prepare` walks the ledger in git, then proves with the API: the terminal v0.1.80
+checkpoint, the predecessor Release of the first pending edge in full, and each
+pending edge's owner-prepared tag and original CI. It does NOT re-prove the
+published edges in between. They are immutable, each was proved by this same
+reader as the predecessor at its own publication, and the ordinary publisher
+proves only its predecessor — so the per-run bounds are `FIXED + PER_EDGE x
+pending` and never grow with the number of releases already published. That is
+the issue #393 outage class removed rather than deferred; `per_run_bounds` and
+`selection_bytes` in `platform_release_recovery.py` state the measured costs
+they derive from, and both remain hard caps enforced on every read.
+
+`prepare` also refuses, by name, while a `platform-release.yml` run is queued or
+in progress: that closes the race between the tip merge's own publisher and the
+drain by construction.
+
+The `immutable-settings` job re-verifies the whole selection and proves the
+immutable-release repository setting ONCE per dispatch. The setting is
+repository-level and the Administration-read App token never crosses into the
+write job; a per-edge re-proof would put that token into `publish`, which is a
+permission expansion rather than a stronger control.
+
+`publish` then loops in list order: per edge `bind` (env rebound exactly as for
+an ordinary release), publish, and an independent `readback` of the new Release
+— immutable, non-draft, two assets, canonical identity, Sigstore subject and
+executor record. The first refusal stops the run; nothing is skipped. A
+zero-asset draft resumes on the next dispatch; a partial draft stays an owner
+delete. `prove_context`'s executor-equals-current-main check runs inside every
+write boundary, so a merge landing mid-drain stops the loop at the next edge
+rather than publishing against a main the executor no longer is.
+
+After owner preparation of the exact annotated tag, recovery creates a draft
+with only `tag_name`, `name`, `body`, `draft:true` and `prerelease:false`. It
+omits `target_commitish` and requires GitHub's returned default-target hint to
+be exactly `main`; the tag object and peeled commit bind the source. The notes
+PATCH contains only `body`; the publish PATCH contains only the selected
+`tag_name` and `draft:false`. A staged record may expose the canonical tag or
+GitHub's temporary `untagged-<20 hex>` tag matching both staged asset URL
+tokens. Before and after each Release or asset write, the publisher rechecks the
+unchanged tag object, source, predecessor and selected executor, and every
+refusal names the check that refused. Partial assets, foreign custody, a moved
+tag, a missing settings proof or a permission refusal stop delivery.
+No token-scope expansion or automatic tag fallback is permitted.
 
 ### Owner-prepared historical tags
 
@@ -219,71 +235,48 @@ own validators, the ledger-derived target, the release-tagger identity, the
 source commit's committer instant and the exact `Platform release <tag> from
 <source>` message, then re-walks the complete post-floor ledger. It never
 deletes, moves or force-updates a ref, never touches a Release, and leaves the
-owner the API actor; the annotation claims no bot action and no signed tag.
-Preparing every missing tag in one run is no general tag-creation exception; the
-published backlog is still drained one edge at a time below. The message is
-accepted in exactly the two encodings git produces for it — the publisher's
-unterminated form and `git tag -a -m`'s single trailing newline — nothing
-looser. The finite issue #369 edges, ledger-derived and never allocated by this
-table:
-
-| Tag | Historical source |
-|---|---|
-| `v0.1.81` | `060c9678e130487b27cdaec395b0f1c5d74b9240` |
-| `v0.1.82` | `9cd79f1e69cfa00eb5467822831056101629c8f8` |
-| `v0.1.83` | `3b7a0532ba5fe2f10037023f3e26ec5876f8d191` |
-| `v0.1.84` | `bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4` |
-| `v0.1.85` | `47fc0a1fb573983d69acfc88bcf6f950899f8772` |
-| `v0.1.86` | `2ad053e307e43f6dfb5015de1f1bf09c3505a832` |
-| `v0.1.87` | `57a8807d551f19b13ee9e2caea398dbaa280296f` |
-| `v0.1.88` | `64cc95f3802c8feb8567f9b607aeac5c10d8d830` |
-| `v0.1.89` | `2a597ce999979ae463bc575eb63d6d7d5a2a182d` |
-| `v0.1.90` | `54ac82e692fa11999fafde52f2f4fe6ea17b47b5` |
-| `v0.1.91` | `10ee0a67144675630456daafeb002755aba653d4` |
-| `v0.1.92` | `f71fc1f37f9ca1883e10286a13132cd70a17cf9f` |
-| `v0.1.93` | `76f60b306d028f5a2febcbf7b35c8ab16b0dd139` |
+owner the API actor; the annotation claims no bot action and no signed tag. The
+message is accepted in exactly the two encodings git produces for it — the
+publisher's unterminated form and `git tag -a -m`'s single trailing newline —
+nothing looser. `--head` still defaults to `origin/main`: with no frozen window
+there is nothing to pin the head to, so the tip merge's own edge gets its tag
+and drains in the same dispatch.
 
 ### Draining the published backlog
 
-After owner merge and successful exact-executor main CI and CodeQL, keep main at
-that executor, confirm no publisher proof is in flight, prepare the missing tags
-above, and never rerun a frozen old workflow. One executor drains many edges —
-the merge that froze `v0.1.92`, `76f60b30`, published eight of them, `v0.1.82`
-through `v0.1.89` — so when an executor is itself frozen as a source later, the
-pull request that freezes it pins EVERY edge it published: each edge carries the
-`executor_sha` its own already published immutable identity records, alongside
-the re-baselined exact-table tripwire and window fingerprint, in that one pull
-request. This is not a courtesy to the edge that prompted the change: an
-unpinned published edge is refused as a foreign executor, and the drain stops
-there, so pinning one and leaving its siblings only moves the outage. Every
-published edge's identity asset is committed under
-`tests/security/fixtures_release_identity/` and validated against the new
-window by the class guard in `tests/security/test_platform_release_v4.py`,
-offline, before that pull request is reviewed. Then dispatch once per edge:
+Three steps, whatever the length of the backlog:
 
-```
-gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-```
+1. Confirm no publisher run is in flight (`prepare` refuses by name if one is,
+   so this is a courtesy check rather than a control):
 
-Every dispatch re-proves each published edge, so the reader's per-run bounds
-scale with the window instead of being fixed beside it: `per_run_bounds` in
-`platform_release_recovery.py` derives the read budget from the frozen window's
-length, states the measured per-edge and fixed costs it is derived from, and
-refuses a window the deadline could not walk. Extending the window re-derives
-both bounds, and the pull request that extends it proves they still hold for a
-fully published window (issue #393).
+   ```
+   gh run list --workflow platform-release.yml --branch main --limit 1
+   ```
+
+2. Prepare every missing tag:
+
+   ```
+   python3 -I -B scripts/prepare_recovery_tags.py --repository . --head origin/main --push
+   ```
+
+3. Dispatch the recovery ONCE and read it back:
+
+   ```
+   gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+   ```
+
+The run log names every edge: one `RECOVERY_EDGE tag=... source=... reads=...
+seconds=... decision=published|refused:<reason>` line per edge and one
+`RECOVERY_SUMMARY pending=N published=M ...` line for the run. A non-201 asset
+upload prints its HTTP status and a bounded slice of the response body, and each
+write-boundary refusal names the check that refused; the two mute failures of
+2026-09-22/23 (the v0.1.93 upload and the v0.1.89 OIDC transient) are reproduced
+as tests against a fake API.
 
 A lost dispatch response requires readback of matching runs, never a duplicate
-POST. After each, independently read back the annotated tag, the immutable
-non-draft/non-prerelease Release and its two assets — size/digest/canonical
-identity, Sigstore subject, issuer, actual executor SHA/event, every signed
-original attempt. Only completed success makes an edge a predecessor. When the
-window is complete, let the repair's own ordinary publisher finish, or rerun
-that whole workflow (never failed-jobs-only) if its wait timed out. After the
-issue #393 repair merges, that is: nothing to prepare, because every pending
-tag from `v0.1.90` to `v0.1.93` already exists; keep main at that executor,
-drain `v0.1.90` through `v0.1.93` one dispatch at a time, then let that merge's
-own publisher — rerun whole if it timed out — publish `v0.1.94`.
+POST. Only completed success makes an edge a predecessor. When the backlog is
+complete the reader refuses with `the source backlog is complete; use the
+ordinary publisher`, which is the expected answer on a healthy repository.
 
 A publisher that died mid-upload leaves a draft with a stale identity asset pair
 and recovery refuses `draft Release asset inventory count is not exact`. Deleting
@@ -298,7 +291,9 @@ gh api "repos/snaraj/platform/releases/<draft id>/assets" --jq '.[].id' | xargs 
 as one `deploy-assurance[release-backlog]` issue carrying the pending count, the
 oldest pending source and the command above, closing it when the backlog clears.
 That job holds `issues: write` and nothing else — no contents, id-token or
-actions write, no App token, no secret — it reports and never acts.
+actions write, no App token, no secret — it reports and never acts, and its own
+review bounds (`MAX_PLAN_EDGES`, `MAX_UNRELEASED_LOOKBACK`, `MAX_REQUESTS`)
+stay exactly as they are.
 
 An immutable asset may become visible before its original publisher finishes.
 A reader waits for that exact attempt; a failed, cancelled, missing or unknown
