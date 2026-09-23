@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -48,6 +49,16 @@ MAX_UNRELEASED_LOOKBACK = 64
 MAX_REQUESTS = 96
 MAX_RESPONSE_BYTES = 1 << 20
 PENDING_ALERT_HOURS = 24
+# The three workflow files a source tree binds through its tag. Their digests
+# are recorded per edge for audit, never compared against a named inventory:
+# issue #395 removed that inventory because the tag already binds the tree that
+# contains these blobs, and the behavioural control is the required-jobs
+# receipt `prove_ci` checks against the source's own original run.
+WORKFLOW_AUDIT_PATHS = (
+    ".github/workflows/pull-request.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/platform-release.yml",
+)
 ISSUE_TITLE = "deploy-assurance[release-backlog]"
 ISSUE_LABELS = ("agentic-conversation-requested", "release")
 ISSUE_AUTHOR = "github-actions[bot]"
@@ -60,7 +71,15 @@ OWNER_COMMAND = (
 
 @dataclass(frozen=True)
 class Edge:
-    """One derived ledger edge: the next patch for one untagged main source."""
+    """One ledger edge, derived from git alone.
+
+    This is the single edge record in the repository (issue #395). It carries
+    every fact the retired ``HISTORICAL_RELEASES`` table used to transcribe by
+    hand — source, tree, first parent, fragment path and SHA-256, and the three
+    workflow blob digests of the source tree — plus the ledger position the
+    publisher needs. Everything here is a pure function of the repository's own
+    objects, so an edge cannot disagree with the tag that binds it.
+    """
 
     tag: str
     source_sha: str
@@ -68,22 +87,86 @@ class Edge:
     base_sha: str
     fragment_path: str
     source_date: str
+    tree_sha: str
+    parent_sha: str
+    fragment_sha256: str
+    workflows: tuple[tuple[str, str], ...]
 
     @property
     def message(self) -> str:
         """The exact annotated-tag message the publisher's validators expect."""
         return f"Platform release {self.tag} from {self.source_sha}"
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "tag": self.tag,
             "source_sha": self.source_sha,
             "base_tag": self.base_tag,
             "base_sha": self.base_sha,
             "fragment_path": self.fragment_path,
+            "fragment_sha256": self.fragment_sha256,
             "source_date": self.source_date,
+            "tree_sha": self.tree_sha,
+            "parent_sha": self.parent_sha,
+            "workflows": dict(self.workflows),
             "message": self.message,
         }
+
+
+def derive_edge(repository: Path, *, tag: str, source_sha: str, base_tag: str,
+                base_sha: str) -> Edge:
+    """Derive one complete edge from the repository, or refuse it.
+
+    The source must be an exact single-parent commit — a merge commit or a
+    branch commit that main only reached through a merge refuses here, which is
+    the first-parent rule the frozen table used to assert by transcription.
+    """
+    fields = C._git(repository, "rev-list", "--parents", "-n", "1", source_sha).split()
+    if len(fields) != 2 or fields[0] != source_sha:
+        raise C.ContractError("release edge source is not an exact single-parent commit")
+    tree_sha = C.require_sha(
+        C._git(repository, "rev-parse", f"{source_sha}^{{tree}}"), "release edge tree"
+    )
+    fragment = C.validate_transition(repository, base_sha, source_sha, first_parent=True)
+    source_date = C._git(repository, "show", "-s", "--format=%cI", source_sha)
+    if not isinstance(source_date, str) or not source_date:
+        raise C.ContractError("backlog source commit has no committer date")
+    workflows = []
+    for path in WORKFLOW_AUDIT_PATHS:
+        blob = C._git(repository, "rev-parse", "--verify", f"{source_sha}:{path}",
+                      allow_absent=True)
+        if not blob:
+            # A tree that does not carry the path records no digest for it.
+            # These digests are an audit record of what the tag already binds,
+            # never a gate, so absence is reported rather than asserted away.
+            continue
+        workflows.append(
+            (path, hashlib.sha256(C._git_bytes(repository, "cat-file", "blob", blob)).hexdigest())
+        )
+    workflows = tuple(workflows)
+    return Edge(tag, source_sha, base_tag, base_sha, fragment.fragment_path,
+                source_date, tree_sha, fields[1], fragment.fragment_sha256, workflows)
+
+
+def published_edges(repository: Path, *, after: str | None = None) -> tuple[Edge, ...]:
+    """Every ledger edge whose tag already exists, newest last.
+
+    ``ledger`` has already proved the whole post-floor sequence exact — tagger
+    identity, instant, message, ancestry, one fragment per adjacent pair — so
+    this only turns the boundaries it returns into complete edge records.
+    ``after`` limits the derivation to the epoch a caller actually needs
+    without weakening that walk, which still covers every post-floor tag.
+    """
+    boundaries = ledger(repository)
+    floor = None if after is None else C.Version.parse(after.removeprefix("v"))
+    edges: list[Edge] = []
+    for previous, boundary in zip(boundaries, boundaries[1:]):
+        if floor is not None and boundary.version <= floor:
+            continue
+        edges.append(derive_edge(repository, tag=boundary.tag,
+                                 source_sha=boundary.source_sha,
+                                 base_tag=previous.tag, base_sha=previous.source_sha))
+    return tuple(edges)
 
 
 def resolve(repository: Path, revision: str) -> str:
@@ -122,25 +205,9 @@ def plan(repository: Path, head_sha: str) -> tuple[Edge, ...]:
     edges: list[Edge] = []
     version, base_tag, base_sha = latest.version, latest.tag, latest.source_sha
     for commit in commits:
-        intents = C._release_surface_intents(repository, base_sha, commit)
-        if len(intents) != 1:
-            raise C.ContractError(
-                "every backlog edge must add exactly one changelog fragment"
-            )
         version = C.next_version(version)
-        source_date = C._git(repository, "show", "-s", "--format=%cI", commit)
-        if not isinstance(source_date, str) or not source_date:
-            raise C.ContractError("backlog source commit has no committer date")
-        edges.append(
-            Edge(
-                version.tag,
-                commit,
-                base_tag,
-                base_sha,
-                intents[0].fragment_path,
-                source_date,
-            )
-        )
+        edges.append(derive_edge(repository, tag=version.tag, source_sha=commit,
+                                 base_tag=base_tag, base_sha=base_sha))
         base_tag, base_sha = version.tag, commit
     return tuple(edges)
 

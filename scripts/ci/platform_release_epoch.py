@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-"""Closed release identities for the existing repository's one name change."""
+"""Closed release identities for the existing repository's one name change.
+
+Issue #395 removed the hand-frozen backlog table that used to live here. Every
+fact it transcribed — source, tree, first parent, fragment path and SHA-256,
+the original main-CI and CodeQL run IDs, the workflow inventory — is already
+bound by an owner-prepared annotated tag under the immutable tag ruleset, and
+is re-derived at run time from git (`release_backlog.Edge`) and from the API
+(`platform_release_recovery.selection`). A table row was a transcription of
+those facts, a hand edit per backlog edge, and a second place for them to
+disagree.
+
+What stays here is the epoch policy no tag can carry: which repository name,
+schema, asset names and signing subject a tag belongs to, and the relation
+between a publication's SOURCE and the EXECUTOR that published it. This module
+is deliberately git-free and network-free apart from the one bounded repository
+lookup `git_remote` makes, so the ancestry fact the recovery relation needs is
+proved by the caller and passed in.
+"""
 
 from __future__ import annotations
 
@@ -23,299 +40,6 @@ WORKFLOW = ".github/workflows/platform-release.yml@refs/heads/main"
 TERMINAL_V3_TAG = "v0.1.80"
 TERMINAL_V3_SOURCE = "4f9b29339fec6ff06b37ecc0024b48cbe857f96f"
 RECOVERY_WORKFLOW = ".github/workflows/platform-release-recovery.yml"
-PULL_REQUEST_WORKFLOW_DIGEST = (
-    "3fe60af5eb1f1e540cb2bbeda9888aa58fb85622f08c75f7246d50eb90c9d552"
-)
-HISTORICAL_WORKFLOW_PATHS = (
-    ".github/workflows/pull-request.yml",
-    ".github/workflows/codeql.yml",
-    ".github/workflows/platform-release.yml",
-)
-# The backlog window spans two publisher revisions and three CodeQL pins, so no
-# single shared fingerprint can cover it without dropping a file from the
-# comparison — which would be a weakening, not a generalization. Each inventory
-# below is exact and complete over the closed path set above; every frozen edge
-# names exactly one, and an unknown name or a short inventory fails closed.
-HISTORICAL_WORKFLOWS = {
-    "v3-publisher": {
-        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
-        ".github/workflows/codeql.yml":
-            "ecd647fa9c1867ef8fe162a19edf2ec978de8bdd7f8fb5d6beb74760540c91f0",
-        ".github/workflows/platform-release.yml":
-            "7964da478567a32ca68418a7b974f2f6dceeb1bddb027cee03bd8f698780aa00",
-    },
-    "recovery-publisher": {
-        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
-        ".github/workflows/codeql.yml":
-            "ecd647fa9c1867ef8fe162a19edf2ec978de8bdd7f8fb5d6beb74760540c91f0",
-        ".github/workflows/platform-release.yml":
-            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
-    },
-    "codeql-4-38-0": {
-        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
-        ".github/workflows/codeql.yml":
-            "4bc6c8a105991a9473c3c9582bf24f7a0f48fd5847f06ec4eafed4fe9e8084c5",
-        ".github/workflows/platform-release.yml":
-            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
-    },
-    "codeql-4-38-1": {
-        ".github/workflows/pull-request.yml": PULL_REQUEST_WORKFLOW_DIGEST,
-        ".github/workflows/codeql.yml":
-            "cc5c09eae4c30249368f86845b78ac808629470dc7542adcc16099f94255e807",
-        ".github/workflows/platform-release.yml":
-            "26e878500598b1f153147c29604af254af0b1c112c1460c62d4c404fd8a5f772",
-    },
-}
-# A published edge's own executor can later become a frozen source, because the
-# backlog drains behind main: the run that published v0.1.81 executed at
-# 10ee0a67, which issue #317 then froze as v0.1.91's source. The membership
-# refusal in validate_execution exists to stop a REPLAY of an old workflow, so
-# it is never relaxed; the recorded executor of an ALREADY PUBLISHED edge is
-# pinned here instead, read from that edge's immutable identity asset. Each row
-# names the Release the fact was read from, so an edge that has no published
-# Release has no executor to record and a pin can never become a forward
-# allowance for one the publisher has not taken yet (issue #391).
-#
-# One executor drains many edges, so freezing it pins EVERY edge it published:
-# 76f60b3 published v0.1.82 through v0.1.89 before issue #393 froze it as
-# v0.1.93's source, and each of those eight rows transcribes that edge's own
-# published identity asset (committed under
-# tests/security/fixtures_release_identity/, validated against this window by
-# the class guard there). Pinning only the edge that prompted the change would
-# leave the rest refused one edge later, which is the outage issue #391 fixed.
-PINNED_EXECUTIONS = {
-    "v0.1.81": {
-        "release_id": 387789735,
-        "executor_sha": "10ee0a67144675630456daafeb002755aba653d4",
-    },
-    "v0.1.82": {
-        "release_id": 394156049,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.83": {
-        "release_id": 394157866,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.84": {
-        "release_id": 394159524,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.85": {
-        "release_id": 394161048,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.86": {
-        "release_id": 394162468,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.87": {
-        "release_id": 394164673,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.88": {
-        "release_id": 394166552,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    "v0.1.89": {
-        "release_id": 394168254,
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-}
-FROZEN_EDGE_FIELDS = frozenset({
-    "source_sha", "tree_sha", "parent_sha", "fragment_path", "fragment_sha256",
-    "main_run_id", "codeql_run_id", "workflows",
-})
-# These are published protected-main source/CI records, not caller-selected
-# replay inputs or allocated tags. The ordinary ledger derives each next tag.
-# The window is a frozen reviewed list and never a computed range: issue #369
-# admitted the first three edges, issue #317 froze the eight the stalled
-# publisher left behind, issue #391 froze the twelfth, the merge that repaired
-# the derivation, and issue #393 freezes the thirteenth, the merge that derives
-# the reader's per-run bounds from this list, because it moves main past it.
-HISTORICAL_RELEASES = (
-    {
-        "source_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
-        "tree_sha": "3ff155f933aba5e0e528d1f30a36357968031917",
-        "parent_sha": TERMINAL_V3_SOURCE,
-        "fragment_path": "changelog.d/362-obsync-private-boundary.md",
-        "fragment_sha256": "efcf3d946e417320cc7d75f724cc862470571946cfe5fa760404a240cd150df1",
-        "main_run_id": 34283118915,
-        "codeql_run_id": 34283118636,
-        "workflows": "v3-publisher",
-        "executor_sha": "10ee0a67144675630456daafeb002755aba653d4",
-    },
-    {
-        "source_sha": "9cd79f1e69cfa00eb5467822831056101629c8f8",
-        "tree_sha": "360078458d75927170d39c176479d14af0a58928",
-        "parent_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
-        "fragment_path": "changelog.d/365-obsync-staged-readiness.md",
-        "fragment_sha256": "546e5ad23459bd53a94b768668e1faa09ff1500fc1a34b5bf03d98a521d9b44a",
-        "main_run_id": 34305321734,
-        "codeql_run_id": 34305321809,
-        "workflows": "v3-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "3b7a0532ba5fe2f10037023f3e26ec5876f8d191",
-        "tree_sha": "012b386dacf8dcffde5a78dba9af2897d229859d",
-        "parent_sha": "9cd79f1e69cfa00eb5467822831056101629c8f8",
-        "fragment_path": "changelog.d/367-reserved-file-storage.md",
-        "fragment_sha256": "90e877f38e58ff5e7c7caa564bc2606c2c7138229b544a59c200ba24154e8009",
-        "main_run_id": 34638257426,
-        "codeql_run_id": 34638258315,
-        "workflows": "v3-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4",
-        "tree_sha": "ab5a09071ae145f0ad733039b6cad7dd8bb9edf5",
-        "parent_sha": "3b7a0532ba5fe2f10037023f3e26ec5876f8d191",
-        "fragment_path": "changelog.d/369-source-recovery.md",
-        "fragment_sha256": "02e4911286c2d5e4f5660ea8e833d9080c8323291bd697d7da8e1b91c6140a8d",
-        "main_run_id": 34661250611,
-        "codeql_run_id": 34661250547,
-        "workflows": "recovery-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "47fc0a1fb573983d69acfc88bcf6f950899f8772",
-        "tree_sha": "80ae88a405c8aded3f65455e42e980e2138923f0",
-        "parent_sha": "bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4",
-        "fragment_path": "changelog.d/373-reserved-evidence.md",
-        "fragment_sha256": "7bc29a7dae92fe311ffa0ce9f27428e5929da830758025d24a09a6a7c73fbc8d",
-        "main_run_id": 34667651399,
-        "codeql_run_id": 34667651395,
-        "workflows": "recovery-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "2ad053e307e43f6dfb5015de1f1bf09c3505a832",
-        "tree_sha": "1be628601c92a07bdc7f2f4dc3140d6d6195770a",
-        "parent_sha": "47fc0a1fb573983d69acfc88bcf6f950899f8772",
-        "fragment_path": "changelog.d/371-owner-prepared-recovery-tags.md",
-        "fragment_sha256": "107e8b80a7891bccadec8df0a12c2750b75071dca530d410e9e0b19d96193cb3",
-        "main_run_id": 34673797428,
-        "codeql_run_id": 34673797429,
-        "workflows": "recovery-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "57a8807d551f19b13ee9e2caea398dbaa280296f",
-        "tree_sha": "4d8933576c5112867c0f3665ffa997321619252f",
-        "parent_sha": "2ad053e307e43f6dfb5015de1f1bf09c3505a832",
-        "fragment_path": "changelog.d/377-private-connector-artifact.md",
-        "fragment_sha256": "5a0507eed2a61a086d00e24ff5ec5921091081b3988fcfcad48a0d3dd89aabd3",
-        "main_run_id": 34732230714,
-        "codeql_run_id": 34732230710,
-        "workflows": "recovery-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "64cc95f3802c8feb8567f9b607aeac5c10d8d830",
-        "tree_sha": "b5fd892756aad9c7dade17e985fcc3f25bffa585",
-        "parent_sha": "57a8807d551f19b13ee9e2caea398dbaa280296f",
-        "fragment_path": "changelog.d/379-release-draft-tags.md",
-        "fragment_sha256": "92fbe046f3337db42a7023fa9756ef7d56c9e4afed314c92e80711a99cc973b2",
-        "main_run_id": 34789838965,
-        "codeql_run_id": 34789838936,
-        "workflows": "recovery-publisher",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "2a597ce999979ae463bc575eb63d6d7d5a2a182d",
-        "tree_sha": "9b9d3038c073b4d3a8d25576aaf236693aaead38",
-        "parent_sha": "64cc95f3802c8feb8567f9b607aeac5c10d8d830",
-        "fragment_path": "changelog.d/381-codeql-4-38.md",
-        "fragment_sha256": "648a3b9d793c0ff54f5f01653eba0cb5fa8a787caea3a889e507472b4aaecdbf",
-        "main_run_id": 34932536836,
-        "codeql_run_id": 34932536855,
-        "workflows": "codeql-4-38-0",
-        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-    },
-    {
-        "source_sha": "54ac82e692fa11999fafde52f2f4fe6ea17b47b5",
-        "tree_sha": "200afeca74abe21a6f13d6d0076f690a790abe84",
-        "parent_sha": "2a597ce999979ae463bc575eb63d6d7d5a2a182d",
-        "fragment_path": "changelog.d/383-boot-time-recovery.md",
-        "fragment_sha256": "cddfa8066293d4247cca4f5af7bdffad21e93ef068f3dfce23d9ac567ff4606b",
-        "main_run_id": 35548047591,
-        "codeql_run_id": 35548047644,
-        "workflows": "codeql-4-38-0",
-    },
-    {
-        "source_sha": "10ee0a67144675630456daafeb002755aba653d4",
-        "tree_sha": "e482a6be62d2d63042d6f0dbadbbfd00b6e30ac0",
-        "parent_sha": "54ac82e692fa11999fafde52f2f4fe6ea17b47b5",
-        "fragment_path": "changelog.d/387-codeql-4-38-1.md",
-        "fragment_sha256": "d02324260af2ef59e179e9ac65e62eaa852ab2be1ecd934576bb67fa8ed3ae89",
-        "main_run_id": 35684876122,
-        "codeql_run_id": 35684876102,
-        "workflows": "codeql-4-38-1",
-    },
-    {
-        "source_sha": "f71fc1f37f9ca1883e10286a13132cd70a17cf9f",
-        "tree_sha": "3b1b144a12247006cb0ef065e1e2f1d4fe3d040b",
-        "parent_sha": "10ee0a67144675630456daafeb002755aba653d4",
-        "fragment_path": "changelog.d/317-release-backlog-automation.md",
-        "fragment_sha256": "1d0cd44be2be75974f003da46df4116f8fd1461569164e45de4e4b9cb53ada58",
-        "main_run_id": 35773664240,
-        "codeql_run_id": 35773664214,
-        "workflows": "codeql-4-38-1",
-    },
-    {
-        "source_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
-        "tree_sha": "8123906d6d4330ed69c175038fe472fbd9d285dd",
-        "parent_sha": "f71fc1f37f9ca1883e10286a13132cd70a17cf9f",
-        "fragment_path": "changelog.d/391-frozen-executor-pin.md",
-        "fragment_sha256": "f5d909df8b48d03bdae3de3a7dc35fae5885bdba0b7c046837906f6e267c66bf",
-        "main_run_id": 35788330613,
-        "codeql_run_id": 35788330655,
-        "workflows": "codeql-4-38-1",
-    },
-)
-
-
-def historical_workflows(frozen: dict) -> dict[str, str]:
-    """Resolve one frozen edge's complete workflow inventory, or refuse.
-
-    Naming an inventory keeps every digest exact across a window in which the
-    publisher and CodeQL workflows changed. The completeness check is the point
-    of the indirection: a name that resolves to a partial inventory would skip
-    a file's comparison silently, so it refuses instead.
-    """
-    name = frozen.get("workflows")
-    inventory = HISTORICAL_WORKFLOWS.get(name) if isinstance(name, str) else None
-    if inventory is None or set(inventory) != set(HISTORICAL_WORKFLOW_PATHS):
-        raise ValueError("frozen edge names no complete workflow inventory")
-    return inventory
-
-
-def frozen_executor(tag: str, frozen: dict) -> str | None:
-    """Resolve one frozen edge's pinned executor, or refuse an unbacked pin.
-
-    The shape is closed in both directions. An entry is exactly the reviewed
-    fields, or exactly those plus `executor_sha`; a pin is admitted only for a
-    tag PINNED_EXECUTIONS records, with that exact value, so the field can only
-    ever transcribe an immutable published identity. Dropping a recorded pin
-    refuses here as well: losing it silently would put an already published
-    edge back under the membership refusal that issue #391 repairs.
-    """
-    if set(frozen) not in (set(FROZEN_EDGE_FIELDS),
-                           set(FROZEN_EDGE_FIELDS) | {"executor_sha"}):
-        raise ValueError("frozen edge fields are foreign")
-    recorded = PINNED_EXECUTIONS.get(tag)
-    pinned = frozen.get("executor_sha")
-    if pinned is None:
-        if recorded is not None:
-            raise ValueError("frozen edge drops its recorded executor pin")
-        return None
-    if (recorded is None
-            or set(recorded) != {"release_id", "executor_sha"}
-            or type(recorded["release_id"]) is not int or recorded["release_id"] <= 0
-            or pinned != recorded["executor_sha"]
-            or re.fullmatch(r"[0-9a-f]{40}", pinned) is None):
-        raise ValueError("frozen edge pins an executor no published Release records")
-    return pinned
 
 
 def version(tag: str) -> tuple[int, int, int]:
@@ -339,43 +63,20 @@ FIRST_V2_TAG = next_tag(TERMINAL_V1_TAG)
 FIRST_V4_TAG = next_tag(TERMINAL_V3_TAG)
 
 
-def historical_release(tag: str) -> dict | None:
-    candidate = FIRST_V4_TAG
-    for source in HISTORICAL_RELEASES:
-        if tag == candidate:
-            return source
-        candidate = next_tag(candidate)
-    return None
+def release_target(source_sha: str, *, recovering: bool) -> str:
+    """The `target_commitish` a publication's own route produces.
 
-
-def validate_window() -> None:
-    """Refuse this module outright if a frozen edge is not a reviewed shape.
-
-    Sweeping the whole window at import, rather than only the edge a caller
-    happens to select, means a pin added to an edge the publisher has not taken
-    yet fails every entry point instead of waiting for that edge's turn.
+    An ordinary publication creates the tag ref itself and targets the exact
+    source. A recovery publication creates the Release against an annotated tag
+    the owner already pushed, with no `target_commitish` in the request, so
+    GitHub answers with the default-branch hint. The real source is bound by
+    the tag object and its peeled commit either way; this only says which of
+    the two hints an exact record may carry.
     """
-    tags = []
-    candidate = FIRST_V4_TAG
-    for frozen in HISTORICAL_RELEASES:
-        historical_workflows(frozen)
-        frozen_executor(candidate, frozen)
-        tags.append(candidate)
-        candidate = next_tag(candidate)
-    if set(PINNED_EXECUTIONS) - set(tags):
-        raise ValueError("an executor pin names no frozen edge")
-
-
-validate_window()
-
-
-def release_target(tag: str, source_sha: str) -> str:
-    """The historical source is bound by its tag, not a default-target hint."""
-    frozen = historical_release(tag)
-    if frozen is not None:
-        if source_sha != frozen["source_sha"]:
-            raise ValueError("recovery target has a foreign source")
+    if recovering:
         return "main"
+    if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+        raise ValueError("release target source is malformed")
     return source_sha
 
 
@@ -406,10 +107,23 @@ def git_remote(url: str) -> str:
     return name
 
 
-def identity(tag: str) -> dict[str, object]:
+def identity(tag: str, *, recovering: bool = False) -> dict[str, object]:
+    """Select one tag's epoch policy, and for v4 its publisher relation.
+
+    `recovering` is not looked up here any more: a table lookup made the
+    publisher relation a property of the tag NUMBER, which is exactly what the
+    backlog kept editing. It is now the caller's derived fact — the executor
+    relation for a publication, or the signed `execution.source_sha` for an
+    identity already published — and `validate_execution` refuses evidence
+    whose recorded publisher fields disagree with it.
+    """
+    if not isinstance(recovering, bool):
+        raise ValueError("publisher relation must be an explicit boolean")
     epoch = (1 if version(tag) < version(FIRST_V2_TAG) else
              2 if version(tag) < version(FIRST_V3_TAG) else
              3 if version(tag) < version(FIRST_V4_TAG) else 4)
+    if recovering and epoch != 4:
+        raise ValueError("only a v4 release epoch has a recovery publisher")
     name = OLD_REPOSITORY if epoch == 1 else NEW_REPOSITORY
     asset = f"platform-release-identity.v{epoch}.json"
     value = {"repository": name, "schema": f"https://snaraj.dev/schemas/platform-release-identity/v{epoch}",
@@ -419,7 +133,6 @@ def identity(tag: str) -> dict[str, object]:
         value.update(selector_digest=FROZEN_SELECTOR_DIGEST,
                      selector_source=FROZEN_SELECTOR_SOURCE)
     if epoch == 4:
-        recovering = historical_release(tag) is not None
         workflow = RECOVERY_WORKFLOW if recovering else WORKFLOW.split("@", 1)[0]
         value.update(
             publisher_workflow=workflow,
@@ -430,12 +143,12 @@ def identity(tag: str) -> dict[str, object]:
 
 
 def publication(name: str, object_id: object, tag: str, base_tag: str, base_sha: str,
-                source_sha: str | None = None) -> dict[str, object]:
+                source_sha: str | None = None, *, recovering: bool = False) -> dict[str, object]:
     """Authorize the name/epoch only after the caller derives the exact edge."""
     repository(name, object_id)
     if not isinstance(base_sha, str) or re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
         raise ValueError("publication predecessor source is malformed")
-    selected = identity(tag)
+    selected = identity(tag, recovering=recovering)
     if selected["repository"] != name or next_tag(base_tag) != tag:
         raise ValueError("repository and release epoch or predecessor disagree")
     if name == OLD_REPOSITORY:
@@ -446,18 +159,14 @@ def publication(name: str, object_id: object, tag: str, base_tag: str, base_sha:
     if selected["version"] == 4:
         if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
             raise ValueError("v4 publication requires its exact source SHA")
-        frozen = historical_release(tag)
-        if frozen is not None:
-            if (source_sha, base_sha) != (frozen["source_sha"], frozen["parent_sha"]):
-                raise ValueError("historical publication source or predecessor is foreign")
-        elif source_sha in {entry["source_sha"] for entry in HISTORICAL_RELEASES}:
-            raise ValueError("historical source cannot choose another release edge")
+        if source_sha == TERMINAL_V3_SOURCE or base_sha == source_sha:
+            raise ValueError("v4 publication cannot republish its own predecessor")
     # The exact-next check and closed epoch boundary imply terminal-v1 ->
     # first-v2 and v2 -> v2. No second, redundant predecessor exception exists.
     return selected
 
 
-def validate_identity(evidence: dict) -> None:
+def validate_identity(evidence: dict, *, executor_descends: bool | None = None) -> None:
     """Keep v1 bytes intact; its existing signed fields bind the terminal edge."""
     tag = evidence["tag"]["name"]
     selected = identity(tag)
@@ -475,11 +184,42 @@ def validate_identity(evidence: dict) -> None:
         if (selector["digest"], selector["provenance"]["source_sha"]) != (FROZEN_SELECTOR_DIGEST, FROZEN_SELECTOR_SOURCE):
             raise ValueError("retired selector lineage changed")
     if selected["version"] == 4:
-        validate_execution(evidence)
+        validate_execution(evidence, executor_descends=executor_descends)
 
 
-def validate_execution(evidence: dict) -> None:
-    """Bind current execution separately, only for the finite recovery set."""
+def recovering_identity(evidence: dict) -> bool:
+    """The publisher relation a v4 identity's own signed fields already state.
+
+    The executor is either the source itself (the ordinary `workflow_run`
+    publisher, which runs at the commit it releases) or a different commit (a
+    recovery dispatch draining behind main). Nothing else can be true of one
+    payload, so this is a derivation rather than a claim, and `validate_execution`
+    then requires the recorded publisher workflow and event to match it.
+    """
+    execution = evidence.get("execution")
+    source = evidence.get("source")
+    if not isinstance(execution, dict) or not isinstance(source, dict):
+        raise ValueError("publication execution or source fields are missing")
+    return execution.get("source_sha") != source.get("merge_sha")
+
+
+def validate_execution(evidence: dict, *, executor_descends: bool | None = None) -> None:
+    """Bind the executor to its source by RELATION rather than membership.
+
+    Ordinary publication is executor == source: the `workflow_run` publisher
+    runs at the very commit it releases, so its tree and main-CI receipt are the
+    source's own. Recovery publication is executor != source, and the only
+    executor it admits is a LATER first-parent commit of protected main that
+    main still contains — the shape a drain running behind main always has, and
+    the shape a REPLAY of an old workflow never has, because every earlier
+    source is an ancestor of the executor rather than a descendant of it. The
+    terminal v3 source is refused by that construction alone: it precedes every
+    v4 source, so it can never descend from one.
+
+    The relation is a git fact and this module stays git-free, so the caller
+    proves it (`platform_release_contract.executor_descends`) and passes it.
+    Recovery-shaped evidence with no proof refuses rather than defaulting.
+    """
     execution = evidence["execution"]
     if not isinstance(execution, dict) or set(execution) != {"source_sha", "tree_sha", "main_ci"}:
         raise ValueError("publication execution fields are foreign")
@@ -500,43 +240,28 @@ def validate_execution(evidence: dict) -> None:
     ):
         raise ValueError("publication execution main CI is foreign")
     source = evidence["source"]
-    tag = evidence["tag"]["name"]
-    frozen = historical_release(tag)
-    if frozen is not None:
-        pinned = frozen_executor(tag, frozen)
-        if pinned is None:
-            # Unchanged for every unpinned edge: a frozen source can never
-            # present itself as the current executor of another edge, which is
-            # what a replay of an old workflow would look like.
-            foreign_executor = execution["source_sha"] in {
-                entry["source_sha"] for entry in HISTORICAL_RELEASES}
-        else:
-            # A pin is exact equality with the fact this edge's own immutable
-            # Release already records, so it is strictly narrower than the
-            # membership refusal it replaces for that one edge.
-            foreign_executor = (execution["source_sha"] != pinned
-                                or evidence["release"]["id"] != PINNED_EXECUTIONS[tag]["release_id"])
-        if (
-            source["merge_sha"] != frozen["source_sha"]
-            or source["tree_sha"] != frozen["tree_sha"]
-            or evidence["predecessor"]["peeled_commit"] != frozen["parent_sha"]
-            or evidence["changelog"] != {
-                "fragment_path": frozen["fragment_path"],
-                "fragment_sha256": "sha256:" + frozen["fragment_sha256"],
-            }
-            or evidence["main_ci"]["run_id"] != frozen["main_run_id"]
-            or evidence["main_ci"]["run_attempt"] != 1
-            or evidence["platform_release"]["run_attempt"] != 1
-            or foreign_executor
-            or execution["source_sha"] == TERMINAL_V3_SOURCE
-        ):
-            raise ValueError("historical execution or original evidence is foreign")
+    recovering = recovering_identity(evidence)
+    if recovering:
+        if executor_descends is None:
+            raise ValueError("recovery execution needs an ancestry proof")
+        if executor_descends is not True:
+            raise ValueError("recovery executor is not a later first-parent commit of its source")
     elif (
-        execution["source_sha"] != source["merge_sha"]
-        or execution["tree_sha"] != source["tree_sha"]
+        execution["tree_sha"] != source["tree_sha"]
         or execution["main_ci"] != evidence["main_ci"]
     ):
         raise ValueError("ordinary publication cannot substitute its executor")
+    # The signing subject is a pure function of publisher_workflow, so agreeing
+    # on the workflow and the event fixes the subject cosign was given too.
+    selected = identity(evidence["tag"]["name"], recovering=recovering)
+    publisher = evidence.get("platform_release")
+    if (
+        not isinstance(publisher, dict)
+        or publisher.get("workflow") != selected["publisher_workflow"]
+        or publisher.get("event") != selected["publisher_event"]
+        or publisher.get("head_sha") != execution["source_sha"]
+    ):
+        raise ValueError("recorded publisher identity disagrees with the derived relation")
 
 
 def run_repository(tag: str, record: dict) -> None:
@@ -562,7 +287,6 @@ def metadata_repository(tag: str, name: str | None, object_id: object) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", nargs="?")
-    parser.add_argument("--historical-main-run", action="store_true", default=None)
     parser.add_argument("--git-remote")
     parser.add_argument("--repository")
     parser.add_argument("--repository-id", type=int)
@@ -570,22 +294,27 @@ def main() -> int:
     parser.add_argument("--base-sha")
     parser.add_argument("--repository-json", type=Path)
     parser.add_argument("--source-sha")
+    parser.add_argument("--executor-sha")
+    parser.add_argument("--recovering", action="store_true", default=False)
     args = parser.parse_args()
     try:
-        if args.historical_main_run:
-            if any(value is not None for key, value in vars(args).items()
-                   if key not in {"tag", "historical_main_run"}):
-                raise ValueError("historical run lookup accepts only its closed tag")
-            frozen = historical_release(args.tag)
-            if frozen is None:
-                raise ValueError("tag is outside the finite recovery window")
-            print(frozen["main_run_id"])
-            return 0
         if args.git_remote is not None:
-            if any(value is not None for key, value in vars(args).items() if key != "git_remote"):
+            if (args.recovering or any(value is not None for key, value in vars(args).items()
+                                       if key not in {"git_remote", "recovering"})):
                 raise ValueError("Git remote verification cannot carry release inputs")
             print(git_remote(args.git_remote))
             return 0
+        # A recovery policy names a DIFFERENT signing subject, so the caller
+        # states both commits of the relation and they must actually differ;
+        # the ordinary publisher never passes the flag and cannot reach the
+        # recovery subject by omitting one of them.
+        if args.recovering:
+            if args.source_sha is None or args.executor_sha is None:
+                raise ValueError("a recovery policy needs its exact source and executor")
+            if args.source_sha == args.executor_sha:
+                raise ValueError("a recovery policy needs an executor other than its source")
+        elif args.executor_sha is not None and args.executor_sha != args.source_sha:
+            raise ValueError("an ordinary policy cannot name a foreign executor")
         if args.repository_json is not None:
             record = json.loads(args.repository_json.read_bytes())
             repository(record.get("full_name"), record.get("id"))
@@ -595,11 +324,14 @@ def main() -> int:
         if publishing:
             if any(value is None for value in (args.repository, args.repository_id, args.base_tag, args.base_sha)):
                 raise ValueError("publication epoch inputs are incomplete")
-            value = publication(args.repository, args.repository_id, args.tag, args.base_tag, args.base_sha, args.source_sha)
+            value = publication(args.repository, args.repository_id, args.tag, args.base_tag,
+                                args.base_sha, args.source_sha, recovering=args.recovering)
         else:
-            value = identity(args.tag)
-        if args.source_sha is not None and (not publishing or re.fullmatch(r"[0-9a-f]{40}", args.source_sha) is None):
+            value = identity(args.tag, recovering=args.recovering)
+        if args.source_sha is not None and re.fullmatch(r"[0-9a-f]{40}", args.source_sha) is None:
             raise ValueError("source check requires an exact publication")
+        if args.executor_sha is not None and re.fullmatch(r"[0-9a-f]{40}", args.executor_sha) is None:
+            raise ValueError("executor check requires an exact commit")
         print(json.dumps(value, sort_keys=True))
         return 0
     except subprocess.SubprocessError:

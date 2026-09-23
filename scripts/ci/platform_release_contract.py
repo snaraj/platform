@@ -347,6 +347,92 @@ def _is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
     raise ContractError("git ancestry check failed")
 
 
+def _first_parent_descends(repository: Path, ancestor: str, descendant: str) -> bool:
+    """True when `descendant` is a strictly later commit on `ancestor`'s OWN
+    first-parent chain.
+
+    Reachability alone is not the relation issue #395 needs: a commit merged in
+    from a side branch is an ancestor of main without ever having been main, so
+    `merge-base --is-ancestor` would admit it as an executor. The first-parent
+    walk closes that: the oldest commit of `ancestor..descendant` along
+    `--first-parent` must name `ancestor` as its own first parent, and the walk
+    must end exactly at `descendant`.
+    """
+    if not isinstance(ancestor, str) or not isinstance(descendant, str) or ancestor == descendant:
+        return False
+    if not _is_ancestor(repository, ancestor, descendant):
+        return False
+    raw = _git(
+        repository, "rev-list", "--first-parent", "--reverse", f"{ancestor}..{descendant}"
+    )
+    commits = raw.splitlines() if raw else []
+    if not commits or commits[-1] != descendant:
+        return False
+    fields = _git(repository, "rev-list", "--parents", "-n", "1", commits[0]).split()
+    return len(fields) >= 2 and fields[0] == commits[0] and fields[1] == ancestor
+
+
+def executor_descends(
+    repository: Path, *, source_sha: str, executor_sha: str, protected_sha: str
+) -> bool:
+    """The recovery executor relation `EPOCH.validate_execution` asks for.
+
+    A recovery publisher runs at a commit protected main reached AFTER the
+    source it is draining, and main still contains it. Both halves are load
+    bearing: the first refuses a replay of a workflow at or before the source
+    (every earlier source is an ancestor, never a first-parent descendant), and
+    the second refuses a commit that left protected main, so an executor is
+    always something the ruleset accepted and still holds.
+    """
+    return _first_parent_descends(repository, source_sha, executor_sha) and (
+        executor_sha == protected_sha
+        or _is_ancestor(repository, executor_sha, protected_sha)
+    )
+
+
+def _identity_executor_descends(
+    repository: Path | None, evidence: Mapping[str, object]
+) -> bool | None:
+    """Prove one signed v4 identity's executor relation against a checkout.
+
+    The checkout is the protected executor in every caller that has one — the
+    recovery reader pins HEAD to current protected main, and the ordinary
+    publisher runs at the source it is releasing — so HEAD is the protected tip
+    this relation is measured against. Without a checkout there is no proof,
+    and recovery-shaped evidence then refuses in `validate_execution` instead
+    of being admitted unproved.
+    """
+    if repository is None:
+        return None
+    repository = Path(repository)
+    try:
+        if not EPOCH.recovering_identity(evidence):
+            return None
+        source_sha = require_sha(evidence["source"]["merge_sha"], "identity source SHA")
+        executor_sha = require_sha(evidence["execution"]["source_sha"], "identity executor SHA")
+    except (KeyError, TypeError, ValueError):
+        # A payload this malformed has no relation to prove; recovery-shaped
+        # evidence then refuses in `validate_execution` for want of a proof.
+        return None
+    return executor_descends(
+        repository,
+        source_sha=source_sha,
+        executor_sha=executor_sha,
+        protected_sha=_exact_commit(
+            repository, _git(repository, "rev-parse", "HEAD") or "", "protected executor SHA"
+        ),
+    )
+
+
+def _cli_executor_descends(repository: Path | None, payload: Path | None) -> bool | None:
+    """The CLI's executor relation: no checkout named, no proof offered."""
+    if repository is None or payload is None:
+        return None
+    return _identity_executor_descends(
+        repository, _canonical_release_identity(payload.read_bytes())
+    )
+
+
 def _nul_paths(repository: Path, *args: str) -> tuple[str, ...]:
     raw = _git_bytes(repository, *args)
     fields = raw.split(b"\0")
@@ -930,12 +1016,17 @@ def render_release_identity(
         or window.base_tag != expected_base_tag
     ):
         raise ContractError("release identity is not the derived exact-next edge")
+    # The executor argument IS the publisher relation: the ordinary publisher
+    # runs at the source it releases and passes none, a recovery dispatch runs
+    # at a later protected commit and passes that commit.
+    recovering = execution_sha is not None and execution_sha != head_sha
     try:
-        selected = EPOCH.identity(tag)
+        selected = EPOCH.identity(tag, recovering=recovering)
         if selected["version"] in (2, 4) or github_repository is not None or github_repository_id is not None:
             selected = EPOCH.publication(
                 github_repository, github_repository_id, tag,
                 expected_base_tag, expected_base_sha, head_sha,
+                recovering=recovering,
             )
     except ValueError as error:
         raise ContractError(str(error)) from error
@@ -1032,7 +1123,9 @@ def render_release_identity(
             event=selected["publisher_event"], head_sha=execution_sha,
             workflow=selected["publisher_workflow"],
         )
-        evidence["release"]["target_commitish"] = EPOCH.release_target(tag, head_sha)
+        evidence["release"]["target_commitish"] = EPOCH.release_target(
+            head_sha, recovering=recovering
+        )
     if selected["version"] < 3:
         if re.fullmatch(r"sha256:[0-9a-f]{64}", selector_image_digest or "") is None:
             raise ContractError("selector image digest must be canonical sha256")
@@ -1057,7 +1150,10 @@ def render_release_identity(
             _file_bytes(repository, head_sha, RELEASE_IDENTITY_RECEIPT_PATH)
         )
     try:
-        EPOCH.validate_identity(evidence)
+        EPOCH.validate_identity(
+            evidence,
+            executor_descends=_identity_executor_descends(repository, evidence),
+        )
     except (KeyError, TypeError, ValueError) as error:
         raise ContractError("release identity epoch is foreign") from error
     rendered = json.dumps(
@@ -2144,11 +2240,12 @@ def validate_draft_release_record(
     expected_release_id: int | None = None,
     expected_server_tag: str | None = None,
     expected_asset_count: int = 0,
+    recovering: bool = False,
 ) -> None:
     """Validate the sole short-lived self-ID draft before publication."""
     source_sha = require_sha(source_sha, "draft Release target SHA")
     try:
-        expected_target = EPOCH.release_target(tag, source_sha)
+        expected_target = EPOCH.release_target(source_sha, recovering=recovering)
     except ValueError as error:
         raise ContractError("draft Release source policy is foreign") from error
     release_id = release_record.get("id")
@@ -2196,6 +2293,7 @@ def classify_draft_release_state(
     expected_release_id: int | None = None,
     expected_server_tag: str | None = None,
     expected_asset_count: int = 0,
+    recovering: bool = False,
 ) -> tuple[str, int | None]:
     """Classify one relevant mutable draft from authenticated Release pages."""
     source_sha = require_sha(source_sha, "draft Release target SHA")
@@ -2274,6 +2372,7 @@ def classify_draft_release_state(
         expected_release_id=expected_release_id,
         expected_server_tag=expected_server_tag,
         expected_asset_count=expected_asset_count,
+        recovering=recovering,
     )
     return "exact", candidate["id"]
 
@@ -2516,6 +2615,7 @@ def selector_image_from_release(
     staged: bool = False,
     api_repository: str | None = None,
     api_repository_id: int | None = None,
+    executor_descends: bool | None = None,
 ) -> str:
     """Validate the identity asset and carry its immutable selector digest."""
     expected_sha = require_sha(expected_sha, "selector predecessor SHA")
@@ -2560,6 +2660,15 @@ def selector_image_from_release(
         expected_fields.add("execution")
     if set(evidence) != expected_fields:
         raise ContractError("selector predecessor top-level fields are foreign")
+    if selected["version"] == 4:
+        # The signed executor decides which publisher workflow, event and
+        # signing subject this payload must carry; nothing is looked up by tag.
+        try:
+            selected = EPOCH.identity(
+                expected_tag, recovering=EPOCH.recovering_identity(evidence)
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ContractError("signed publisher relation is foreign") from error
     if (
         evidence.get("schema") != selected["schema"]
         or evidence.get("repository") != selected["repository"]
@@ -2593,8 +2702,11 @@ def selector_image_from_release(
         "release evidence",
     )
     try:
-        expected_target = EPOCH.release_target(expected_tag, expected_sha)
-    except ValueError as error:
+        expected_target = EPOCH.release_target(
+            expected_sha, recovering=selected["version"] == 4
+            and EPOCH.recovering_identity(evidence),
+        )
+    except (KeyError, TypeError, ValueError) as error:
         raise ContractError("Release source policy is foreign") from error
     expected_release = {
         "asset_count": 2,
@@ -2691,7 +2803,7 @@ def selector_image_from_release(
     execution_sha = expected_sha
     if selected["version"] == 4:
         try:
-            EPOCH.validate_execution(evidence)
+            EPOCH.validate_execution(evidence, executor_descends=executor_descends)
         except (KeyError, TypeError, ValueError) as error:
             raise ContractError("signed publication execution is foreign") from error
         execution_sha = evidence["execution"]["source_sha"]
@@ -2727,7 +2839,7 @@ def selector_image_from_release(
             raise ContractError(f"selector predecessor {key} is foreign")
     if selected["version"] >= 3:
         try:
-            EPOCH.validate_identity(evidence)
+            EPOCH.validate_identity(evidence, executor_descends=executor_descends)
         except (KeyError, TypeError, ValueError) as error:
             raise ContractError("signed release epoch is foreign") from error
         return ""
@@ -2816,13 +2928,18 @@ def validate_identity_run_records(
     platform_conclusion: str = "success",
     execution_main_run_record: Mapping[str, object] | None = None,
     platform_pending: bool = False,
+    executor_descends: bool | None = None,
 ) -> None:
     """Prove the signed receipt names two exact successful workflow attempts."""
     if platform_conclusion not in {"success", "failure"}:
         raise ContractError("platform Release run conclusion is invalid")
     evidence = _canonical_release_identity(identity)
     try:
-        selected = EPOCH.identity(evidence["tag"]["name"])
+        recovering = (
+            EPOCH.version(evidence["tag"]["name"]) >= EPOCH.version(EPOCH.FIRST_V4_TAG)
+            and EPOCH.recovering_identity(evidence)
+        )
+        selected = EPOCH.identity(evidence["tag"]["name"], recovering=recovering)
         if (evidence["schema"], evidence["repository"]) != (selected["schema"], selected["repository"]):
             raise ValueError("run identity epoch is foreign")
         if selected["version"] >= 2:
@@ -2846,7 +2963,7 @@ def validate_identity_run_records(
     execution_sha = source_sha
     if selected["version"] == 4:
         try:
-            EPOCH.validate_execution(evidence)
+            EPOCH.validate_execution(evidence, executor_descends=executor_descends)
         except (KeyError, TypeError, ValueError) as error:
             raise ContractError("signed publication execution is foreign") from error
         execution_sha = evidence["execution"]["source_sha"]
@@ -3021,6 +3138,7 @@ def validate_identity_release_record(
     api_repository: str | None = None,
     api_repository_id: int | None = None,
     staged: bool = False,
+    executor_descends: bool | None = None,
 ) -> None:
     if selector_build_sha is None:
         # The first canonical release builds the selector from its own source.
@@ -3038,6 +3156,7 @@ def validate_identity_release_record(
         api_repository=api_repository,
         api_repository_id=api_repository_id,
         staged=staged,
+        executor_descends=executor_descends,
     )
 
 
@@ -3102,6 +3221,7 @@ def classify_identity_release_state(
     tree_sha: str | None = None,
     api_repository: str | None = None,
     api_repository_id: int | None = None,
+    executor_descends: bool | None = None,
 ) -> str:
     source_sha = require_sha(source_sha, "GitHub Release target SHA")
     if http_status == 404:
@@ -3125,6 +3245,7 @@ def classify_identity_release_state(
         tree_sha=tree_sha,
         api_repository=api_repository,
         api_repository_id=api_repository_id,
+        executor_descends=executor_descends,
     )
     return "exact"
 
@@ -3347,6 +3468,16 @@ def _parser() -> argparse.ArgumentParser:
                              selector_image, identity_release_state):
         transport_parser.add_argument("--api-repository")
         transport_parser.add_argument("--api-repository-id", type=int)
+    # A v4 identity signed by a recovery dispatch names an executor other than
+    # its source, and that relation is a GIT fact. The checkout proves it here
+    # rather than the caller asserting it on the command line; without a
+    # checkout the epoch policy refuses the payload instead of admitting it.
+    for executor_parser in (identity_release_record, staged_identity_record,
+                            selector_image, identity_release_state,
+                            identity_runs):
+        executor_parser.add_argument("--executor-repository", type=Path)
+    for draft_parser in (release_draft_record, release_draft_state):
+        draft_parser.add_argument("--recovering", action="store_true")
     identity.add_argument("--github-repository")
     identity.add_argument("--github-repository-id", type=int)
     return parser
@@ -3525,6 +3656,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_release_id=args.expected_release_id,
                 expected_server_tag=args.expected_server_tag,
                 expected_asset_count=args.expected_asset_count,
+                recovering=args.recovering,
             )
             print("exact")
         elif args.command == "release-draft-state":
@@ -3537,6 +3669,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_release_id=args.expected_release_id,
                 expected_server_tag=args.expected_server_tag,
                 expected_asset_count=args.expected_asset_count,
+                recovering=args.recovering,
             )
             require_publication_state(state, args.require)
             print(release_id if state == "exact" else state)
@@ -3575,6 +3708,9 @@ def main(argv: list[str] | None = None) -> int:
                 api_repository=args.api_repository,
                 api_repository_id=args.api_repository_id,
                 staged=args.command == "staged-identity-release-record",
+                executor_descends=_cli_executor_descends(
+                    args.executor_repository, args.identity
+                ),
             )
             print("exact")
         elif args.command == "selector-image-from-release":
@@ -3590,6 +3726,9 @@ def main(argv: list[str] | None = None) -> int:
                     expected_tree_sha=args.source_tree_sha,
                     api_repository=args.api_repository,
                     api_repository_id=args.api_repository_id,
+                    executor_descends=_cli_executor_descends(
+                        args.executor_repository, args.identity
+                    ),
                 )
             )
         elif args.command == "identity-run-records":
@@ -3600,6 +3739,9 @@ def main(argv: list[str] | None = None) -> int:
                 execution_main_run_record=(
                     _read_object(args.execution_main_run_json)
                     if args.execution_main_run_json else None
+                ),
+                executor_descends=_cli_executor_descends(
+                    args.executor_repository, args.identity
                 ),
             )
             print("exact")
@@ -3627,6 +3769,9 @@ def main(argv: list[str] | None = None) -> int:
                 tree_sha=args.source_tree_sha,
                 api_repository=args.api_repository,
                 api_repository_id=args.api_repository_id,
+                executor_descends=_cli_executor_descends(
+                    args.executor_repository, args.identity
+                ),
             )
             print(require_publication_state(state, args.require) if args.require else state)
         else:  # pragma: no cover - argparse owns this path

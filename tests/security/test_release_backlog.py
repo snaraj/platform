@@ -14,6 +14,7 @@ input and the exact regression it exists to refuse.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import io
 import json
@@ -427,9 +428,8 @@ class PreparedTagTests(unittest.TestCase):
                 # edge the ledger must still bind. Every other field stays
                 # exact, so nothing but the re-walk can notice.
                 if edge.tag == "v0.1.11":
-                    edge = BACKLOG.Edge(
-                        edge.tag, third, edge.base_tag, edge.base_sha,
-                        edge.fragment_path, third_date,
+                    edge = dataclasses.replace(
+                        edge, source_sha=third, source_date=third_date
                     )
                 authentic(repository, edge)
 
