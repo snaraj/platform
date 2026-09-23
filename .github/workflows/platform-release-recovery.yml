@@ -98,13 +98,16 @@ jobs:
     runs-on: ubuntu-24.04
     # Derived, not chosen: `publish_timeout_minutes()` in
     # scripts/ci/platform_release_recovery.py is PUBLISH_FIXED_MINUTES 6 plus
-    # PUBLISH_EDGE_MINUTES 3 for each of the 46 edges `per_run_bounds` can
-    # admit in one dispatch, so 6 + 3 x 46 = 144. The per-edge figure is
-    # measured from the four single-edge dispatches of 2026-09-22/23, whose
-    # in-loop publish work took 100-135 s each; the fixed figure is their
-    # checkout and tool install. test_platform_recovery_wiring.py pins this
-    # literal to that derivation.
-    timeout-minutes: 144
+    # PUBLISH_EDGE_MINUTES 4 for each of the 46 edges `per_run_bounds` can
+    # admit in one dispatch, carrying the same 25 % headroom every other
+    # derived bound carries: ceil((6 + 4 x 46) x 1.25) = 238. The per-edge
+    # figure is measured from the four single-edge dispatches of 2026-09-22/23,
+    # whose in-loop publish work took 100-135 s each, scaled by the measured
+    # +24 % the whole-ledger `bind` costs over the old single-window one and
+    # the drain's added per-edge readback; the fixed figure is their checkout
+    # and tool install. test_platform_recovery_wiring.py pins this literal to
+    # that derivation, so neither constant can move without moving it.
+    timeout-minutes: 238
     permissions:
       actions: read
       contents: write

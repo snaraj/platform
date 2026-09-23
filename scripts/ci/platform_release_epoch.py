@@ -209,12 +209,13 @@ def validate_execution(evidence: dict, *, executor_descends: bool | None = None)
     Ordinary publication is executor == source: the `workflow_run` publisher
     runs at the very commit it releases, so its tree and main-CI receipt are the
     source's own. Recovery publication is executor != source, and the only
-    executor it admits is a LATER first-parent commit of protected main that
-    main still contains — the shape a drain running behind main always has, and
-    the shape a REPLAY of an old workflow never has, because every earlier
-    source is an ancestor of the executor rather than a descendant of it. The
+    executor it admits is a LATER commit on protected main's own first-parent
+    line — the shape a drain running behind main always has, and the shape a
+    REPLAY of an old workflow never has, because every earlier source is an
+    ancestor of the executor rather than a first-parent descendant of it. The
     terminal v3 source is refused by that construction alone: it precedes every
-    v4 source, so it can never descend from one.
+    v4 source, so it can never descend from one. Membership, not reachability:
+    a side branch merged into main is an ancestor of main that was never main.
 
     The relation is a git fact and this module stays git-free, so the caller
     proves it (`platform_release_contract.executor_descends`) and passes it.

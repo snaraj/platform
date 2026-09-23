@@ -507,7 +507,7 @@ class PreparedTagTests(unittest.TestCase):
                 stream = io.StringIO()
                 with ledger.floor_patch(), mock.patch.dict(
                     PREPARE.os.environ, {**WITHOUT_CI, marker: "true"}
-                ), self.assertRaises(CONTRACT.ContractError):
+                ), self.assertRaisesRegex(CONTRACT.ContractError, "never in CI"):
                     PREPARE.prepare(
                         ledger.root, "HEAD", push=True, remote="origin", stream=stream
                     )

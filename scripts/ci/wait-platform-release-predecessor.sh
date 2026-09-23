@@ -33,6 +33,12 @@ notes="${RUNNER_TEMP}/platform-predecessor-notes.md"
 epoch_contract='scripts/ci/platform_release_epoch.py'
 repository_json="${RUNNER_TEMP}/platform-repository.json"
 transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
+# The predecessor of the first ordinary release after a drain is a RECOVERY
+# publication, whose executor is not its source. That relation is a git fact
+# and the epoch policy refuses to assume it, so the checkout — fetched at full
+# depth by this job — proves it here. Without this the ordinary path would
+# stall exactly where the backlog just ended (issue #395).
+executor_args=(--executor-repository .)
 tagger_name='github-actions[bot]'
 tagger_email='41898282+github-actions[bot]@users.noreply.github.com'
 have_cached_window=false
@@ -110,7 +116,8 @@ classify_predecessor_release() {
   if [ "${status}" != 200 ]; then
     python3 -I -B "${contract}" identity-release-state \
       --http-status "${status}" --require "${required}" \
-      "${transport_args[@]}" --tag "${tag}" --source-sha "${source_sha}" >/dev/null
+      "${transport_args[@]}" "${executor_args[@]}" \
+      --tag "${tag}" --source-sha "${source_sha}" >/dev/null
     return
   fi
   jq -e --arg identity "${identity_name}" --arg bundle "${bundle_name}" '
@@ -147,7 +154,8 @@ classify_predecessor_release() {
     --source-sha "${source_sha}" \
     --selector-build-sha "${selector_build_sha}" \
     --tag-object-sha "${tag_object_sha}" \
-    --source-tree-sha "${source_tree_sha}" "${transport_args[@]}" >/dev/null || return
+    --source-tree-sha "${source_tree_sha}" "${transport_args[@]}" \
+    "${executor_args[@]}" >/dev/null || return
   if [ "$(jq -r '.version' <<<"${policy}")" = 4 ]; then
     local proof_status
     if RECOVERY_READ_TOKEN="${read_token}" python3 -I -B scripts/ci/platform_release_recovery.py predecessor; then

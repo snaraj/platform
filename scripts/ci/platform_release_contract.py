@@ -377,16 +377,24 @@ def executor_descends(
 ) -> bool:
     """The recovery executor relation `EPOCH.validate_execution` asks for.
 
-    A recovery publisher runs at a commit protected main reached AFTER the
-    source it is draining, and main still contains it. Both halves are load
-    bearing: the first refuses a replay of a workflow at or before the source
-    (every earlier source is an ancestor, never a first-parent descendant), and
-    the second refuses a commit that left protected main, so an executor is
-    always something the ruleset accepted and still holds.
+    A recovery publisher runs at a commit that protected main reached AFTER the
+    source it is draining, and that main's own line still carries. Both halves
+    are first-parent MEMBERSHIP rather than reachability, and both are load
+    bearing:
+
+    * the first refuses a replay of a workflow at or before the source (every
+      earlier source is an ancestor, never a first-parent descendant), and a
+      source main only absorbed through a merge, which is reachable from main
+      without ever having been main;
+    * the second refuses a commit that was never main's own tip. Reachability
+      is not enough here either: a side branch cut from the source and later
+      merged is an ancestor of main, yet no dispatch ever ran at it. Only a
+      commit on main's first-parent line — or the protected tip itself — can
+      have been the executor of a protected-main dispatch.
     """
     return _first_parent_descends(repository, source_sha, executor_sha) and (
         executor_sha == protected_sha
-        or _is_ancestor(repository, executor_sha, protected_sha)
+        or _first_parent_descends(repository, executor_sha, protected_sha)
     )
 
 

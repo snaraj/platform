@@ -19,7 +19,7 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from .support import load_script
+from .support import hermetic_git_environment, load_script
 from . import test_platform_release_v4 as v4
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +41,56 @@ REAL_NO_PUBLISHER = R.prove_no_publisher_in_flight
 def ledger_patch():
     """Serve the dump-derived ledger wherever production would walk git."""
     return mock.patch.object(B, "published_edges", return_value=LEDGER)
+
+
+class MergeHistory:
+    r"""A disposable repository whose main carries a real two-parent merge.
+
+    This repository's own history is linear — merge commits are disabled in
+    settings and the owner squashes — so the first-parent rule cannot be
+    exercised against it at all: every commit main reaches, it reached as a
+    first parent. The relation issue #395 depends on is exactly the difference
+    between "reachable from main" and "was main", and only a two-parent merge
+    tells those apart, so the fixture builds one:
+
+        base -- main_one ------------- merge -- after   (first-parent line)
+                        \__ side ____/
+
+    `side` is an ancestor of `after` and never was main.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.git("init", "-q")
+        for key, value in (("user.name", "Fixture Owner"),
+                           ("user.email", "fixture@example.invalid"),
+                           ("commit.gpgsign", "false"), ("gc.auto", "0")):
+            self.git("config", "--local", key, value)
+        self.git("branch", "-m", "main")
+        self.base = self.commit("base")
+        self.main_one = self.commit("main one")
+        self.git("checkout", "-q", "-b", "side")
+        self.side = self.commit("side work")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--no-ff", "-q", "-m", "merge side", "side")
+        self.merge = self.git("rev-parse", "HEAD")
+        self.after = self.commit("after merge")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.root), *args], check=True, capture_output=True,
+            text=True, timeout=120,
+            env=hermetic_git_environment(
+                identity=("Fixture Owner", "fixture@example.invalid")),
+        ).stdout.strip()
+
+    def commit(self, message: str) -> str:
+        path = self.root / "log.txt"
+        path.write_text((path.read_text() if path.exists() else "") + message + "\n",
+                        encoding="utf-8", newline="\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
 
 
 def environment():
@@ -236,12 +286,75 @@ class LedgerDerivationTests(unittest.TestCase):
         self.assertEqual(LEDGER[0].tag, R.E.FIRST_V4_TAG)
 
     def test_a_derived_edge_refuses_a_merge_commit_source(self):
-        merge = R.C._git(ROOT, "rev-list", "--max-count=1", "--merges", "HEAD")
-        if not merge:
-            self.skipTest("this history carries no merge commit to refuse")
-        with self.assertRaisesRegex(ValueError, "single-parent"):
-            B.derive_edge(ROOT, tag="v9.9.9", source_sha=merge,
-                          base_tag=LEDGER[-1].tag, base_sha=LEDGER[-1].source_sha)
+        """A tag on a two-parent commit is refused where the edge is derived.
+
+        The frozen table asserted the first-parent rule by transcription; the
+        derivation has to enforce it, and the refusal has to be this one rather
+        than a downstream range error, so the message is part of the assertion.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            history = MergeHistory(Path(directory))
+            with self.assertRaisesRegex(ValueError, "single-parent"):
+                B.derive_edge(history.root, tag="v9.9.9", source_sha=history.merge,
+                              base_tag="v0.1.80", base_sha=history.main_one)
+            # The positive control: the same derivation on the single-parent
+            # commit right after that merge reaches its fragment check instead.
+            with self.assertRaisesRegex(ValueError, "fragment"):
+                B.derive_edge(history.root, tag="v9.9.9", source_sha=history.after,
+                              base_tag="v0.1.80", base_sha=history.merge)
+
+    def test_the_relation_separates_reachable_from_ever_having_been_main(self):
+        """B1/B5: reachability is not the executor relation.
+
+        A commit main absorbed through a merge is an ancestor of main without
+        ever having been main. `merge-base --is-ancestor` admits it; the
+        first-parent walk is what refuses it, and that walk is the whole
+        difference between the relation and plain reachability.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            history = MergeHistory(Path(directory))
+            root = history.root
+            # A SOURCE main only absorbed through a merge: reachable from the
+            # executor, never on the executor's own line. First half refuses.
+            self.assertTrue(R.C._is_ancestor(root, history.side, history.after))
+            self.assertFalse(R.C._first_parent_descends(root, history.side, history.after))
+            self.assertFalse(R.C.executor_descends(
+                root, source_sha=history.side, executor_sha=history.after,
+                protected_sha=history.after))
+            self.assertFalse(R.C.executor_descends(
+                root, source_sha=history.side, executor_sha=history.merge,
+                protected_sha=history.after))
+            # An EXECUTOR that is a side branch cut from the source and later
+            # merged into main. It descends from the source on its own
+            # first-parent line AND is an ancestor of protected main, so
+            # reachability admits it — but no dispatch ever ran at it, because
+            # it was never main's tip. The second half must be first-parent
+            # membership too, and this is the case that proves it.
+            self.assertTrue(R.C._first_parent_descends(root, history.base, history.side))
+            self.assertTrue(R.C._is_ancestor(root, history.side, history.after))
+            self.assertFalse(R.C._first_parent_descends(root, history.side, history.after))
+            self.assertFalse(R.C.executor_descends(
+                root, source_sha=history.base, executor_sha=history.side,
+                protected_sha=history.after))
+            self.assertFalse(R.C.executor_descends(
+                root, source_sha=history.main_one, executor_sha=history.side,
+                protected_sha=history.after))
+            # Positive controls on the same history, so the refusals above are
+            # a property of the relation and not of the fixture.
+            for source, executor in ((history.base, history.after),
+                                     (history.main_one, history.merge),
+                                     (history.base, history.main_one)):
+                with self.subTest(source=source[:8], executor=executor[:8]):
+                    self.assertTrue(R.C._first_parent_descends(root, source, executor))
+                    self.assertTrue(R.C.executor_descends(
+                        root, source_sha=source, executor_sha=executor,
+                        protected_sha=history.after))
+            # Strictness and the second half, on the same objects.
+            self.assertFalse(R.C._first_parent_descends(root, history.after, history.after))
+            self.assertFalse(R.C._first_parent_descends(root, history.after, history.base))
+            self.assertFalse(R.C.executor_descends(
+                root, source_sha=history.base, executor_sha=history.after,
+                protected_sha=history.main_one))
 
 
 class RecoveryCITests(unittest.TestCase):
@@ -417,9 +530,11 @@ class RecoverySelectionTests(unittest.TestCase):
         edges = value["edges"]
         cases = {
             "reordered": [edges[1], edges[0], *edges[2:]],
+            "skips an edge": [edges[0], *edges[2:]],
             "dropped": [edges[0], *edges[2:]],
             "duplicated": [*edges, copy.deepcopy(edges[-1])],
-            "rechained": [{**edges[0], "base_tag": edges[1]["base_tag"]}, *edges[1:]],
+            "rechained": [edges[0], {**edges[1], "base_tag": edges[0]["base_tag"],
+                                     "base_sha": edges[0]["base_sha"]}, *edges[2:]],
             "foreign field": [{**edges[0], "extra": 1}, *edges[1:]],
             "missing field": [{k: v for k, v in edges[0].items() if k != "tree_sha"}, *edges[1:]],
             "moved fragment": [{**edges[0], "fragment_sha256": "0" * 64}, *edges[1:]],
@@ -429,8 +544,18 @@ class RecoverySelectionTests(unittest.TestCase):
             "empty": [],
         }
         with ledger_patch():
+                # Each case names the refusal it must produce, so a guard cannot be
+            # deleted and left "covered" by a weaker downstream one.
+            expected = {"foreign field": "foreign selection edge fields",
+                        "missing field": "foreign selection edge fields",
+                        "duplicated": "repeats an edge",
+                        "rechained": "no longer matches the repository",
+                        "reordered": "chain to its predecessor entry",
+                        "skips an edge": "chain to its predecessor entry",
+                        "empty": "carries no pending edge"}
             for name, replacement in cases.items():
-                with self.subTest(case=name), self.assertRaises(ValueError):
+                with self.subTest(case=name), self.assertRaisesRegex(
+                        ValueError, expected.get(name, "")):
                     R.binding(ROOT, bound(), R.canonical({**value, "edges": replacement}))
             for key, replacement in (("run_id", 501), ("run_attempt", 2), ("executor_sha", "a" * 40),
                                      ("repository", "other/platform"), ("repository_id", True),
@@ -1109,8 +1234,12 @@ class RecoveryReadBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inside the recovery deadline"):
             R.per_run_bounds(47)
         self.assertEqual(R.max_pending_edges(), 46)
+        # The publish budget carries the same headroom every other derived
+        # bound carries; a timeout sitting on its measurement is not a bound.
+        measured = R.PUBLISH_FIXED_MINUTES + R.PUBLISH_EDGE_MINUTES * 46
         self.assertEqual(R.publish_timeout_minutes(),
-                         R.PUBLISH_FIXED_MINUTES + R.PUBLISH_EDGE_MINUTES * 46)
+                         -(-measured * (100 + R.HEADROOM_PERCENT) // 100))
+        self.assertGreater(R.publish_timeout_minutes(), measured)
         for pending in (0, -1, True, 13.0, "13", None):
             with self.subTest(pending=pending), self.assertRaisesRegex(ValueError, "nonempty backlog"):
                 R.per_run_bounds(pending)

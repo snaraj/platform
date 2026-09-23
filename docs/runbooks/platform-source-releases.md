@@ -152,13 +152,17 @@ derived edge is refused unless every derived fact re-verifies at run time:
 
 An ordinary publication runs at the commit it releases, so `execution.source_sha`
 equals `source.merge_sha`. A recovery publication runs behind main, so its
-executor is a STRICT first-parent descendant of the edge's source that current
-protected main still contains. That relation replaces the membership refusal
-and the per-edge executor pins: one executor drains many edges and later becomes
-a source itself, which is the ordinary case rather than a replay. A replay of an
-old workflow is refused by construction, because every earlier source is an
-ancestor of the executor rather than a descendant of it, and the terminal
-`v0.1.80` source precedes every v4 source. `validate_execution` is git-free and
+executor is a STRICT first-parent descendant of the edge's source and is itself
+on protected main's own first-parent line (or is its tip). BOTH halves are
+first-parent membership rather than reachability, deliberately: a commit main
+absorbed through a merge is an ancestor of main without ever having been main,
+so `merge-base --is-ancestor` alone would admit a source, or an executor, that
+no protected-main dispatch ever ran at. That relation replaces the membership
+refusal and the per-edge executor pins: one executor drains many edges and later
+becomes a source itself, which is the ordinary case rather than a replay. A
+replay of an old workflow is refused by construction, because every earlier
+source is an ancestor of the executor rather than a first-parent descendant of
+it, and the terminal `v0.1.80` source precedes every v4 source. `validate_execution` is git-free and
 refuses recovery-shaped evidence that arrives without an ancestry proof; the
 caller proves it with `platform_release_contract.executor_descends` against the
 checkout, which is pinned to current protected main.
@@ -187,11 +191,29 @@ they derive from, and both remain hard caps enforced on every read.
 in progress: that closes the race between the tip merge's own publisher and the
 drain by construction.
 
+The ordinary publisher reaches the same relation from the other side. The first
+ordinary release after a drain has a RECOVERY publication as its predecessor,
+so `wait-platform-release-predecessor.sh` hands its own full-depth checkout to
+the identity validators; without it the epoch policy would refuse that
+predecessor for want of an ancestry proof and the ordinary path would stall
+exactly where the backlog ended.
+
 The `immutable-settings` job re-verifies the whole selection and proves the
 immutable-release repository setting ONCE per dispatch. The setting is
 repository-level and the Administration-read App token never crosses into the
 write job; a per-edge re-proof would put that token into `publish`, which is a
 permission expansion rather than a stronger control.
+
+The scan runs newest-first and stops at the first published Release, so a
+Release missing BELOW a present one is not what it looks for. That state cannot
+arise while the controls hold: a Release is immutable, and the publisher proves
+its predecessor exact before it writes, so `v0.1.N` existing is itself evidence
+that `v0.1.N-1` existed when it was published. Only an owner deleting a
+published immutable Release could produce it, and the drain would then simply
+report the backlog above the hole; the hole is repaired by the owner, and the
+full `prove_release` of the predecessor still re-verifies that Release's own
+signed predecessor tag and peeled commit, so the chain is checked one link
+further back on every run.
 
 `publish` then loops in list order: per edge `bind` (env rebound exactly as for
 an ordinary release), publish, and an independent `readback` of the new Release

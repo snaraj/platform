@@ -69,10 +69,14 @@ EDGE_SECONDS = 4
 # single-edge dispatches of 2026-09-22/23 (runs 35793384370, 35794132986,
 # 35794648655, 35795274166) took 3.5-4.0 min wall each, of which the two
 # read-only jobs plus tool install are fixed setup; the publish job's own
-# in-loop work — draft, body, sign, two uploads, publish, readback — measured
-# 100-135 s. Rounded up to a whole minute with the same headroom.
+# in-loop work — draft, body, sign, two uploads, publish — measured 100-135 s,
+# dominated by the ~10 write boundaries, each of which re-walks the ledger.
+# Two things moved that figure and both are counted here: `bind` now derives
+# the WHOLE v4 ledger rather than one transition window (19.2 s against 15.5 s
+# measured warm on the author's laptop, +24 %), and the drain adds one
+# independent readback per edge. 135 s x 1.24 + readback rounds to 4.
 PUBLISH_FIXED_MINUTES = 6
-PUBLISH_EDGE_MINUTES = 3
+PUBLISH_EDGE_MINUTES = 4
 
 
 def per_run_bounds(pending: int) -> tuple[int, int]:
@@ -135,12 +139,15 @@ def publish_timeout_minutes() -> int:
     """The publish job's wall budget for draining a maximum-length backlog.
 
     Fixed setup plus the measured in-loop per-edge cost, for as many edges as
-    `prepare` can admit. It is a hard cap in the same sense the read budget is:
-    a drain that outgrows it is stopped by GitHub, mid-edge at worst, and the
-    per-edge write boundaries keep that from leaving anything but a draft the
-    owner deletes.
+    `prepare` can admit, carrying the same HEADROOM_PERCENT every other derived
+    bound here carries — a timeout sitting exactly on its measurement turns one
+    slow runner into a mid-edge kill. It is a hard cap in the same sense the
+    read budget is: a drain that outgrows it is stopped by GitHub, mid-edge at
+    worst, and the per-edge write boundaries keep that from leaving anything
+    but a draft the owner deletes.
     """
-    return PUBLISH_FIXED_MINUTES + PUBLISH_EDGE_MINUTES * max_pending_edges()
+    minutes = PUBLISH_FIXED_MINUTES + PUBLISH_EDGE_MINUTES * max_pending_edges()
+    return -(-minutes * (100 + HEADROOM_PERCENT) // 100)
 
 
 def canonical(value: dict) -> str:

@@ -105,6 +105,67 @@ class RecoveryWiringTests(unittest.TestCase):
         self.assertIn("platform-source-releases.md#owner-prepared-historical-tags", controls)
         self.assertIn("Agents never create tag objects or refs.", controls)
 
+    def test_every_v4_validating_shell_call_proves_the_executor_relation(self):
+        """A v4 validator without a checkout refuses a recovery predecessor.
+
+        `validate_execution` will not assume the executor relation, so the FIVE
+        commands that reach it must each be handed the checkout that proves it.
+        Missing it is invisible until the first ordinary release after a drain,
+        whose predecessor is a recovery publication — exactly where the backlog
+        just ended. This inventories the call sites instead of trusting that
+        every one was remembered.
+        """
+        commands = ("identity-release-record", "staged-identity-release-record",
+                    "identity-release-state", "identity-run-records",
+                    "selector-image-from-release")
+        scripts = sorted((ROOT / "scripts/ci").glob("*.sh"))
+        self.assertTrue(scripts)
+        found = 0
+        for script in scripts:
+            source = script.read_text()
+            for match in re.finditer(r'"\$\{contract\}" (' + "|".join(commands) + r")\b", source):
+                # One invocation is everything up to the first line that does
+                # not continue; shell line continuations carry its arguments.
+                start = match.start()
+                end = start
+                while True:
+                    line_end = source.index("\n", end)
+                    if not source[end:line_end].rstrip().endswith("\\"):
+                        break
+                    end = line_end + 1
+                invocation = source[start:line_end]
+                found += 1
+                with self.subTest(script=script.name, command=match.group(1)):
+                    if "executor_args" in invocation:
+                        # The array spelling only counts when the script binds
+                        # it to the flag; an empty array would pass a grep.
+                        self.assertIn("executor_args=(--executor-repository", source)
+                    else:
+                        self.assertIn("--executor-repository", invocation)
+        self.assertGreaterEqual(found, 7)
+
+    def test_the_ordinary_predecessor_check_needs_the_checkout_to_accept_a_drain(self):
+        """The behavioural half of the inventory above, on real bytes.
+
+        `v0.1.93` was published by a drain, so its signed executor is not its
+        source. With the checkout the relation is proved and the identity is
+        accepted; without one the epoch policy refuses by name rather than
+        assuming it — which is what the ordinary publisher would have hit.
+        """
+        fixture = (ROOT / "tests/security/fixtures_release_identity"
+                   / "v0.1.93-platform-release-identity.v4.json")
+        contract = recovery.R.C
+        epoch = contract.EPOCH
+        payload = json.loads(fixture.read_bytes())
+        self.assertNotEqual(payload["execution"]["source_sha"],
+                            payload["source"]["merge_sha"])
+        with_checkout = contract._cli_executor_descends(ROOT, fixture)
+        self.assertIs(with_checkout, True)
+        epoch.validate_identity(payload, executor_descends=with_checkout)
+        self.assertIsNone(contract._cli_executor_descends(None, fixture))
+        with self.assertRaisesRegex(ValueError, "needs an ancestry proof"):
+            epoch.validate_identity(payload, executor_descends=None)
+
     def test_main_only_first_attempt_jobs_and_exact_authority(self):
         source = WORKFLOW.read_text()
         workflow_contract(source)
