@@ -74,6 +74,9 @@ epoch="$(python3 -I -B "${epoch_contract}" "${TAG}" \
 identity_asset_name="$(jq -er '.asset' <<<"${epoch}")"
 identity_bundle_name="$(jq -er '.bundle' <<<"${epoch}")"
 transport_args=(--api-repository "${GITHUB_REPOSITORY}" --api-repository-id "${GITHUB_REPOSITORY_ID}")
+# A v4 identity signed by a recovery dispatch names an executor other than its
+# source; that relation is proved against THIS checkout, never asserted.
+executor_args=(--executor-repository .)
 identity_issuer='https://token.actions.githubusercontent.com'
 historical_recovery=false
 bound_tag_object=''
@@ -143,9 +146,19 @@ download_identity_asset() {
   test "${status}" = 200
 }
 
+# The signed payload states its own relation — an executor other than the
+# source is a recovery publication — so the trust root follows the evidence
+# rather than a table keyed by tag number.
 verify_identity_signature() {
   local identity="$1" bundle="$2" tag="$3" policy identity_subject
-  policy="$(python3 -I -B "${epoch_contract}" "${tag}")" || return
+  local -a policy_args=()
+  if [ "$(jq -r 'if .execution.source_sha and .execution.source_sha != .source.merge_sha
+        then "recovering" else "ordinary" end' "${identity}")" = recovering ]; then
+    policy_args=(--recovering
+      --source-sha "$(jq -er '.source.merge_sha' "${identity}")"
+      --executor-sha "$(jq -er '.execution.source_sha' "${identity}")")
+  fi
+  policy="$(python3 -I -B "${epoch_contract}" "${tag}" "${policy_args[@]}")" || return
   identity_subject="$(jq -er '.subject' <<<"${policy}")" || return
   local -a execution_args=()
   if [ "$(jq -r '.version' <<<"${policy}")" = 4 ]; then
@@ -171,9 +184,12 @@ download_identity_pair() {
   verify_identity_signature "${identity_download}" "${bundle_download}" "${tag}"
 }
 
+# The upload that killed one drained edge silently. The request carries the credential
+# in a header and the RESPONSE never does, so echoing a bounded slice of the
+# body is the diagnostic the owner had to reconstruct from the Release page.
 upload_identity_asset() {
   local release_id="$1" name="$2" path="$3" status
-  release_write_boundary
+  release_write_boundary "asset-upload ${name}"
   status="$(curl --silent --show-error \
     --proto '=https' --tlsv1.2 --request POST \
     --output "${asset_upload_json}" --write-out '%{http_code}' \
@@ -183,8 +199,14 @@ upload_identity_asset() {
     --header "Authorization: Bearer ${write_token}" \
     --data-binary "@${path}" \
     "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${name}")"
-  test "${status}" = 201
-  release_write_boundary
+  if [ "${status}" != 201 ]; then
+    printf 'IDENTITY_ASSET_UPLOAD refused name=%s release=%s status=%s\n' \
+      "${name}" "${release_id}" "${status}" >&2
+    printf 'IDENTITY_ASSET_UPLOAD body=%s\n' \
+      "$(head -c 512 "${asset_upload_json}" 2>/dev/null | tr -d '\r\n')" >&2
+    return 1
+  fi
+  release_write_boundary "asset-uploaded ${name}"
 }
 
 validate_identity_runs() {
@@ -212,7 +234,7 @@ validate_identity_runs() {
     execution_args=(--execution-main-run-json "${executor_json}")
   fi
   python3 -I -B "${contract}" identity-run-records \
-    --identity "${identity}" \
+    --identity "${identity}" --executor-repository . \
     --main-run-json "${legacy_main_run_json}" \
     --platform-run-json "${legacy_platform_run_json}" "${execution_args[@]}" >/dev/null
 }
@@ -291,30 +313,47 @@ restrict_recovery_request() {
   mv "${path}.scoped" "${path}"
 }
 
+# Every refusal names the check that refused and the write it was guarding.
+# A boundary that fails with no line in the log is the failure class issue #395
+# removed: a drained edge died on a bare `test` and said nothing
+# (failure-logging directive).
+boundary_phase='preflight'
+boundary_refuse() {
+  printf 'RELEASE_WRITE_BOUNDARY refused phase=%s check=%s tag=%s\n' \
+    "${boundary_phase}" "$1" "${TAG}" >&2
+  return 1
+}
+
 # A partial current draft is expected during publication, so this boundary
 # verifies the predecessor and tag, never misclassifies our in-flight assets
 # as a completed release. Preserve the first observed current tag object.
 release_write_boundary() {
+  boundary_phase="${1:-write}"
   if [ "$(jq -r '.version' <<<"${epoch}")" != 4 ]; then return; fi
-  git fetch --quiet --tags origin
+  git fetch --quiet --tags origin || boundary_refuse fetch-tags
   if [ "${historical_recovery}" = true ]; then
-    python3 -I -B scripts/ci/platform_release_recovery.py bind >/dev/null
+    python3 -I -B scripts/ci/platform_release_recovery.py bind >/dev/null \
+      || boundary_refuse selection-binding
     local current_main="${RUNNER_TEMP}/platform-current-main.json"
-    test "$(get_json "${write_token}" "${api}/git/ref/heads/main" "${current_main}")" = 200
+    test "$(get_json "${write_token}" "${api}/git/ref/heads/main" "${current_main}")" = 200 \
+      || boundary_refuse current-main-read
     jq -e --arg sha "${GITHUB_SHA}" '.ref == "refs/heads/main" and
-      .object.type == "commit" and .object.sha == $sha' "${current_main}" >/dev/null
+      .object.type == "commit" and .object.sha == $sha' "${current_main}" >/dev/null \
+      || boundary_refuse executor-is-current-main
   fi
   local predecessor_date current_date current_object
   predecessor_date="$(git show -s --format=%cI "${BASE_SHA}")"
   current_date="$(git show -s --format=%cI "${SOURCE_SHA}")"
   classify_tag exact "${BASE_SHA}" "${BASE_TAG}" \
-    "Platform release ${BASE_TAG} from ${BASE_SHA}" "${predecessor_date}" >/dev/null
-  classify_predecessor_release >/dev/null
+    "Platform release ${BASE_TAG} from ${BASE_SHA}" "${predecessor_date}" >/dev/null \
+    || boundary_refuse predecessor-tag
+  classify_predecessor_release >/dev/null || boundary_refuse predecessor-release
   classify_tag exact "${SOURCE_SHA}" "${TAG}" \
-    "Platform release ${TAG} from ${SOURCE_SHA}" "${current_date}" >/dev/null
-  current_object="$(jq -er '.object.sha' "${ref_json}")"
+    "Platform release ${TAG} from ${SOURCE_SHA}" "${current_date}" >/dev/null \
+    || boundary_refuse current-tag
+  current_object="$(jq -er '.object.sha' "${ref_json}")" || boundary_refuse tag-object-read
   if [ -z "${bound_tag_object}" ]; then bound_tag_object="${current_object}"; fi
-  test "${current_object}" = "${bound_tag_object}"
+  test "${current_object}" = "${bound_tag_object}" || boundary_refuse tag-object-moved
 }
 
 write_current_notes() {
@@ -345,13 +384,16 @@ list_release_pages() {
 
 classify_current_draft() {
   local required="$1"
+  local -a recovery_args=()
+  if [ "${historical_recovery}" = true ]; then recovery_args=(--recovering); fi
   write_current_draft_marker
   write_current_notes
   list_release_pages
   python3 -I -B "${contract}" release-draft-state \
     --releases-json "${release_pages_json}" --tag "${TAG}" \
     --source-sha "${SOURCE_SHA}" --title "Platform ${TAG}" \
-    --body "${draft_marker}" --body "${notes}" --require "${required}"
+    --body "${draft_marker}" --body "${notes}" --require "${required}" \
+    "${recovery_args[@]}"
 }
 
 classify_burned_draft() {
@@ -429,7 +471,8 @@ classify_current_release() {
   fi
   python3 -I -B "${contract}" identity-release-state \
     --http-status "${status}" --require "${required}" \
-    "${record_args[@]}" "${transport_args[@]}" --tag "${TAG}" --source-sha "${SOURCE_SHA}"
+    "${record_args[@]}" "${transport_args[@]}" "${executor_args[@]}" \
+    --tag "${TAG}" --source-sha "${SOURCE_SHA}"
 }
 
 classify_predecessor_release() {
@@ -461,14 +504,14 @@ classify_predecessor_release() {
         --release-json "${release_json}" --identity "${identity_download}" \
         --bundle "${bundle_download}" --tag "${BASE_TAG}" \
         --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
-        --source-tree-sha "${tree_sha}" "${transport_args[@]}" \
+        --source-tree-sha "${tree_sha}" "${transport_args[@]}" "${executor_args[@]}" \
         --selector-build-sha "${predecessor_build_sha}" >/dev/null
     else
       python3 -I -B "${contract}" identity-release-record \
         --release-json "${release_json}" --identity "${identity_download}" \
         --bundle "${bundle_download}" --tag "${BASE_TAG}" \
         --source-sha "${BASE_SHA}" --tag-object-sha "${tag_object}" \
-        --source-tree-sha "${tree_sha}" "${transport_args[@]}" >/dev/null
+        --source-tree-sha "${tree_sha}" "${transport_args[@]}" "${executor_args[@]}" >/dev/null
     fi
     validate_identity_runs "${identity_download}"
   else
@@ -722,6 +765,7 @@ complete_recovery_release() {
 publish_current_release() {
   local tagger_date message tag_object release_id tree_sha
   local tag_race_verified release_race_verified attempt
+  local -a draft_recovery_args=()
   tagger_date="$(git show -s --format=%cI "${SOURCE_SHA}")"
   message="Platform release ${TAG} from ${SOURCE_SHA}"
 
@@ -810,11 +854,14 @@ publish_current_release() {
     [[ "${release_id}" =~ ^[1-9][0-9]*$ ]]
     test "$(get_json "${write_token}" "${api}/releases/${release_id}" \
       "${release_json}")" = 200
+    draft_recovery_args=()
+    if [ "${historical_recovery}" = true ]; then draft_recovery_args=(--recovering); fi
     test "$(python3 -I -B "${contract}" release-draft-state \
       --releases-json "${release_json}" --tag "${TAG}" \
       --source-sha "${SOURCE_SHA}" --title "Platform ${TAG}" \
       --body "${draft_marker}" --body "${notes}" \
-      --expected-release-id "${release_id}" --require exact)" = "${release_id}"
+      --expected-release-id "${release_id}" --require exact \
+      "${draft_recovery_args[@]}")" = "${release_id}"
 
     jq -n --arg tag "${TAG}" --arg target "${SOURCE_SHA}" \
       --arg name "Platform ${TAG}" --rawfile body "${notes}" \
@@ -833,7 +880,7 @@ publish_current_release() {
     python3 -I -B "${contract}" release-draft-record \
       --release-json "${release_json}" --tag "${TAG}" \
       --source-sha "${SOURCE_SHA}" --title "Platform ${TAG}" \
-      --body "${notes}" >/dev/null
+      --body "${notes}" "${draft_recovery_args[@]}" >/dev/null
     test "$(classify_current_draft exact)" = "${release_id}"
 
     tag_object="$(jq -er '.object.sha' "${ref_json}")"
@@ -856,7 +903,7 @@ publish_current_release() {
       --bundle "${bundle_download}" \
       --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
       --tag-object-sha "${tag_object}" \
-      --source-tree-sha "${tree_sha}" "${transport_args[@]}" >/dev/null
+      --source-tree-sha "${tree_sha}" "${transport_args[@]}" "${executor_args[@]}" >/dev/null
 
     jq -n --arg tag "${TAG}" --arg target "${SOURCE_SHA}" \
       --arg name "Platform ${TAG}" --rawfile body "${notes}" \
@@ -896,5 +943,8 @@ preflight_publication_state
 complete_recovery_release
 retire_burned_partial_draft
 publish_current_release
+
+printf 'PLATFORM_RELEASE_SUMMARY tag=%s source=%s predecessor=%s recovery=%s seconds=%s\n' \
+  "${TAG}" "${SOURCE_SHA}" "${BASE_TAG}" "${historical_recovery}" "${SECONDS}"
 
 unset write_token

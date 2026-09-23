@@ -130,7 +130,10 @@ def validate_single_asset_publication_transaction(transaction: str) -> None:
         '--data-binary "@${path}"',
         'upload_identity_asset "${release_id}" "${identity_asset_name}"',
         'upload_identity_asset "${release_id}" "${identity_bundle_name}"',
-        'test "${status}" = 201',
+        # The 201 check stays exact; the refusal now also names the status
+        # and a bounded slice of the body (issue #395).
+        'if [ "${status}" != 201 ]; then',
+        'IDENTITY_ASSET_UPLOAD refused',
         'download_identity_pair "${release_json}"',
         'cmp -s "${identity_asset}" "${identity_download}"',
         'cmp -s "${identity_bundle}" "${bundle_download}"',
@@ -2964,7 +2967,10 @@ class PublicationTransactionShellTests(unittest.TestCase):
             '--data-binary "@${path}"',
             'upload_identity_asset "${release_id}" "${identity_asset_name}"',
             'upload_identity_asset "${release_id}" "${identity_bundle_name}"',
-            'test "${status}" = 201',
+            # The 201 check stays exact; the refusal now also names the status
+            # and a bounded slice of the body (issue #395).
+            'if [ "${status}" != 201 ]; then',
+            'IDENTITY_ASSET_UPLOAD refused',
             'cmp -s "${identity_asset}" "${identity_download}"',
             'cmp -s "${identity_bundle}" "${bundle_download}"',
             "staged-identity-release-record",
@@ -5149,7 +5155,10 @@ class WorkflowStructureTests(unittest.TestCase):
             '--data-binary "@${path}"',
             'upload_identity_asset "${release_id}" "${identity_asset_name}"',
             'upload_identity_asset "${release_id}" "${identity_bundle_name}"',
-            'test "${status}" = 201',
+            # The 201 check stays exact; the refusal now also names the status
+            # and a bounded slice of the body (issue #395).
+            'if [ "${status}" != 201 ]; then',
+            'IDENTITY_ASSET_UPLOAD refused',
             'download_identity_pair "${release_json}"',
             'cmp -s "${identity_asset}" "${identity_download}"',
             'cmp -s "${identity_bundle}" "${bundle_download}"',
