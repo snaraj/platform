@@ -146,6 +146,24 @@ workflow inventory there rather than sharing a single fingerprint.
 | `f71fc1f37f9ca1883e10286a13132cd70a17cf9f` | `35773664240` / `35773664214` | `317-release-backlog-automation.md` |
 | `76f60b306d028f5a2febcbf7b35c8ab16b0dd139` | `35788330613` / `35788330655` | `391-frozen-executor-pin.md` |
 
+A row whose Release already exists and whose executor this window later froze
+as a source also carries that executor as `executor_sha`, recorded in
+`PINNED_EXECUTIONS` beside the Release ID it was read from. Those pins, and
+nothing else, are what keep an already published edge out of the membership
+refusal below; an edge no publisher has taken yet has no executor to pin.
+
+| Published edge | Release | Executor pinned |
+| --- | --- | --- |
+| `v0.1.81` | `387789735` | `10ee0a67` |
+| `v0.1.82` | `394156049` | `76f60b30` |
+| `v0.1.83` | `394157866` | `76f60b30` |
+| `v0.1.84` | `394159524` | `76f60b30` |
+| `v0.1.85` | `394161048` | `76f60b30` |
+| `v0.1.86` | `394162468` | `76f60b30` |
+| `v0.1.87` | `394164673` | `76f60b30` |
+| `v0.1.88` | `394166552` | `76f60b30` |
+| `v0.1.89` | `394168254` | `76f60b30` |
+
 The current protected checkout executes the repair; the historical trees are
 data. A no-input `platform-release-recovery.yml` dispatch selects the oldest
 incomplete edge once and binds its source, tag, predecessor, executor, repository
@@ -230,13 +248,18 @@ table:
 After owner merge and successful exact-executor main CI and CodeQL, keep main at
 that executor, confirm no publisher proof is in flight, prepare the missing tags
 above, and never rerun a frozen old workflow. One executor drains many edges —
-the merge of the change that froze `v0.1.92` executes eleven of them, `v0.1.82`
-through `v0.1.92` — so when an executor is itself frozen as a source later, the
+the merge that froze `v0.1.92`, `76f60b30`, published eight of them, `v0.1.82`
+through `v0.1.89` — so when an executor is itself frozen as a source later, the
 pull request that freezes it pins EVERY edge it published: each edge carries the
 `executor_sha` its own already published immutable identity records, alongside
 the re-baselined exact-table tripwire and window fingerprint, in that one pull
-request. Every published edge's identity asset is validated against the new
-window before that pull request is reviewed. Then dispatch once per edge:
+request. This is not a courtesy to the edge that prompted the change: an
+unpinned published edge is refused as a foreign executor, and the drain stops
+there, so pinning one and leaving its siblings only moves the outage. Every
+published edge's identity asset is committed under
+`tests/security/fixtures_release_identity/` and validated against the new
+window by the class guard in `tests/security/test_platform_release_v4.py`,
+offline, before that pull request is reviewed. Then dispatch once per edge:
 
 ```
 gh workflow run platform-release-recovery.yml --ref main && gh run watch "$(gh run list --workflow platform-release-recovery.yml --limit 1 --json databaseId --jq '.[0].databaseId')"

@@ -226,13 +226,15 @@ class RecoveryTreeTests(unittest.TestCase):
         # It has moved three times, for issue #317's reviewed extension of the
         # window from three edges to eleven, for issue #391's twelfth edge and
         # v0.1.81 executor pin, and for issue #393's thirteenth edge, whose
-        # length the per-run read budget now reads; FrozenWindowTests re-derives every field it
+        # length the per-run read budget now reads and whose executor published
+        # v0.1.82 through v0.1.89, pinned on those eight entries in the same
+        # change; FrozenWindowTests re-derives every field it
         # covers from the repository, so this line is a tripwire on the
         # reviewed list rather than the only thing standing behind it. The run
-        # IDs and the pin, which Git cannot re-derive, are covered here alone.
+        # IDs and the pins, which Git cannot re-derive, are covered here alone.
         value = {"sources": R.E.HISTORICAL_RELEASES, "workflows": R.E.HISTORICAL_WORKFLOWS}
         self.assertEqual(hashlib.sha256(R.canonical(value).encode()).hexdigest(),
-                         "e36d6b1c24760f889403d32a5177e594fe229637622af5a3e9658a761ad96003")
+                         "fd877a34d8284cd85a229b0882c36af3237adb693cb3cefb77de6a4aca5e1dd7")
         self.assertEqual((R.TERMINAL_TREE, R.TERMINAL_TAG_OBJECT, R.TERMINAL_RELEASE_ID,
                           R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN),
                          ("db18c40ece8fa91f9dfabb7cb99a833a34a30505",
@@ -374,8 +376,16 @@ class FrozenWindowTests(unittest.TestCase):
                                  str(entry["codeql_run_id"]),
                                  entry["fragment_path"].removeprefix("changelog.d/"))
                                 for entry in R.E.HISTORICAL_RELEASES])
-        # The pin is a published fact a reader must be able to look up.
+        # A pin is a published fact a reader must be able to look up, so the
+        # second table names EVERY pinned edge with the Release the fact was
+        # read from: a drain that pins eight edges and documents one leaves the
+        # next reader guessing which of them the refusal will bite.
         self.assertIn("`executor_sha`", runbook)
+        pins = re.findall(
+            r"^\| `(v[0-9.]+)` \| `([0-9]+)` \| `([0-9a-f]{8})` \|$", section, re.M
+        )
+        self.assertEqual(pins, [(tag, str(row["release_id"]), row["executor_sha"][:8])
+                                for tag, row in R.E.PINNED_EXECUTIONS.items()])
 
     def test_a_named_inventory_must_be_known_and_complete(self):
         entry = R.E.HISTORICAL_RELEASES[0]

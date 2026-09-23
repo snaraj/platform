@@ -75,10 +75,50 @@ HISTORICAL_WORKFLOWS = {
 # names the Release the fact was read from, so an edge that has no published
 # Release has no executor to record and a pin can never become a forward
 # allowance for one the publisher has not taken yet (issue #391).
+#
+# One executor drains many edges, so freezing it pins EVERY edge it published:
+# 76f60b3 published v0.1.82 through v0.1.89 before issue #393 froze it as
+# v0.1.93's source, and each of those eight rows transcribes that edge's own
+# published identity asset (committed under
+# tests/security/fixtures_release_identity/, validated against this window by
+# the class guard there). Pinning only the edge that prompted the change would
+# leave the rest refused one edge later, which is the outage issue #391 fixed.
 PINNED_EXECUTIONS = {
     "v0.1.81": {
         "release_id": 387789735,
         "executor_sha": "10ee0a67144675630456daafeb002755aba653d4",
+    },
+    "v0.1.82": {
+        "release_id": 394156049,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.83": {
+        "release_id": 394157866,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.84": {
+        "release_id": 394159524,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.85": {
+        "release_id": 394161048,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.86": {
+        "release_id": 394162468,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.87": {
+        "release_id": 394164673,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.88": {
+        "release_id": 394166552,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
+    },
+    "v0.1.89": {
+        "release_id": 394168254,
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
 }
 FROZEN_EDGE_FIELDS = frozenset({
@@ -113,6 +153,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34305321734,
         "codeql_run_id": 34305321809,
         "workflows": "v3-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "3b7a0532ba5fe2f10037023f3e26ec5876f8d191",
@@ -123,6 +164,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34638257426,
         "codeql_run_id": 34638258315,
         "workflows": "v3-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "bb9a8d7a45f761491a4e17fffdc79a22e87c6dd4",
@@ -133,6 +175,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34661250611,
         "codeql_run_id": 34661250547,
         "workflows": "recovery-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "47fc0a1fb573983d69acfc88bcf6f950899f8772",
@@ -143,6 +186,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34667651399,
         "codeql_run_id": 34667651395,
         "workflows": "recovery-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "2ad053e307e43f6dfb5015de1f1bf09c3505a832",
@@ -153,6 +197,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34673797428,
         "codeql_run_id": 34673797429,
         "workflows": "recovery-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "57a8807d551f19b13ee9e2caea398dbaa280296f",
@@ -163,6 +208,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34732230714,
         "codeql_run_id": 34732230710,
         "workflows": "recovery-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "64cc95f3802c8feb8567f9b607aeac5c10d8d830",
@@ -173,6 +219,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34789838965,
         "codeql_run_id": 34789838936,
         "workflows": "recovery-publisher",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "2a597ce999979ae463bc575eb63d6d7d5a2a182d",
@@ -183,6 +230,7 @@ HISTORICAL_RELEASES = (
         "main_run_id": 34932536836,
         "codeql_run_id": 34932536855,
         "workflows": "codeql-4-38-0",
+        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139",
     },
     {
         "source_sha": "54ac82e692fa11999fafde52f2f4fe6ea17b47b5",
