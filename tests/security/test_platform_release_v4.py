@@ -20,15 +20,30 @@ E = C.EPOCH
 EPOCH_SCRIPT = ROOT / "scripts/ci/platform_release_epoch.py"
 EXECUTOR = "e" * 40
 EXECUTOR_TREE = "f" * 40
-# v0.1.81 is the one frozen edge whose published identity records an executor
+# v0.1.81 is the first frozen edge whose published identity records an executor
 # the window later froze as a source, so its fixtures must carry the pinned
 # fact rather than a synthetic executor: with the pin in force nothing else
 # validates for that tag (issue #391).
 PINNED_TAG = "v0.1.81"
 PINNED_EXECUTOR = E.PINNED_EXECUTIONS[PINNED_TAG]["executor_sha"]
 PINNED_RELEASE_ID = E.PINNED_EXECUTIONS[PINNED_TAG]["release_id"]
-IDENTITY_FIXTURE = (Path(__file__).resolve().parent / "fixtures_release_identity"
-                    / "v0.1.81-platform-release-identity.v4.json")
+FIXTURE_DIRECTORY = Path(__file__).resolve().parent / "fixtures_release_identity"
+IDENTITY_FIXTURE = FIXTURE_DIRECTORY / "v0.1.81-platform-release-identity.v4.json"
+# Every frozen edge whose Release exists, with the digest its REST record
+# reports for the immutable identity asset committed beside this file. The
+# digests are the control: they are what makes an edited fixture fail before it
+# can prove anything, and they are transcribed in PROVENANCE.md too.
+PUBLISHED_IDENTITIES = {
+    "v0.1.81": "4e9cfb1bdbdd27cf8fac42905f5832e3f24a5a24fe2c6636cf63cdabb95db119",
+    "v0.1.82": "dab21ffeddb00f7220752f69cc11e4f9154e4fbe85c430fafcaac53020647948",
+    "v0.1.83": "6b19aeeadd85e3ade3dc1a6c2f6eab1377d540708ec8862a890a4102476a5474",
+    "v0.1.84": "dead16cd692680fdeb32bcd921e1de0b5045e195a414fec4e9f3cb89e87c61b2",
+    "v0.1.85": "fd8835b2e140b41c11c0e4b2069b2ce2dc98de9b680579201aaa663850bc8d26",
+    "v0.1.86": "d807ca4563da58aae418b9d77feadbd0de175f7c84de92852f6d3d651002682b",
+    "v0.1.87": "6bdff5fd75b17a4c13a5f6c40fb8c6df4cc048c95b89d0254ccd337c5b0576c8",
+    "v0.1.88": "0d227c2f716038e46c29e6dce1234ff1968406fcb6fa6b34816de5369434da73",
+    "v0.1.89": "4f2c87a4b0ee0f4095451be19453b4bec2b8046da2406249ffab923c01d4b723",
+}
 # Derived from the frozen window's own length so the fixtures follow it when a
 # reviewed edge is added, rather than silently testing an already-frozen tag as
 # if it were still ordinary.
@@ -37,6 +52,11 @@ FROZEN_TAGS = tuple(
 )
 LAST_FROZEN_TAG = FROZEN_TAGS[-1]
 FIRST_ORDINARY_V4_TAG = E.next_tag(LAST_FROZEN_TAG)
+# The first frozen edge no publisher has taken yet, so a test that needs an
+# UNPINNED edge names one by the table rather than by a hard-coded index that
+# the next drain would quietly turn into a pinned one.
+FIRST_UNPINNED_INDEX = next(index for index, tag in enumerate(FROZEN_TAGS)
+                            if tag not in E.PINNED_EXECUTIONS)
 # Imports the file named by argv[1] and reports which of the two things
 # happened: the import itself refused, or it succeeded and a production entry
 # point answered. Nothing here calls validate_window, so a refusal can only
@@ -260,8 +280,8 @@ class PlatformReleaseV4Tests(unittest.TestCase):
     def frozen_evidence(self, index):
         """Evidence for another frozen edge, so the unpinned rule is exercised.
 
-        The generic fixture is v0.1.81, the one edge carrying a pin; without a
-        second edge the membership refusal could be deleted and still pass.
+        The generic fixture is v0.1.81, a pinned edge; without an edge that
+        carries NO pin the membership refusal could be deleted and still pass.
         """
         frozen = E.HISTORICAL_RELEASES[index]
         tag = f"v0.1.{81 + index}"
@@ -279,14 +299,39 @@ class PlatformReleaseV4Tests(unittest.TestCase):
         return value
 
     def test_a_frozen_pin_is_a_published_fact_and_never_a_forward_allowance(self):
-        # Exactly one edge is pinned, at exactly one value. Offline code cannot
-        # ask GitHub whether a Release exists, so the reviewed table is the
-        # control and this equality is the tripwire on it: a second pin, or a
-        # moved one, is a deliberate edit here and in the window fingerprint.
+        # Exactly these edges are pinned, at exactly these values. Offline code
+        # cannot ask GitHub whether a Release exists, so the reviewed table is
+        # the control and this equality is the tripwire on it: an added pin, or
+        # a moved one, is a deliberate edit here and in the window fingerprint.
+        # One drain by one executor is one block of rows: 10ee0a67 published
+        # v0.1.81, and 76f60b30 published v0.1.82 through v0.1.89 before this
+        # change froze it as v0.1.93's source.
         self.assertEqual(E.PINNED_EXECUTIONS, {
             "v0.1.81": {"release_id": 387789735,
                         "executor_sha": "10ee0a67144675630456daafeb002755aba653d4"},
+            "v0.1.82": {"release_id": 394156049,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.83": {"release_id": 394157866,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.84": {"release_id": 394159524,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.85": {"release_id": 394161048,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.86": {"release_id": 394162468,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.87": {"release_id": 394164673,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.88": {"release_id": 394166552,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
+            "v0.1.89": {"release_id": 394168254,
+                        "executor_sha": "76f60b306d028f5a2febcbf7b35c8ab16b0dd139"},
         })
+        # Every pinned tag is a frozen edge carrying exactly that value, and
+        # the entries and the table can never drift apart silently.
+        for tag, recorded in E.PINNED_EXECUTIONS.items():
+            entry = E.historical_release(tag)
+            self.assertIsNotNone(entry)
+            self.assertEqual(E.frozen_executor(tag, dict(entry)), recorded["executor_sha"])
         entry = dict(E.HISTORICAL_RELEASES[0])
         self.assertEqual(E.frozen_executor(PINNED_TAG, entry), PINNED_EXECUTOR)
         for change in ({"executor_sha": "a" * 40}, {"executor_sha": PINNED_EXECUTOR.upper()},
@@ -313,10 +358,15 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                     {PINNED_TAG: {"release_id": PINNED_RELEASE_ID, "executor_sha": malformed}}), \
                     self.assertRaisesRegex(ValueError, "no published Release"):
                 E.frozen_executor(PINNED_TAG, {**entry, "executor_sha": malformed})
-        # Every other edge is unpinned, and a pin cannot be granted to one no
-        # published Release records — the twelfth edge frozen here included.
-        for index in range(1, len(E.HISTORICAL_RELEASES)):
-            tag = f"v0.1.{81 + index}"
+        # Every edge the publisher has not taken yet is unpinned, and a pin
+        # cannot be granted to one no published Release records — the
+        # thirteenth edge frozen here included.
+        unpinned = [index for index, tag in enumerate(FROZEN_TAGS)
+                    if tag not in E.PINNED_EXECUTIONS]
+        self.assertEqual(unpinned, list(range(len(E.PINNED_EXECUTIONS),
+                                              len(E.HISTORICAL_RELEASES))))
+        for index in unpinned:
+            tag = FROZEN_TAGS[index]
             other = dict(E.HISTORICAL_RELEASES[index])
             self.assertIsNone(E.frozen_executor(tag, other))
             with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "no published Release"):
@@ -420,6 +470,60 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             E.validate_execution({**published,
                                   "release": {**published["release"], "id": PINNED_RELEASE_ID + 1}})
 
+    def test_every_published_identity_validates_against_this_window(self):
+        """The class guard: each published edge's real bytes, at this head.
+
+        The pin repair is per edge, but the defect is per DRAIN — one executor
+        publishes many edges, and freezing it later turns the membership
+        refusal against every one of them at once (issue #393 found exactly
+        that, eight edges deep, after issue #391 pinned only the first). A test
+        that names one tag can only ever catch the edge somebody already
+        thought about. This one refuses on behalf of the whole class: it walks
+        every immutable identity asset committed beside it and puts it through
+        the production `validate_execution`, so a future window extension that
+        freezes an executor without pinning the edges it published goes red
+        here, offline, before anyone dispatches a drain that cannot run.
+        """
+        self.assertEqual(
+            sorted(path.name for path in FIXTURE_DIRECTORY.glob("*.json")),
+            sorted(f"{tag}-platform-release-identity.v4.json" for tag in PUBLISHED_IDENTITIES))
+        # The published edges are a contiguous prefix of the window: the
+        # backlog drains in order, so a gap here means a fixture was forgotten
+        # rather than that an edge is genuinely unpublished.
+        self.assertEqual(tuple(PUBLISHED_IDENTITIES), FROZEN_TAGS[:len(PUBLISHED_IDENTITIES)])
+        for tag, digest in PUBLISHED_IDENTITIES.items():
+            with self.subTest(tag=tag):
+                raw = (FIXTURE_DIRECTORY / f"{tag}-platform-release-identity.v4.json").read_bytes()
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+                published = json.loads(raw)
+                self.assertEqual(published["tag"]["name"], tag)
+                # The production path, unmocked: repository, epoch, predecessor
+                # and the frozen edge's own fields, then the executor rule.
+                E.validate_identity(published)
+                E.validate_execution(published)
+                executor = published["execution"]["source_sha"]
+                # Whatever the asset records is what the table records, and
+                # only an edge whose executor the window froze needs a pin.
+                if executor in {entry["source_sha"] for entry in E.HISTORICAL_RELEASES}:
+                    self.assertEqual(E.PINNED_EXECUTIONS[tag],
+                                     {"release_id": published["release"]["id"],
+                                      "executor_sha": executor})
+        # Dropping any single pin puts that one published edge straight back
+        # under the membership refusal, with every other pin still in place.
+        for tag in E.PINNED_EXECUTIONS:
+            raw = (FIXTURE_DIRECTORY / f"{tag}-platform-release-identity.v4.json").read_bytes()
+            published = json.loads(raw)
+            index = FROZEN_TAGS.index(tag)
+            dropped = tuple({k: v for k, v in entry.items() if k != "executor_sha"}
+                            if position == index else entry
+                            for position, entry in enumerate(E.HISTORICAL_RELEASES))
+            table = {key: value for key, value in E.PINNED_EXECUTIONS.items() if key != tag}
+            with self.subTest(dropped=tag), \
+                    mock.patch.object(E, "HISTORICAL_RELEASES", dropped), \
+                    mock.patch.dict(E.PINNED_EXECUTIONS, table, clear=True), \
+                    self.assertRaisesRegex(ValueError, "historical execution"):
+                E.validate_execution(published)
+
     def test_execution_semantics_refuse_unknown_fields_and_historical_executors(self):
         exact = evidence()
         changes = [({"extra": True}, "execution"), ({"extra": True}, "main_ci")]
@@ -467,7 +571,7 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                 E.validate_execution(value)
         # An UNPINNED frozen edge keeps the untouched membership refusal: a
         # frozen source can never present itself as another edge's executor.
-        unpinned = self.frozen_evidence(1)
+        unpinned = self.frozen_evidence(FIRST_UNPINNED_INDEX)
         E.validate_execution(copy.deepcopy(unpinned))
         for sha in (E.TERMINAL_V3_SOURCE, *(row["source_sha"] for row in E.HISTORICAL_RELEASES)):
             value = copy.deepcopy(unpinned)
@@ -487,9 +591,10 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                              (FIRST_ORDINARY_V4_TAG, 4)):
             self.assertEqual(E.identity(tag)["version"], version)
         # The whole frozen window carries the recovery subject, not just its
-        # first three edges: issue #317 extended it through v0.1.91 and issue
-        # #391 freezes the twelfth edge, v0.1.92.
-        self.assertEqual(LAST_FROZEN_TAG, "v0.1.92")
+        # first three edges: issue #317 extended it through v0.1.91, issue
+        # #391 froze the twelfth edge, v0.1.92, and issue #393 freezes the
+        # thirteenth, v0.1.93.
+        self.assertEqual(LAST_FROZEN_TAG, "v0.1.93")
         for tag in FROZEN_TAGS:
             selected = E.identity(tag)
             self.assertEqual(selected["publisher_workflow"], ".github/workflows/platform-release-recovery.yml")

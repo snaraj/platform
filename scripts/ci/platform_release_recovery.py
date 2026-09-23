@@ -46,6 +46,61 @@ def require(condition: bool, message: str) -> None:
         raise C.ContractError(message)
 
 
+# Measured over the code path below, for one PUBLISHED edge and for everything
+# `selection()` reads beside the window. EDGE_SECONDS is wall time, taken from
+# recovery run 35793384370 (2026-09-22): its prepare step proved nine published
+# edges and selected the tenth in 31 s, so 3.5 s an edge, rounded up. One
+# headroom figure serves both bounds.
+READ_FIXED = 22
+READ_PER_EDGE = 8
+HEADROOM_PERCENT = 25
+DEADLINE_SECONDS = 240
+EDGE_SECONDS = 4
+
+
+def per_run_bounds(edges: int) -> tuple[int, int]:
+    """Bound one selection's reads and seconds from the window it must walk.
+
+    `selection()` re-proves the whole post-floor ledger on every run, by
+    design, so its cost is FIXED + PER_EDGE x edges and never a constant: a
+    literal cap stops being reachable at some published edge, silently, and
+    that edge is the one nobody can ever publish (issue #393). The arithmetic:
+
+    * PER_EDGE = 8 — the GETs `prove_release` makes for a published v4 edge:
+      the tag ref, the Release, the annotated tag object, both identity assets
+      (the cosign inputs), the two runs its identity names, and the executor
+      main-CI run a v4 identity adds.
+    * FIXED = 22 — `prove_context` 3 (repository, protected ref, this run),
+      the two executor run listings 2, the terminal v3 edge 7 (PER_EDGE less
+      the v4 executor read), `prove_ci` twice 8 (a run attempt and a job page
+      for main and for CodeQL, each time) and the selected edge's
+      prepared-tag proof 2.
+
+    An edge that is NOT yet published costs 3 of its 8 — ref, Release, tag
+    object — so FIXED + PER_EDGE per window edge bounds every walk, whether it
+    selects an edge or finds the backlog complete. HEADROOM_PERCENT keeps the
+    bound from tracking the measurement so exactly that one added read
+    anywhere reintroduces the same outage; the result is still a hard cap,
+    enforced on every read.
+
+    The seconds bound is derived from the same window instead of assumed:
+    240 s covers 47 edges at the measured cost, the window is far smaller, and
+    a future extension that outgrows it refuses here rather than part-way
+    through a publication.
+    """
+    require(type(edges) is int and edges > 0, "per-run bounds need a nonempty window")
+    reads = READ_FIXED + READ_PER_EDGE * edges
+    reads += -(-reads * HEADROOM_PERCENT // 100)
+    # A selection proves the terminal checkpoint as well as every frozen edge.
+    seconds = EDGE_SECONDS * (edges + 1)
+    require(DEADLINE_SECONDS * 100 >= seconds * (100 + HEADROOM_PERCENT),
+            "frozen window cannot be walked inside the recovery deadline")
+    return reads, DEADLINE_SECONDS
+
+
+MAX_READS, MAX_SECONDS = per_run_bounds(len(E.HISTORICAL_RELEASES))
+
+
 def canonical(value: dict) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -106,12 +161,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class PublicAPI:
-    """Bounded GETs only; asset redirects never receive the API credential."""
+    """Bounded GETs only; asset redirects never receive the API credential.
+
+    Both bounds come from `per_run_bounds` above, so they follow the frozen
+    window a selection walks rather than a number chosen once.
+    """
 
     def __init__(self, token: str | None):
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
-        self.deadline = time.monotonic() + 240
+        self.deadline = time.monotonic() + MAX_SECONDS
         self.requests = 0
 
     def read(self, path: str, *, limit: int = MAX_JSON, asset: bool = False) -> tuple[int, bytes]:
@@ -119,7 +178,7 @@ class PublicAPI:
                 not any(value in path for value in ("..", "#", "\\", "\r", "\n")), "foreign API path")
         self.requests += 1
         remaining = self.deadline - time.monotonic()
-        require(self.requests <= 96 and remaining > 0, "recovery read budget exhausted")
+        require(self.requests <= MAX_READS and remaining > 0, "recovery read budget exhausted")
         headers = {"Accept": "application/octet-stream" if asset else "application/vnd.github+json",
                    "X-GitHub-Api-Version": C.GITHUB_API_VERSION}
         if self.token:

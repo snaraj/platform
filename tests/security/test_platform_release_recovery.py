@@ -223,15 +223,18 @@ class RecoveryTreeTests(unittest.TestCase):
     def test_frozen_public_source_and_workflow_fingerprint(self):
         # This fingerprint was derived from the separately captured protected
         # Git trees and public run records, not computed from policy at runtime.
-        # It has moved twice, for issue #317's reviewed extension of the window
-        # from three edges to eleven and for issue #391's twelfth edge and
-        # v0.1.81 executor pin; FrozenWindowTests re-derives every field it
+        # It has moved three times, for issue #317's reviewed extension of the
+        # window from three edges to eleven, for issue #391's twelfth edge and
+        # v0.1.81 executor pin, and for issue #393's thirteenth edge, whose
+        # length the per-run read budget now reads and whose executor published
+        # v0.1.82 through v0.1.89, pinned on those eight entries in the same
+        # change; FrozenWindowTests re-derives every field it
         # covers from the repository, so this line is a tripwire on the
         # reviewed list rather than the only thing standing behind it. The run
-        # IDs and the pin, which Git cannot re-derive, are covered here alone.
+        # IDs and the pins, which Git cannot re-derive, are covered here alone.
         value = {"sources": R.E.HISTORICAL_RELEASES, "workflows": R.E.HISTORICAL_WORKFLOWS}
         self.assertEqual(hashlib.sha256(R.canonical(value).encode()).hexdigest(),
-                         "c9b43c48ffb56cc641459ac341c92fc5c7af2bd9c046acae43d79ffe9f04a7f1")
+                         "fd877a34d8284cd85a229b0882c36af3237adb693cb3cefb77de6a4aca5e1dd7")
         self.assertEqual((R.TERMINAL_TREE, R.TERMINAL_TAG_OBJECT, R.TERMINAL_RELEASE_ID,
                           R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN),
                          ("db18c40ece8fa91f9dfabb7cb99a833a34a30505",
@@ -317,12 +320,12 @@ class FrozenWindowTests(unittest.TestCase):
         return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
                               capture_output=True, text=True, timeout=60).stdout.strip()
 
-    def test_the_window_is_twelve_contiguous_edges_ending_before_this_change(self):
+    def test_the_window_is_thirteen_contiguous_edges_ending_before_this_change(self):
         window = R.E.HISTORICAL_RELEASES
-        self.assertEqual(len(window), 12)
+        self.assertEqual(len(window), 13)
         tags = [f"v0.1.{81 + index}" for index in range(len(window))]
         self.assertEqual(tags[0], R.E.FIRST_V4_TAG)
-        self.assertEqual(tags[-1], "v0.1.92")
+        self.assertEqual(tags[-1], "v0.1.93")
         previous = R.E.TERMINAL_V3_SOURCE
         for tag, entry in zip(tags, window):
             self.assertIs(R.E.historical_release(tag), entry)
@@ -373,8 +376,16 @@ class FrozenWindowTests(unittest.TestCase):
                                  str(entry["codeql_run_id"]),
                                  entry["fragment_path"].removeprefix("changelog.d/"))
                                 for entry in R.E.HISTORICAL_RELEASES])
-        # The pin is a published fact a reader must be able to look up.
+        # A pin is a published fact a reader must be able to look up, so the
+        # second table names EVERY pinned edge with the Release the fact was
+        # read from: a drain that pins eight edges and documents one leaves the
+        # next reader guessing which of them the refusal will bite.
         self.assertIn("`executor_sha`", runbook)
+        pins = re.findall(
+            r"^\| `(v[0-9.]+)` \| `([0-9]+)` \| `([0-9a-f]{8})` \|$", section, re.M
+        )
+        self.assertEqual(pins, [(tag, str(row["release_id"]), row["executor_sha"][:8])
+                                for tag, row in R.E.PINNED_EXECUTIONS.items()])
 
     def test_a_named_inventory_must_be_known_and_complete(self):
         entry = R.E.HISTORICAL_RELEASES[0]
@@ -827,13 +838,220 @@ class RecoveryTransportTests(unittest.TestCase):
                 api.get("/required")
         api.opener.open.side_effect = urllib.error.HTTPError("", 404, "synthetic", {}, None)
         self.assertIsNone(api.get("/optional", absent=True))
-        api.requests = 96
+        api.requests = R.MAX_READS
         with self.assertRaisesRegex(ValueError, "read budget"):
             api.get("/required")
         api.requests = 0
         api.deadline = 0
         with self.assertRaisesRegex(ValueError, "read budget"):
             api.get("/required")
+
+
+class RecoveryReadBudgetTests(unittest.TestCase):
+    """The per-run bounds must cover the window the selection actually walks.
+
+    These tests count requests, so the proofs each request feeds are stubbed;
+    the batteries above own those. What stays real is the call graph and the
+    shipped reader: every walk here runs through `PublicAPI`, so the bound it
+    meets is the production one, and a walk that outgrows it refuses exactly
+    as run 35793698386 refused selecting `v0.1.90` (issue #393).
+    """
+
+    INSTANT = "2026-09-11T00:00:00+00:00"
+    EXECUTOR_MAIN = 400
+    EXECUTOR_CODEQL = 401
+
+    class Transport:
+        """Serves one fixture to the production reader and counts every GET."""
+
+        def __init__(self):
+            self.records = {}
+            self.assets = {}
+            self.objects = {}
+            self.calls = []
+
+        def open(self, request, timeout=None):
+            path = request.full_url.removeprefix(R.API)
+            self.calls.append(path)
+            if path in self.assets:
+                return self.body(self.assets[path])
+            if path not in self.records:
+                raise AssertionError("unexpected API read " + path)
+            value = self.records[path]
+            if value is None:
+                raise urllib.error.HTTPError("", 404, "absent", {}, None)
+            return self.body(json.dumps(value).encode())
+
+        @staticmethod
+        def body(data):
+            value = io.BytesIO(data)
+            value.status = 200
+            return value
+
+    def fixture(self, published):
+        """Records for a walk whose first `published` frozen edges are complete."""
+        entries = R.E.HISTORICAL_RELEASES
+        transport = self.Transport()
+        records, assets = transport.records, transport.assets
+
+        def attempt(run_id, source=SOURCE, tree=TREE, workflow="pull-request.yml"):
+            records[f"/actions/runs/{run_id}/attempts/1"] = run(run_id, 1, source, tree, workflow)
+
+        def prepared(tag, source, object_sha):
+            transport.objects[tag] = object_sha
+            records[f"/git/ref/tags/{tag}"] = {"ref": f"refs/tags/{tag}",
+                                               "object": {"type": "tag", "sha": object_sha}}
+            records[f"/git/tags/{object_sha}"] = {
+                "sha": object_sha, "tag": tag, "object": {"type": "commit", "sha": source},
+                "message": f"Platform release {tag} from {source}",
+                "tagger": {"name": R.C.RELEASE_TAGGER_NAME,
+                           "email": R.C.RELEASE_TAGGER_EMAIL, "date": self.INSTANT}}
+            records[f"/releases/tags/{tag}"] = None
+
+        def complete(tag, source, object_sha, release_id, main, publisher, executor):
+            prepared(tag, source, object_sha)
+            selected = R.E.identity(tag)
+            value = {"main_ci": {"run_id": main, "run_attempt": 1},
+                     "platform_release": {"run_id": publisher, "run_attempt": 1}}
+            attempt(main, source, workflow="pull-request.yml")
+            attempt(publisher, source, workflow="platform-release.yml")
+            if executor is not None:
+                value["execution"] = {"main_ci": {"run_id": executor, "run_attempt": 1}}
+                attempt(executor, workflow="pull-request.yml")
+            identity = json.dumps(value).encode()
+            bundle = b'{"synthetic": "bundle"}'
+            records[f"/releases/tags/{tag}"] = {"id": release_id, "assets": [
+                {"id": release_id + 1, "name": selected["asset"], "size": len(identity)},
+                {"id": release_id + 2, "name": selected["bundle"], "size": len(bundle)}]}
+            assets[f"/releases/assets/{release_id + 1}"] = identity
+            assets[f"/releases/assets/{release_id + 2}"] = bundle
+
+        records[""] = copy.deepcopy(REPOSITORY)
+        records["/git/ref/heads/main"] = {"ref": "refs/heads/main",
+                                          "object": {"type": "commit", "sha": SOURCE}}
+        attempt(500, workflow="platform-release-recovery.yml")
+        for workflow, run_id in (("pull-request.yml", self.EXECUTOR_MAIN),
+                                 ("codeql.yml", self.EXECUTOR_CODEQL)):
+            records[f"/actions/workflows/{workflow}/runs?branch=main&event=push"
+                    f"&head_sha={SOURCE}&per_page=100"] = {
+                        "total_count": 1, "workflow_runs": [run(run_id, workflow=workflow)]}
+            attempt(run_id, workflow=workflow)
+            records[f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"] = {"jobs": []}
+        complete(R.E.TERMINAL_V3_TAG, R.E.TERMINAL_V3_SOURCE, R.TERMINAL_TAG_OBJECT,
+                 R.TERMINAL_RELEASE_ID, R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN, None)
+        for index, entry in enumerate(entries):
+            tag = f"v0.1.{81 + index}"
+            for run_id in (entry["main_run_id"], entry["codeql_run_id"]):
+                attempt(run_id, entry["source_sha"], entry["tree_sha"],
+                        "pull-request.yml" if run_id == entry["main_run_id"] else "codeql.yml")
+                records[f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"] = {"jobs": []}
+            if index < published:
+                complete(tag, entry["source_sha"], "%040x" % (index + 1), 900 + 4 * index,
+                         600 + index, 700 + index, 800 + index)
+            else:
+                prepared(tag, entry["source_sha"], "%040x" % (index + 1))
+        return transport
+
+    def walk(self, published):
+        """One `prepare` selection over that fixture; returns its request count."""
+        entries = R.E.HISTORICAL_RELEASES
+        index = min(published, len(entries) - 1)
+        entry = entries[index]
+        api = R.PublicAPI(None)
+        api.opener = self.fixture(published)
+        window = R.C.TransitionWindow(
+            entry["parent_sha"], f"v0.1.{80 + index}",
+            R.C.Intent(entry["source_sha"], R.C.Version(0, 1, 81 + index)),
+            entry["fragment_path"], entry["fragment_sha256"])
+
+        def git(_root, *args):
+            if args[0] == "show":
+                return self.INSTANT
+            if args[-1].startswith("refs/tags/"):
+                return api.opener.objects[args[-1].removeprefix("refs/tags/")]
+            return TREE
+
+        with mock.patch.multiple(R, prove_trees=mock.DEFAULT, verify_signature=mock.DEFAULT), \
+                mock.patch.multiple(
+                    R.C, validate_tag_record=mock.DEFAULT,
+                    validate_identity_release_record=mock.DEFAULT,
+                    validate_identity_run_records=mock.DEFAULT,
+                    build_main_ci_jobs_receipt=mock.DEFAULT,
+                    _git=mock.Mock(side_effect=git),
+                    discover_transition_window=mock.Mock(return_value=window),
+                    plan_workflow_run=mock.Mock(
+                        side_effect=lambda packet, _name: packet["workflow_run"]["head_sha"]),
+                    classify_codeql_run=mock.Mock(
+                        side_effect=lambda listing, _source: (listing["workflow_runs"][0]["id"],
+                                                              listing["workflow_runs"][0]["run_attempt"]))):
+            if published >= len(entries):
+                with self.assertRaisesRegex(ValueError, "backlog is complete"):
+                    R.selection(ROOT, api, bound())
+            else:
+                self.assertEqual(R.selection(ROOT, api, bound())["tag"], f"v0.1.{81 + index}")
+        self.assertEqual(api.requests, len(api.opener.calls))
+        return api.requests
+
+    def counts(self):
+        return [self.walk(published) for published in range(len(R.E.HISTORICAL_RELEASES) + 1)]
+
+    def test_a_fully_published_window_walk_stays_inside_the_derived_budget(self):
+        """The walk the outage made unreachable, now inside the bound.
+
+        Every walk below runs the production cap, so reaching its selection at
+        all is the proof; the assertions then pin WHY it fits — the derived
+        formula bounds the dearest walk, and the cap keeps its headroom above
+        that measurement rather than sitting on it.
+        """
+        counts = self.counts()
+        edges = len(R.E.HISTORICAL_RELEASES)
+        derived = R.READ_FIXED + R.READ_PER_EDGE * edges
+        # The dearest walk proves every published edge and still selects one.
+        self.assertEqual(max(counts), counts[edges - 1])
+        self.assertLessEqual(max(counts), derived)
+        # The reviewed floor is stated here, not read from the constant under
+        # test: comparing the cap against its own headroom figure is satisfied
+        # by a headroom of nothing.
+        self.assertGreaterEqual(R.HEADROOM_PERCENT, 25)
+        self.assertGreaterEqual(R.MAX_READS * 100, derived * (100 + R.HEADROOM_PERCENT))
+        # A complete window costs less: it refuses before both CI proofs and
+        # the prepared-tag proof, so the selecting walk is the bound to hold.
+        self.assertLess(counts[-1], max(counts))
+
+    def test_the_per_edge_and_fixed_costs_are_measured_from_the_walk(self):
+        """A declared per-edge cost would be a guess the next edge invalidates."""
+        selecting = self.counts()[:-1]
+        self.assertEqual({later - earlier for earlier, later in zip(selecting, selecting[1:])},
+                         {R.READ_PER_EDGE})
+        # The fixed part is measured too: the walk that selects the first edge
+        # costs the fixed reads plus no more than one edge's worth.
+        self.assertLessEqual(R.READ_FIXED, selecting[0])
+        self.assertLessEqual(selecting[0], R.READ_FIXED + R.READ_PER_EDGE)
+
+    def test_the_cap_refuses_the_read_past_it_and_admits_the_one_before(self):
+        """Derived is not unbounded: the cap is still hard, one read wide."""
+        api = R.PublicAPI(None)
+        api.opener = mock.Mock()
+        api.opener.open.side_effect = lambda *_args, **_kwargs: self.Transport.body(b"{}")
+        api.requests = R.MAX_READS - 1
+        self.assertEqual(api.get("/required"), {})
+        self.assertEqual(api.requests, R.MAX_READS)
+        with self.assertRaisesRegex(ValueError, "read budget exhausted"):
+            api.get("/required")
+
+    def test_the_deadline_is_checked_against_the_same_window(self):
+        """The seconds bound is derived evidence, not an untested constant."""
+        self.assertEqual(R.per_run_bounds(len(R.E.HISTORICAL_RELEASES)), (R.MAX_READS, R.MAX_SECONDS))
+        self.assertEqual((R.DEADLINE_SECONDS, R.EDGE_SECONDS, R.MAX_SECONDS), (240, 4, 240))
+        # At the measured cost 240 s still covers 47 edges with the same
+        # headroom and no longer covers 48. The window is far smaller, so the
+        # deadline stands — and this arithmetic, not a comment, says so.
+        self.assertEqual(R.per_run_bounds(47)[1], R.DEADLINE_SECONDS)
+        with self.assertRaisesRegex(ValueError, "inside the recovery deadline"):
+            R.per_run_bounds(48)
+        for edges in (0, -1, True, 13.0, "13", None):
+            with self.subTest(edges=edges), self.assertRaisesRegex(ValueError, "nonempty window"):
+                R.per_run_bounds(edges)
 
 
 class RecoveryCLITests(unittest.TestCase):
