@@ -43,7 +43,9 @@ def workflow_contract(source):
             expected += (" && needs.immutable-settings.outputs.attestation == format('PASS:{0}:{1}:{2}:{3}',"
                          " github.repository, github.run_id, github.run_attempt, needs.prepare.outputs.source_sha)")
         require(predicate == expected)
-        require(f"timeout-minutes: {30 if index == 2 else 15}" in part)
+        # The publish job's budget is derived, not chosen: fixed setup plus the
+        # measured per-edge publish cost for every edge `prepare` can admit.
+        require(f"timeout-minutes: {recovery.R.publish_timeout_minutes() if index == 2 else 15}" in part)
         require(part.count("ref: ${{ github.sha }}") == 1 and part.count("persist-credentials: false") == 1
                 and part.count("fetch-depth: 0") == 1 and part.count("runs-on: ubuntu-24.04") == 1)
         permissions = re.search(r"    permissions:\n((?:      [a-z-]+: [a-z]+\n)+)", part).group(1)
@@ -81,15 +83,23 @@ def workflow_contract(source):
 
 
 class RecoveryWiringTests(unittest.TestCase):
-    def test_owner_exception_has_a_closed_table_and_keeps_agent_and_token_denials(self):
+    def test_owner_boundaries_survive_the_table_removal(self):
+        """The tables are gone; every owner boundary sentence is not.
+
+        The runbook must no longer carry a hand-maintained window: a table of
+        sources is exactly the artefact issue #395 removed, and a stale one is
+        a false map of a window nothing can re-publish.
+        """
         runbook = (ROOT / "docs/runbooks/platform-source-releases.md").read_text()
-        section = runbook.split("### Owner-prepared historical tags\n", 1)[1]
-        rows = re.findall(r"^\| `(v[0-9.]+)` \| `([0-9a-f]{40})` \|$", section, re.M)
-        self.assertEqual(rows, [(f"v0.1.{81 + index}", entry["source_sha"])
-                                for index, entry in enumerate(recovery.R.E.HISTORICAL_RELEASES)])
+        self.assertEqual(re.findall(r"^\| `(v[0-9.]+)` \| `([0-9a-f]{40})` \|$", runbook, re.M), [])
+        self.assertEqual(re.findall(r"^\| `([0-9a-f]{40})`", runbook, re.M), [])
+        self.assertNotIn("HISTORICAL_RELEASES", runbook)
+        self.assertNotIn("PINNED_EXECUTIONS", runbook)
         for text in ("Only the owner may prepare", "Agents never create tag objects or refs.",
                      "The owner must not create the Release or its assets.",
-                     "No token-scope expansion or automatic tag fallback is permitted."):
+                     "No token-scope expansion or automatic tag fallback is permitted.",
+                     "python3 -I -B scripts/prepare_recovery_tags.py --repository . --head origin/main --push",
+                     "gh workflow run platform-release-recovery.yml --ref main"):
             self.assertIn(text, runbook)
         controls = (ROOT / "docs/runbooks/github-controls.md").read_text()
         self.assertIn("platform-source-releases.md#owner-prepared-historical-tags", controls)
@@ -113,6 +123,7 @@ class RecoveryWiringTests(unittest.TestCase):
             ("github.run_attempt, needs.prepare.outputs.source_sha)", "github.run_attempt, github.sha)"),
             ("platform_release_recovery.py verify", "true"), ("platform_release_recovery.py prepare", "true"),
             ("bash scripts/ci/publish-platform-recovery.sh", "bash scripts/ci/publish-platform-release.sh"),
+            (f"timeout-minutes: {recovery.R.publish_timeout_minutes()}", "timeout-minutes: 360"),
         )
         for before, after in mutations:
             with self.subTest(before=before), self.assertRaises((ValueError, AttributeError)):
@@ -159,42 +170,87 @@ class RecoveryWiringTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 self.assertEqual(json.loads(files["request.json"]), {"tag_name": tag, "draft": False})
 
-    def test_wrapper_settles_read_proof_before_passing_only_derived_write_context(self):
+    def test_wrapper_drains_every_edge_in_order_and_stops_at_the_first_refusal(self):
+        """One dispatch, one publisher invocation per edge, in ledger order.
+
+        The wrapper is the loop issue #395 asks for: it settles the read proof
+        once, then per edge binds exactly that edge's context, publishes, reads
+        the new Release back independently, and logs the decision. A refusal
+        stops the run with nothing after it attempted.
+        """
         preamble = r'''
 python3() {
   test -z "${GH_TOKEN-}"
-  if [ "${4-}" = verify ]; then
-    test "${RECOVERY_READ_TOKEN-}" = synthetic-write-value
-    test "${TEST_REFUSE-}" != verify
-    printf 'verified\n' >> "${RUNNER_TEMP}/calls"
-  else
-    test "${5-}" = --historical-main-run
-    test -z "${RECOVERY_READ_TOKEN-}"
-    printf '34283118915\n'
-  fi
+  case "${4-}" in
+    verify)
+      test "${RECOVERY_READ_TOKEN-}" = synthetic-write-value
+      printf 'verify\n' >> "${RUNNER_TEMP}/calls"
+      ;;
+    readback)
+      test "${RECOVERY_READ_TOKEN-}" = synthetic-write-value
+      test "${RECOVERY_EDGE_TAG}" = "${TAG}"
+      printf 'readback:%s\n' "${TAG}" >> "${RUNNER_TEMP}/calls"
+      if [ "${TEST_REFUSE_READBACK-}" = "${TAG}" ]; then return 1; fi
+      ;;
+    *) return 90 ;;
+  esac
 }
 bash() {
   test "$1" = scripts/ci/publish-platform-release.sh
   test "${GH_TOKEN-}" = synthetic-write-value
   test -z "${RECOVERY_READ_TOKEN-}"
   test -z "${IMMUTABLE_SETTINGS_TOKEN-}"
-  printf '%s\n' "${SOURCE_SHA}" "${TAG}" "${BASE_SHA}" "${BASE_TAG}" "${MAIN_RUN_ID}" "${MAIN_RUN_ATTEMPT}" \
-    "${EXECUTION_MAIN_RUN_ID}" "${EXECUTION_MAIN_RUN_ATTEMPT}" >> "${RUNNER_TEMP}/context"
+  printf 'publish:%s\n' "${TAG}" >> "${RUNNER_TEMP}/calls"
+  printf '%s\n' "${SOURCE_SHA}" "${TAG}" "${BASE_SHA}" "${BASE_TAG}" "${MAIN_RUN_ID}" \
+    "${MAIN_RUN_ATTEMPT}" "${EXECUTION_MAIN_RUN_ID}" "${EXECUTION_MAIN_RUN_ATTEMPT}" \
+    "${RECOVERY_EDGE_TAG}" >> "${RUNNER_TEMP}/context"
+  if [ "${TEST_REFUSE_PUBLISH-}" = "${TAG}" ]; then return 1; fi
 }
 '''
-        value = {"source_sha": "a" * 40, "tag": "v0.1.81", "base_sha": "b" * 40, "base_tag": "v0.1.80",
-                 "executor_main_run_id": 400, "executor_main_run_attempt": 2}
+        edges = [{"tag": f"v0.1.9{index}", "source_sha": chr(97 + index) * 40,
+                  "base_tag": f"v0.1.9{index - 1}" if index else "v0.1.89",
+                  "base_sha": chr(96 + index) * 40 if index else "z" * 40,
+                  "tree_sha": "1" * 40, "fragment_path": f"changelog.d/{index}-edge.md",
+                  "fragment_sha256": "2" * 64, "main_run_id": 600 + index,
+                  "main_run_attempt": 1, "codeql_run_id": 700 + index,
+                  "codeql_run_attempt": 1, "workflows": {}}
+                 for index in range(4)]
+        value = {"edges": edges, "executor_main_run_id": 400, "executor_main_run_attempt": 2}
         env = {"GH_TOKEN": "synthetic-write-value", "RECOVERY_SELECTION": json.dumps(value)}
         completed, files = self.execute(preamble + WRAPPER.read_text(), env)
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(files["calls"], "verified\n")
-        self.assertEqual(files["context"].splitlines(), ["a" * 40, "v0.1.81", "b" * 40, "v0.1.80", "34283118915", "1", "400", "2"])
-        completed, files = self.execute(preamble + WRAPPER.read_text(), {**env, "TEST_REFUSE": "verify"})
+        self.assertEqual(files["calls"].splitlines(),
+                         ["verify", *[item for edge in edges
+                                      for item in (f"publish:{edge['tag']}", f"readback:{edge['tag']}")]])
+        context = files["context"].splitlines()
+        self.assertEqual(len(context), 9 * len(edges))
+        for index, edge in enumerate(edges):
+            self.assertEqual(context[9 * index:9 * (index + 1)],
+                             [edge["source_sha"], edge["tag"], edge["base_sha"], edge["base_tag"],
+                              str(edge["main_run_id"]), "1", "400", "2", edge["tag"]])
+        self.assertEqual(completed.stdout.count("RECOVERY_EDGE "), 4)
+        self.assertIn("RECOVERY_SUMMARY pending=4 published=4 stopped_at=none", completed.stdout)
+        for index, edge in enumerate(edges):
+            for refusal, marker in (("TEST_REFUSE_PUBLISH", "publisher-exit"),
+                                    ("TEST_REFUSE_READBACK", "readback-exit")):
+                completed, files = self.execute(
+                    preamble + WRAPPER.read_text(), {**env, refusal: edge["tag"]})
+                with self.subTest(stop=edge["tag"], refusal=refusal):
+                    self.assertNotEqual(completed.returncode, 0)
+                    published = [line for line in files["calls"].splitlines()
+                                 if line.startswith("publish:")]
+                    self.assertEqual(published,
+                                     [f"publish:{item['tag']}" for item in edges[:index + 1]])
+                    self.assertIn(f"decision=refused:{marker}", completed.stderr)
+                    self.assertIn(f"stopped_at={edge['tag']}", completed.stderr)
+                    self.assertIn(f"published={index}", completed.stderr)
+        completed, _ = self.execute(preamble + WRAPPER.read_text(),
+                                    {**env, "RECOVERY_SELECTION": json.dumps({"edges": []})})
         self.assertNotEqual(completed.returncode, 0)
-        self.assertNotIn("context", files)
 
     def test_write_boundary_refuses_changed_executor_predecessor_and_tag(self):
-        source = function(TRANSACTION.read_text(), "release_write_boundary")
+        transaction = TRANSACTION.read_text()
+        source = function(transaction, "boundary_refuse") + function(transaction, "release_write_boundary")
         preamble = r'''
 epoch='{"version":4}'
 historical_recovery=true
@@ -208,27 +264,41 @@ BASE_TAG=v0.1.80
 GITHUB_SHA=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 ref_json="${RUNNER_TEMP}/ref.json"
 git() { if [ "$1" = show ]; then printf '2026-09-11T00:00:00Z\n'; fi; }
-python3() { test "${4-}" = bind; test "${TEST_REFUSE-}" != binding; printf 'binding\n' >> "${RUNNER_TEMP}/calls"; }
+python3() {
+  test "${4-}" = bind || return 1
+  if [ "${TEST_REFUSE-}" = binding ]; then return 1; fi
+  printf 'binding\n' >> "${RUNNER_TEMP}/calls"
+}
 get_json() {
   printf '{"ref":"refs/heads/main","object":{"type":"commit","sha":"%s"}}' "${OBSERVED_MAIN}" > "$3"
   printf '%s' "${HTTP_STATUS}"
 }
+TAG=v0.1.81
 classify_tag() {
   printf 'tag:%s\n' "$3" >> "${RUNNER_TEMP}/calls"
-  test "${TEST_REFUSE-}" != "$3"
+  if [ "${TEST_REFUSE-}" = "$3" ]; then return 1; fi
   printf '{"object":{"sha":"%s"}}' "${OBSERVED_TAG}" > "${ref_json}"
 }
-classify_predecessor_release() { printf 'predecessor\n' >> "${RUNNER_TEMP}/calls"; test "${TEST_REFUSE-}" != predecessor; }
+classify_predecessor_release() {
+  printf 'predecessor\n' >> "${RUNNER_TEMP}/calls"
+  if [ "${TEST_REFUSE-}" = predecessor ]; then return 1; fi
+}
 '''
         env = {"OBSERVED_MAIN": "e" * 40, "OBSERVED_TAG": "c" * 40, "HTTP_STATUS": "200"}
         completed, files = self.execute(preamble + source + "\nrelease_write_boundary\n", env)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(files["calls"].splitlines(), ["binding", "tag:v0.1.80", "predecessor", "tag:v0.1.81"])
-        for changed in ({"TEST_REFUSE": "binding"}, {"OBSERVED_MAIN": "d" * 40}, {"HTTP_STATUS": "403"},
-                        {"HTTP_STATUS": "404"}, {"TEST_REFUSE": "predecessor"},
-                        {"TEST_REFUSE": "v0.1.80"}, {"TEST_REFUSE": "v0.1.81"}):
+        for changed, check in (({"TEST_REFUSE": "binding"}, "selection-binding"),
+                               ({"OBSERVED_MAIN": "d" * 40}, "executor-is-current-main"),
+                               ({"HTTP_STATUS": "403"}, "current-main-read"),
+                               ({"HTTP_STATUS": "404"}, "current-main-read"),
+                               ({"TEST_REFUSE": "predecessor"}, "predecessor-release"),
+                               ({"TEST_REFUSE": "v0.1.80"}, "predecessor-tag"),
+                               ({"TEST_REFUSE": "v0.1.81"}, "current-tag")):
             completed, _ = self.execute(preamble + source + "\nrelease_write_boundary\n", {**env, **changed})
             self.assertNotEqual(completed.returncode, 0, changed)
+            # Every refusal names the check that refused (failure-logging).
+            self.assertIn(f"check={check}", completed.stderr, changed)
         completed, _ = self.execute(preamble + source + '\nrelease_write_boundary\nOBSERVED_TAG=dddddddddddddddddddddddddddddddddddddddd\nrelease_write_boundary\n', env)
         self.assertNotEqual(completed.returncode, 0)
 
@@ -245,7 +315,13 @@ classify_predecessor_release() { printf 'predecessor\n' >> "${RUNNER_TEMP}/calls
             self.assertEqual(after[end_line + 1:].splitlines()[0].strip(), "release_write_boundary")
         upload = function(source, "upload_identity_asset")
         self.assertLess(upload.index("release_write_boundary"), upload.index("curl --silent"))
-        self.assertGreater(upload.rindex("release_write_boundary"), upload.index('test "${status}" = 201'))
+        self.assertGreater(upload.rindex("release_write_boundary"),
+                           upload.index('if [ "${status}" != 201 ]'))
+        # The upload that died silently now prints its status and a bounded
+        # slice of the response body; neither carries the credential.
+        self.assertIn("IDENTITY_ASSET_UPLOAD refused", upload)
+        self.assertIn('head -c 512 "${asset_upload_json}"', upload)
+        self.assertNotIn("write_token", upload.split("if [ \"${status}\" != 201 ]")[1])
         for name in ("complete_recovery_release", "retire_burned_partial_draft"):
             part = function(source, name)
             self.assertIn('if [ "${historical_recovery}" = true ]; then return; fi', part)

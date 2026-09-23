@@ -1,7 +1,8 @@
 name: Platform source recovery
 
-# A first attempt selects one closed historical edge. Fresh dispatches serialize;
-# rerunning jobs is refused before any privileged job can start.
+# A first attempt selects EVERY pending ledger edge once and the publish job
+# drains them in order. Fresh dispatches serialize; rerunning jobs is refused
+# before any privileged job can start.
 on:
   workflow_dispatch:
 
@@ -30,7 +31,7 @@ jobs:
           fetch-depth: 0
       - name: Install checksum-verified release tools
         run: ./scripts/ci/install-tools.sh
-      - name: Select one source and prove original and executor CI
+      - name: Select every pending edge and prove original and executor CI
         id: selection
         env:
           RECOVERY_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,7 +59,7 @@ jobs:
           fetch-depth: 0
       - name: Install checksum-verified release tools
         run: ./scripts/ci/install-tools.sh
-      - name: Revalidate the same selected edge before settings authority
+      - name: Revalidate the same selected edges before settings authority
         env:
           RECOVERY_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RECOVERY_SELECTION: ${{ needs.prepare.outputs.selection }}
@@ -74,6 +75,11 @@ jobs:
           permission-administration: read
           skip-token-revoke: false
           github-api-url: ${{ github.api_url }}
+      # The immutable-release setting is repository-level, so it is proved ONCE
+      # for the whole drain. Proving it per edge would mean minting the
+      # Administration-read App token inside the write job, which is a
+      # permission expansion rather than a stronger control; the write job
+      # keeps only the ordinary job token and OIDC.
       - name: Verify current immutable-release setting
         id: settings
         env:
@@ -90,7 +96,15 @@ jobs:
       format('PASS:{0}:{1}:{2}:{3}', github.repository, github.run_id,
       github.run_attempt, needs.prepare.outputs.source_sha)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Derived, not chosen: `publish_timeout_minutes()` in
+    # scripts/ci/platform_release_recovery.py is PUBLISH_FIXED_MINUTES 6 plus
+    # PUBLISH_EDGE_MINUTES 3 for each of the 46 edges `per_run_bounds` can
+    # admit in one dispatch, so 6 + 3 x 46 = 144. The per-edge figure is
+    # measured from the four single-edge dispatches of 2026-09-22/23, whose
+    # in-loop publish work took 100-135 s each; the fixed figure is their
+    # checkout and tool install. test_platform_recovery_wiring.py pins this
+    # literal to that derivation.
+    timeout-minutes: 144
     permissions:
       actions: read
       contents: write
@@ -104,7 +118,7 @@ jobs:
           fetch-depth: 0
       - name: Install checksum-verified release tools
         run: ./scripts/ci/install-tools.sh
-      - name: Publish only the selected historical edge
+      - name: Publish every selected edge in ledger order
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RECOVERY_SELECTION: ${{ needs.prepare.outputs.selection }}
