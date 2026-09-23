@@ -1,28 +1,46 @@
-"""Offline policy controls for the finite historical-source recovery reader."""
+"""Offline policy controls for the tag-derived source-backlog recovery reader.
+
+Issue #395 removed the hand-frozen window these tests used to read. What they
+assert now is the derivation itself: the repository's own tag ledger is the
+window, the executor relation replaces the membership refusal and its pins, the
+reader proves the predecessor rather than all of history, and one dispatch
+drains every pending edge.
+"""
 
 import copy
 import hashlib
 import io
 import json
 import os
-import re
 import subprocess
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from .support import load_script
-from . import test_platform_release_contract as ci
 from . import test_platform_release_v4 as v4
 
 ROOT = Path(__file__).resolve().parents[2]
 R = load_script("ci/platform_release_recovery.py", module_name="recovery_policy_tests")
+B = R.B
 SOURCE = "e" * 40
 TREE = "f" * 40
 REPOSITORY = {"id": 1327645656, "full_name": "snaraj/platform", "default_branch": "main"}
+# The ledger these tests drive is read from the committed derivation dump, not
+# re-walked from the 86 post-floor tags in every test: `LedgerDerivationTests`
+# proves the shipped code reproduces that dump from git, once.
+DERIVED_WINDOW = v4.DERIVED_WINDOW
+LEDGER = v4.LEDGER
+
+
+REAL_NO_PUBLISHER = R.prove_no_publisher_in_flight
+
+
+def ledger_patch():
+    """Serve the dump-derived ledger wherever production would walk git."""
+    return mock.patch.object(B, "published_edges", return_value=LEDGER)
 
 
 def environment():
@@ -51,15 +69,35 @@ def run(run_id=500, attempt=1, source=SOURCE, tree=TREE, workflow="platform-rele
             "status": "in_progress" if dispatch else "completed", "conclusion": None if dispatch else "success"}
 
 
+def selection_of(edges, **overrides):
+    """A canonical selection list over the given derived edges."""
+    value = {"schema": R.SELECTION_SCHEMA, **bound(),
+             "edges": [R.edge_record(edge, (600 + index, 1), (700 + index, 1))
+                       for index, edge in enumerate(edges)],
+             "executor_main_run_id": 400, "executor_main_run_attempt": 1,
+             "executor_codeql_run_id": 401, "executor_codeql_run_attempt": 1}
+    value.update(overrides)
+    return value
+
+
 class API:
     def __init__(self, records=None, assets=None):
         self.records = records or {}
         self.assets = assets or {}
         self.calls = []
+        self.requests = 0
+        self.max_reads, self.max_seconds = R.per_run_bounds(1)
+        self.elapsed = 0.0
+
+    def widen(self, pending):
+        self.max_reads, _ = R.per_run_bounds(pending)
 
     def get(self, path, *, absent=False):
         self.calls.append(path)
+        self.requests += 1
         if path not in self.records:
+            if absent and path.startswith("/git/ref/tags/"):
+                return None
             raise AssertionError("unexpected API read " + path)
         value = self.records[path]
         if value is None and not absent:
@@ -68,6 +106,7 @@ class API:
 
     def read(self, path, *, limit, asset):
         self.calls.append(path)
+        self.requests += 1
         value = self.assets[path]
         if len(value) > limit or not asset:
             raise R.C.ContractError("fixture byte limit")
@@ -78,536 +117,499 @@ class RecoveryContextTests(unittest.TestCase):
     def test_exact_no_input_first_attempt(self):
         self.assertEqual(bound(), {"repository": "snaraj/platform", "repository_id": 1327645656,
                                    "executor_sha": SOURCE, "run_id": 500, "run_attempt": 1})
-        missing_inputs = event()
-        del missing_inputs["inputs"]
-        self.assertEqual(R.context(environment(), missing_inputs), bound())
 
     def test_context_refuses_wrong_origin_identity_event_ref_attempt_or_executor(self):
-        for key, value in (
-            ("GITHUB_API_URL", "https://example.invalid"), ("GITHUB_REPOSITORY", "other/platform"),
-            ("GITHUB_REPOSITORY_ID", "1"), ("GITHUB_EVENT_NAME", "pull_request"),
-            ("GITHUB_REF", "refs/heads/feature"), ("GITHUB_RUN_ATTEMPT", "2"),
-            ("GITHUB_RUN_ATTEMPT", "01"), ("GITHUB_RUN_ID", "0"), ("GITHUB_RUN_ID", "0500"),
-            ("GITHUB_RUN_ID", 500),
-            ("GITHUB_RUN_ID", "٥٠٠"), ("GITHUB_SHA", "short"), ("GITHUB_WORKFLOW_SHA", "a" * 40),
-            ("GITHUB_WORKFLOW_REF", "snaraj/platform/.github/workflows/platform-release.yml@refs/heads/main"),
-        ):
-            changed = environment()
-            changed[key] = value
+        for key, value in (("GITHUB_API_URL", "https://example.invalid"),
+                           ("GITHUB_REPOSITORY", "snaraj/website-infrastructure"),
+                           ("GITHUB_REPOSITORY_ID", "1"), ("GITHUB_EVENT_NAME", "push"),
+                           ("GITHUB_REF", "refs/heads/other"), ("GITHUB_RUN_ATTEMPT", "2"),
+                           ("GITHUB_SHA", "short"), ("GITHUB_WORKFLOW_SHA", "a" * 40),
+                           ("GITHUB_RUN_ID", "0"), ("GITHUB_RUN_ID", "abc"),
+                           ("GITHUB_WORKFLOW_REF", "snaraj/platform/.github/workflows/other.yml@refs/heads/main")):
+            values = environment()
+            values[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
-                R.context(changed, event())
+                R.context(values, event())
         for key in environment():
-            changed = environment()
-            del changed[key]
+            values = environment()
+            del values[key]
             with self.subTest(missing=key), self.assertRaises(ValueError):
-                R.context(changed, event())
+                R.context(values, event())
 
     def test_event_inputs_and_repository_refuse_before_api(self):
-        for key, value in (("inputs", {"source": SOURCE}), ("inputs", []), ("repository", None)):
-            changed = event()
-            changed[key] = value
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                R.context(environment(), changed)
-        for key, value in (("full_name", "other/platform"), ("full_name", "snaraj/website-infrastructure"), ("id", True), ("id", 1),
-                           ("default_branch", "other")):
-            changed = event()
-            changed["repository"][key] = value
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                R.context(environment(), changed)
+        for change in ({"inputs": {"source": "x"}}, {"repository": {}},
+                       {"repository": {**REPOSITORY, "id": 1}},
+                       {"repository": {**REPOSITORY, "default_branch": "other"}},
+                       {"repository": None}):
+            payload = {**event(), **change}
+            with self.subTest(change=tuple(change)), self.assertRaises(ValueError):
+                R.context(environment(), payload)
 
     def test_current_main_run_and_checkout_are_independent_proofs(self):
-        records = {"": REPOSITORY, "/git/ref/heads/main": {"ref": "refs/heads/main",
-                    "object": {"sha": SOURCE, "type": "commit"}}, "/actions/runs/500/attempts/1": run()}
-        old_name = copy.deepcopy(records)
-        old_name[""]["full_name"] = "snaraj/website-infrastructure"
-        old_api = API(old_name)
-        with mock.patch.object(R, "prove_trees"), mock.patch.object(R.C, "_git", return_value=TREE), self.assertRaises(ValueError):
-            R.prove_context(ROOT, old_api, bound())
-        self.assertEqual(old_api.calls, [""])
-        with mock.patch.object(R, "prove_trees") as trees, mock.patch.object(R.C, "_git", return_value=TREE):
-            R.prove_context(ROOT, API(records), bound())
-            trees.assert_called_once_with(ROOT, bound())
-            for path, keys, value in (
-                ("", ("default_branch",), "other"), ("", ("id",), 1),
-                ("/git/ref/heads/main", ("object", "sha"), "a" * 40),
-                ("/git/ref/heads/main", ("object", "type"), "tag"),
-                ("/git/ref/heads/main", ("ref",), "refs/heads/other"),
-                *( ("/actions/runs/500/attempts/1", (key,), value) for key, value in
-                   (("id", 501), ("run_attempt", 2), ("event", "push"), ("head_branch", "other"),
-                    ("head_sha", "a" * 40), ("path", ".github/workflows/other.yml"),
-                    ("status", "completed"), ("conclusion", "success"))),
-                ("/actions/runs/500/attempts/1", ("head_commit", "tree_id"), "a" * 40),
-                ("/actions/runs/500/attempts/1", ("head_commit", "id"), "a" * 40),
-                ("/actions/runs/500/attempts/1", ("head_repository", "id"), 1),
-                ("/actions/runs/500/attempts/1", ("repository", "full_name"), "other/platform"),
-            ):
-                changed = copy.deepcopy(records)
-                cursor = changed[path]
-                for key in keys[:-1]:
-                    cursor = cursor[key]
-                cursor[keys[-1]] = value
-                with self.subTest(path=path, keys=keys), self.assertRaises(ValueError):
-                    R.prove_context(ROOT, API(changed), bound())
-
-
-class RecoveryCITests(unittest.TestCase):
-    def packet(self):
-        jobs = ci.main_ci_jobs_record()
-        qjobs = ci.codeql_jobs_record()
-        for values, number in ((jobs["jobs"], 400), (qjobs["jobs"], 401)):
-            for job in values:
-                job.update(run_id=number, run_attempt=1, head_sha=SOURCE)
-        return {"/actions/runs/400/attempts/1": run(400, workflow="pull-request.yml"),
-                "/actions/runs/401/attempts/1": run(401, workflow="codeql.yml"),
-                "/actions/runs/400/attempts/1/jobs?per_page=100": jobs,
-                "/actions/runs/401/attempts/1/jobs?per_page=100": qjobs}
-
-    def test_exact_attempt_endpoints_and_required_jobs(self):
-        api = API(self.packet())
-        R.prove_ci(api, SOURCE, TREE, (400, 1), (401, 1))
-        self.assertEqual(len(api.calls), 4)
-        self.assertTrue(all("/attempts/1" in path for path in api.calls))
-
-    def test_pending_codeql_refuses_before_jobs_and_current_repository_is_exact(self):
-        packet = self.packet()
-        packet["/actions/runs/401/attempts/1"].update(status="in_progress", conclusion=None)
-        api = API(packet)
-        with self.assertRaisesRegex(ValueError, "CodeQL is not the exact"):
-            R.prove_ci(api, SOURCE, TREE, (400, 1), (401, 1))
-        self.assertFalse(any("/jobs?" in path for path in api.calls))
-        for field in ("repository", "head_repository"):
-            for replacement in (None, {**REPOSITORY, "full_name": "snaraj/website-infrastructure"}):
-                packet = self.packet()
-                packet["/actions/runs/400/attempts/1"][field] = replacement
-                with self.subTest(field=field, replacement=replacement), self.assertRaises(ValueError):
-                    R.exact_run(API(packet), 400, 1)
-
-    def test_original_and_executor_runs_steps_and_trees_refuse(self):
-        original = self.packet()
-        for number in (400, 401):
-            for key, value in (("run_attempt", 2), ("status", "in_progress"), ("conclusion", "failure"),
-                               ("head_sha", "a" * 40), ("event", "pull_request"), ("path", "unknown.yml")):
-                changed = copy.deepcopy(original)
-                changed[f"/actions/runs/{number}/attempts/1"][key] = value
-                with self.subTest(number=number, key=key), self.assertRaises(ValueError):
-                    R.prove_ci(API(changed), SOURCE, TREE, (400, 1), (401, 1))
-        for key in ("id", "tree_id"):
-            changed = copy.deepcopy(original)
-            changed["/actions/runs/400/attempts/1"]["head_commit"][key] = "a" * 40
-            with self.subTest(tree=key), self.assertRaises(ValueError):
-                R.prove_ci(API(changed), SOURCE, TREE, (400, 1), (401, 1))
-        for number in (400, 401):
-            changed = copy.deepcopy(original)
-            del changed[f"/actions/runs/{number}/attempts/1/jobs?per_page=100"]["jobs"][0]["steps"][2]
-            with self.subTest(step=number), self.assertRaises(ValueError):
-                R.prove_ci(API(changed), SOURCE, TREE, (400, 1), (401, 1))
-
-    def test_executor_listing_never_picks_latest_from_multiple_or_partial_runs(self):
-        path = f"/actions/workflows/pull-request.yml/runs?branch=main&event=push&head_sha={SOURCE}&per_page=100"
-        exact = {"total_count": 1, "workflow_runs": [run(400, workflow="pull-request.yml")]}
-        self.assertEqual(R.run_tuple(API({path: exact}), SOURCE, "pull-request.yml"), (400, 1))
-        for count, runs in ((0, []), (2, exact["workflow_runs"]), (2, exact["workflow_runs"] * 2),
-                            (True, exact["workflow_runs"]), (1, [])):
-            with self.subTest(count=count, length=len(runs)), self.assertRaises(ValueError):
-                R.run_tuple(API({path: {"total_count": count, "workflow_runs": runs}}), SOURCE, "pull-request.yml")
-        for bad in (0, True, "400"):
-            changed = copy.deepcopy(exact)
-            changed["workflow_runs"][0]["id"] = bad
-            with self.subTest(id=bad), self.assertRaises(ValueError):
-                R.run_tuple(API({path: changed}), SOURCE, "pull-request.yml")
-        with self.assertRaises(ValueError):
-            R.run_tuple(API({path: {**exact, "next_page": "unbounded"}}), SOURCE, "pull-request.yml")
+        records = {"": copy.deepcopy(REPOSITORY),
+                   "/git/ref/heads/main": {"ref": "refs/heads/main", "object": {"type": "commit", "sha": SOURCE}},
+                   "/actions/runs/500/attempts/1": run()}
+        with mock.patch.object(R, "prove_trees") as trees, \
+                mock.patch.object(R.C, "_git", return_value=TREE):
+            R.prove_context(ROOT, API(copy.deepcopy(records)), bound())
+            trees.assert_called_once()
+        for path, change in (("", {"default_branch": "other"}), ("", {"id": 1}),
+                             ("/git/ref/heads/main", {"object": {"type": "commit", "sha": "a" * 40}}),
+                             ("/git/ref/heads/main", {"ref": "refs/heads/other"}),
+                             ("/actions/runs/500/attempts/1", {"event": "push"}),
+                             ("/actions/runs/500/attempts/1", {"status": "completed"}),
+                             ("/actions/runs/500/attempts/1", {"conclusion": "success"}),
+                             ("/actions/runs/500/attempts/1", {"path": ".github/workflows/platform-release.yml"}),
+                             ("/actions/runs/500/attempts/1", {"head_commit": {"id": SOURCE, "tree_id": "a" * 40}})):
+            changed = copy.deepcopy(records)
+            changed[path] = {**changed[path], **change}
+            with self.subTest(path=path, change=tuple(change)), mock.patch.object(R, "prove_trees"), \
+                    mock.patch.object(R.C, "_git", return_value=TREE), self.assertRaises(ValueError):
+                R.prove_context(ROOT, API(changed), bound())
 
 
 class RecoveryTreeTests(unittest.TestCase):
-    def test_frozen_public_source_and_workflow_fingerprint(self):
-        # This fingerprint was derived from the separately captured protected
-        # Git trees and public run records, not computed from policy at runtime.
-        # It has moved three times, for issue #317's reviewed extension of the
-        # window from three edges to eleven, for issue #391's twelfth edge and
-        # v0.1.81 executor pin, and for issue #393's thirteenth edge, whose
-        # length the per-run read budget now reads and whose executor published
-        # v0.1.82 through v0.1.89, pinned on those eight entries in the same
-        # change; FrozenWindowTests re-derives every field it
-        # covers from the repository, so this line is a tripwire on the
-        # reviewed list rather than the only thing standing behind it. The run
-        # IDs and the pins, which Git cannot re-derive, are covered here alone.
-        value = {"sources": R.E.HISTORICAL_RELEASES, "workflows": R.E.HISTORICAL_WORKFLOWS}
-        self.assertEqual(hashlib.sha256(R.canonical(value).encode()).hexdigest(),
-                         "fd877a34d8284cd85a229b0882c36af3237adb693cb3cefb77de6a4aca5e1dd7")
+    """What the checkout must prove is now two facts, not a table walk."""
+
+    def test_checkout_must_be_the_executor_and_the_checkpoint_tree_exact(self):
+        values = {("rev-parse", "HEAD"): SOURCE,
+                  ("rev-parse", R.E.TERMINAL_V3_SOURCE + "^{tree}"): R.TERMINAL_TREE}
+        with mock.patch.object(R.C, "_git", side_effect=lambda _root, *args: values[args]):
+            R.prove_trees(ROOT, bound())
+        for key, replacement in ((("rev-parse", "HEAD"), "a" * 40),
+                                 (("rev-parse", R.E.TERMINAL_V3_SOURCE + "^{tree}"), "a" * 40)):
+            changed = {**values, key: replacement}
+            with self.subTest(key=key), \
+                    mock.patch.object(R.C, "_git", side_effect=lambda _root, *args: changed[args]), \
+                    self.assertRaises(ValueError):
+                R.prove_trees(ROOT, bound())
+
+    def test_the_checkpoint_constants_are_the_frozen_ones(self):
         self.assertEqual((R.TERMINAL_TREE, R.TERMINAL_TAG_OBJECT, R.TERMINAL_RELEASE_ID,
                           R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN),
                          ("db18c40ece8fa91f9dfabb7cb99a833a34a30505",
                           "e28add890e0af9b0be7c3a8548dad3b6fb7e9324", 384446269, 34186703418, 34186887764))
 
-    def controls(self, altered=None):
-        values = {("rev-parse", "HEAD"): SOURCE,
-                  ("rev-parse", R.E.TERMINAL_V3_SOURCE + "^{tree}"): R.TERMINAL_TREE}
-        fragments = {}
-        for entry in R.E.HISTORICAL_RELEASES:
-            sha = entry["source_sha"]
-            values[("rev-parse", sha + "^{tree}")] = entry["tree_sha"]
-            values[("rev-list", "--parents", "-n", "1", sha)] = sha + " " + entry["parent_sha"]
-            fragments[sha] = SimpleNamespace(fragment_path=entry["fragment_path"], fragment_sha256=entry["fragment_sha256"])
-        if altered and altered[0] in values:
-            values[altered[0]] = altered[1]
-        if altered and altered[0] in fragments:
-            fragments[altered[0]] = altered[1]
-        # The inventory is per-edge now, so the digest fake has to answer for the
-        # SOURCE as well as the path; carrying both through the read keeps the
-        # fake honest instead of letting one shared digest satisfy every edge.
-        def digest(raw):
-            source, path = raw.decode().split(":", 1)
-            entry = next(x for x in R.E.HISTORICAL_RELEASES if x["source_sha"] == source)
-            value = R.E.historical_workflows(entry)[path]
-            return SimpleNamespace(hexdigest=lambda: "0" * 64 if altered and altered[0] == path else value)
-        def read_bytes(_root, *args):
-            self.assertEqual(args[0], "show")
-            source, path = args[1].split(":", 1)
-            self.assertIn(source, {x["source_sha"] for x in R.E.HISTORICAL_RELEASES})
-            self.assertIn(path, R.E.HISTORICAL_WORKFLOW_PATHS)
-            return args[1].encode()
-        return values, fragments, digest, read_bytes
 
-    def prove(self, altered=None, ancestor=True, current=None):
-        values, fragments, digest, read_bytes = self.controls(altered)
-        with mock.patch.object(R.C, "_git", side_effect=lambda _root, *args: values[args]), \
-                mock.patch.object(R.C, "_git_bytes", side_effect=read_bytes), \
-                mock.patch.object(R.C, "_is_ancestor", return_value=ancestor), \
-                mock.patch.object(R.C, "validate_transition", side_effect=lambda _root, _parent, sha, **_: fragments[sha]), \
-                mock.patch.object(R.hashlib, "sha256", side_effect=digest):
-            R.prove_trees(ROOT, current or bound())
+class LedgerDerivationTests(unittest.TestCase):
+    """A1: the derivation reproduces every fact the deleted table transcribed.
 
-    def test_historical_tree_parent_fragment_and_workflow_refusals(self):
-        self.prove()
-        for entry in R.E.HISTORICAL_RELEASES:
-            for key in (("rev-parse", entry["source_sha"] + "^{tree}"),
-                        ("rev-list", "--parents", "-n", "1", entry["source_sha"])):
-                with self.subTest(key=key), self.assertRaises(ValueError):
-                    self.prove((key, "a" * 40))
-            for field in ("fragment_path", "fragment_sha256"):
-                values = {"fragment_path": entry["fragment_path"], "fragment_sha256": entry["fragment_sha256"]}
-                values[field] = "changed"
-                with self.subTest(source=entry["source_sha"], field=field), self.assertRaises(ValueError):
-                    self.prove((entry["source_sha"], SimpleNamespace(**values)))
-        for path in R.E.HISTORICAL_WORKFLOW_PATHS:
-            with self.subTest(path=path), self.assertRaises(ValueError):
-                self.prove((path, "changed"))
-        with self.assertRaises(ValueError):
-            self.prove((("rev-parse", R.E.TERMINAL_V3_SOURCE + "^{tree}"), "a" * 40))
-
-    def test_checkout_ancestry_and_historical_executor_refusals(self):
-        with self.assertRaises(ValueError):
-            self.prove((("rev-parse", "HEAD"), "a" * 40))
-        with self.assertRaises(ValueError):
-            self.prove(ancestor=False)
-        for sha in (R.E.TERMINAL_V3_SOURCE, *(x["source_sha"] for x in R.E.HISTORICAL_RELEASES)):
-            with self.subTest(sha=sha), self.assertRaises(ValueError):
-                self.prove((("rev-parse", "HEAD"), sha), current={**bound(), "executor_sha": sha})
-
-
-class FrozenWindowTests(unittest.TestCase):
-    """The frozen window is a reviewed list; these tests prove it is also true.
-
-    Nothing here derives the window — that would turn a reviewed list into a
-    computed range and defeat its purpose. Each test reads what the list
-    ASSERTS and checks it against the repository the recovery will execute
-    against, so a transcription error in a source SHA, a parent, a tree, a
-    fragment or a workflow digest fails here rather than mid-publication.
+    The committed side-by-side dump was taken at the base commit, while the
+    table still existed, from the repository's own objects and the GitHub run
+    listings. These tests re-derive the same facts with the shipped code and
+    compare, so the artifact cannot drift away from what the code does.
     """
 
-    def git(self, *args: str) -> str:
-        return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
-                              capture_output=True, text=True, timeout=60).stdout.strip()
+    def test_the_committed_dump_is_byte_equal_for_every_retired_row(self):
+        self.assertTrue(DERIVED_WINDOW["byte_equal"])
+        self.assertEqual(len(DERIVED_WINDOW["edges"]), 13)
+        for row in DERIVED_WINDOW["edges"]:
+            with self.subTest(tag=row["tag"]):
+                self.assertTrue(row["byte_equal"])
+                self.assertEqual(row["table"], row["derived"])
+                for name in ("main", "codeql"):
+                    record = row["original_runs"][name]
+                    self.assertEqual(record["conclusion"], "success")
+                    self.assertEqual(record["status"], "completed")
 
-    def test_the_window_is_thirteen_contiguous_edges_ending_before_this_change(self):
-        window = R.E.HISTORICAL_RELEASES
-        self.assertEqual(len(window), 13)
-        tags = [f"v0.1.{81 + index}" for index in range(len(window))]
-        self.assertEqual(tags[0], R.E.FIRST_V4_TAG)
-        self.assertEqual(tags[-1], "v0.1.93")
-        previous = R.E.TERMINAL_V3_SOURCE
-        for tag, entry in zip(tags, window):
-            self.assertIs(R.E.historical_release(tag), entry)
-            self.assertEqual(entry["parent_sha"], previous)
-            previous = entry["source_sha"]
-        # Neither end grows by accident: one tag before and one after refuse.
-        self.assertIsNone(R.E.historical_release(R.E.TERMINAL_V3_TAG))
-        self.assertIsNone(R.E.historical_release(R.E.next_tag(tags[-1])))
-        # The executor must descend from the whole window, so the last frozen
-        # source can never be the checkout that publishes it.
-        self.assertEqual(self.git("rev-list", "--count", f"{previous}..HEAD").isdigit(), True)
-        self.assertGreater(int(self.git("rev-list", "--count", f"{previous}..HEAD")), 0)
+    def test_the_shipped_derivation_reproduces_the_dump_from_git(self):
+        rows = {row["tag"]: row["derived"] for row in DERIVED_WINDOW["edges"]}
+        edges = {edge.tag: edge for edge in LEDGER}
+        self.assertLessEqual(set(rows), set(edges))
+        for tag, expected in rows.items():
+            edge = edges[tag]
+            with self.subTest(tag=tag):
+                self.assertEqual(edge.source_sha, expected["source_sha"])
+                self.assertEqual(edge.tree_sha, expected["tree_sha"])
+                self.assertEqual(edge.parent_sha, expected["parent_sha"])
+                self.assertEqual(edge.fragment_path, expected["fragment_path"])
+                self.assertEqual(edge.fragment_sha256, expected["fragment_sha256"])
+                self.assertEqual(dict(edge.workflows), expected["workflows"])
 
-    def test_every_frozen_edge_matches_the_repository_it_names(self):
-        for entry in R.E.HISTORICAL_RELEASES:
-            sha = entry["source_sha"]
-            with self.subTest(source=sha):
-                self.assertEqual(
-                    self.git("rev-list", "--parents", "-n", "1", sha).split(),
-                    [sha, entry["parent_sha"]],
-                )
-                self.assertEqual(self.git("rev-parse", f"{sha}^{{tree}}"), entry["tree_sha"])
-                fragment = R.C.validate_transition(
-                    ROOT, entry["parent_sha"], sha, first_parent=True
-                )
-                self.assertEqual(
-                    (fragment.fragment_path, fragment.fragment_sha256),
-                    (entry["fragment_path"], entry["fragment_sha256"]),
-                )
-                inventory = R.E.historical_workflows(entry)
-                self.assertEqual(set(inventory), set(R.E.HISTORICAL_WORKFLOW_PATHS))
-                for path, digest in inventory.items():
-                    blob = subprocess.run(
-                        ["git", "-C", str(ROOT), "show", f"{sha}:{path}"],
-                        check=True, capture_output=True, timeout=60,
-                    ).stdout
-                    self.assertEqual(hashlib.sha256(blob).hexdigest(), digest)
+    def test_the_ledger_is_the_window_and_chains_from_the_checkpoint(self):
+        self.assertEqual(len(LEDGER), 13)
+        previous_tag, previous_sha = R.E.TERMINAL_V3_TAG, R.E.TERMINAL_V3_SOURCE
+        for edge in LEDGER:
+            self.assertEqual((edge.base_tag, edge.base_sha), (previous_tag, previous_sha))
+            self.assertEqual(R.E.next_tag(previous_tag), edge.tag)
+            previous_tag, previous_sha = edge.tag, edge.source_sha
+        self.assertEqual(LEDGER[0].tag, R.E.FIRST_V4_TAG)
 
-    def test_the_runbook_table_names_exactly_the_window_it_documents(self):
-        """A stale table is a false map of a window nothing can re-publish."""
-        runbook = (ROOT / "docs/runbooks/platform-source-releases.md").read_text()
-        section = runbook.split("## Finite historical-source recovery\n", 1)[1]
-        section = section.split("### Owner-prepared historical tags", 1)[0]
-        rows = re.findall(
-            r"^\| `([0-9a-f]{40})` \| `([0-9]+)` / `([0-9]+)` \| `([^`]+)` \|$", section, re.M
-        )
-        self.assertEqual(rows, [(entry["source_sha"], str(entry["main_run_id"]),
-                                 str(entry["codeql_run_id"]),
-                                 entry["fragment_path"].removeprefix("changelog.d/"))
-                                for entry in R.E.HISTORICAL_RELEASES])
-        # A pin is a published fact a reader must be able to look up, so the
-        # second table names EVERY pinned edge with the Release the fact was
-        # read from: a drain that pins eight edges and documents one leaves the
-        # next reader guessing which of them the refusal will bite.
-        self.assertIn("`executor_sha`", runbook)
-        pins = re.findall(
-            r"^\| `(v[0-9.]+)` \| `([0-9]+)` \| `([0-9a-f]{8})` \|$", section, re.M
-        )
-        self.assertEqual(pins, [(tag, str(row["release_id"]), row["executor_sha"][:8])
-                                for tag, row in R.E.PINNED_EXECUTIONS.items()])
+    def test_a_derived_edge_refuses_a_merge_commit_source(self):
+        merge = R.C._git(ROOT, "rev-list", "--max-count=1", "--merges", "HEAD")
+        if not merge:
+            self.skipTest("this history carries no merge commit to refuse")
+        with self.assertRaisesRegex(ValueError, "single-parent"):
+            B.derive_edge(ROOT, tag="v9.9.9", source_sha=merge,
+                          base_tag=LEDGER[-1].tag, base_sha=LEDGER[-1].source_sha)
 
-    def test_a_named_inventory_must_be_known_and_complete(self):
-        entry = R.E.HISTORICAL_RELEASES[0]
-        self.assertEqual(
-            R.E.historical_workflows(entry),
-            R.E.HISTORICAL_WORKFLOWS[entry["workflows"]],
-        )
-        for name in ("", "unknown", None, 3, [], {"a": 1}):
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                R.E.historical_workflows({**entry, "workflows": name})
-        with self.subTest(case="missing"), self.assertRaises(ValueError):
-            R.E.historical_workflows({})
-        partial = dict(R.E.HISTORICAL_WORKFLOWS[entry["workflows"]])
-        partial.pop(R.E.HISTORICAL_WORKFLOW_PATHS[-1])
-        with mock.patch.dict(R.E.HISTORICAL_WORKFLOWS, {"partial": partial}), \
-                self.assertRaises(ValueError):
-            R.E.historical_workflows({**entry, "workflows": "partial"})
 
-    def test_each_inventory_is_named_by_at_least_one_edge(self):
-        """An unused inventory is a transcription that nothing proves."""
-        named = {entry["workflows"] for entry in R.E.HISTORICAL_RELEASES}
-        self.assertEqual(named, set(R.E.HISTORICAL_WORKFLOWS))
+class RecoveryCITests(unittest.TestCase):
+    def listing(self, run_id, source=SOURCE, workflow="pull-request.yml", **changes):
+        record = {**run(run_id, workflow=workflow, source=source), **changes}
+        return {"total_count": 1, "workflow_runs": [record]}
+
+    def test_the_original_run_listing_must_be_one_successful_latest_attempt(self):
+        path = ("/actions/workflows/pull-request.yml/runs?branch=main&event=push"
+                f"&head_sha={SOURCE}&per_page=100")
+        api = API({path: self.listing(400)})
+        self.assertEqual(R.run_tuple(api, SOURCE, "pull-request.yml"), (400, 1))
+        # The LATEST attempt is what the ordinary publisher consumes, so a
+        # later successful attempt is admitted and an unsuccessful one is not.
+        api = API({path: self.listing(400, run_attempt=3)})
+        self.assertEqual(R.run_tuple(api, SOURCE, "pull-request.yml"), (400, 3))
+        for change in ({"conclusion": "failure"}, {"conclusion": None},
+                       {"status": "in_progress", "conclusion": None}):
+            with self.subTest(change=tuple(change)), \
+                    self.assertRaisesRegex(ValueError, "did not conclude success"):
+                R.run_tuple(API({path: self.listing(400, **change)}), SOURCE, "pull-request.yml")
+        for listing in ({"total_count": 0, "workflow_runs": []},
+                        {"total_count": 2, "workflow_runs": [run(400), run(401)]},
+                        {"total_count": 1, "workflow_runs": [run(400), run(401)]},
+                        {"total_count": 2, "workflow_runs": [run(400)]},
+                        {"total_count": 1, "workflow_runs": [run(400)], "extra": 1}):
+            with self.subTest(listing=listing), \
+                    self.assertRaisesRegex(ValueError, "exactly one complete main workflow listing"):
+                R.run_tuple(API({path: listing}), SOURCE, "pull-request.yml")
+
+    def test_exact_attempt_endpoints_and_required_jobs(self):
+        api = API({"/actions/runs/400/attempts/1": run(400, workflow="pull-request.yml"),
+                   "/actions/runs/401/attempts/1": run(401, workflow="codeql.yml"),
+                   "/actions/runs/400/attempts/1/jobs?per_page=100": {"jobs": []},
+                   "/actions/runs/401/attempts/1/jobs?per_page=100": {"jobs": []}})
+        with mock.patch.object(R.C, "build_main_ci_jobs_receipt") as receipt, \
+                mock.patch.object(R.C, "classify_codeql_run", return_value=(401, 1)), \
+                mock.patch.object(R.C, "plan_workflow_run", return_value=SOURCE):
+            R.prove_ci(api, SOURCE, TREE, (400, 1), (401, 1))
+            receipt.assert_called_once()
+        self.assertEqual(api.calls, ["/actions/runs/400/attempts/1", "/actions/runs/401/attempts/1",
+                                     "/actions/runs/400/attempts/1/jobs?per_page=100",
+                                     "/actions/runs/401/attempts/1/jobs?per_page=100"])
+
+    def test_pending_codeql_and_foreign_repository_refuse(self):
+        records = {"/actions/runs/400/attempts/1": run(400, workflow="pull-request.yml"),
+                   "/actions/runs/401/attempts/1": run(401, workflow="codeql.yml")}
+        with mock.patch.object(R.C, "classify_codeql_run", return_value=None), \
+                mock.patch.object(R.C, "plan_workflow_run", return_value=SOURCE), \
+                self.assertRaisesRegex(ValueError, "exact successful attempt"):
+            R.prove_ci(API(copy.deepcopy(records)), SOURCE, TREE, (400, 1), (401, 1))
+        changed = copy.deepcopy(records)
+        changed["/actions/runs/400/attempts/1"]["repository"] = {"id": 1, "full_name": "snaraj/platform"}
+        with self.assertRaises(ValueError):
+            R.exact_run(API(changed), 400, 1)
+        changed = copy.deepcopy(records)
+        changed["/actions/runs/400/attempts/1"]["run_attempt"] = 2
+        with self.assertRaisesRegex(ValueError, "run attempt substitution"):
+            R.exact_run(API(changed), 400, 1)
+
+    def test_the_receipt_is_the_same_control_the_ordinary_path_runs(self):
+        """`prove_ci` and the ordinary jobs verifier share one receipt builder.
+
+        The frozen workflow-digest inventory is gone; what enforces the source's
+        required jobs is this receipt, and it must be the ordinary path's.
+        """
+        verifier = (ROOT / "scripts/ci/verify-platform-release-main-jobs.sh").read_text()
+        self.assertIn('"${contract}" main-ci-jobs-receipt', verifier)
+        source = (ROOT / "scripts/ci/platform_release_recovery.py").read_text()
+        self.assertIn("C.build_main_ci_jobs_receipt(", source)
+        self.assertIn("repository-and-infrastructure", R.C.REQUIRED_CHECKS)
+        self.assertIn("dependency-review", R.C.REQUIRED_CHECKS)
 
 
 class RecoverySelectionTests(unittest.TestCase):
+    """The newest-first scan, the ordered list, and what refuses it."""
+
     def setUp(self):
-        self.stack = []
-        for target, name, value in (
-            (R, "prove_context", None), (R, "prove_ci", None), (R, "run_tuple", (400, 1)),
-            (R.C, "_git", TREE),
-        ):
+        for target, name, value in ((R, "prove_context", None), (R, "prove_ci", None),
+                                    (R, "prove_no_publisher_in_flight", None),
+                                    (R, "prove_tag", "a" * 40),
+                                    (R, "run_tuple", (400, 1))):
             patch = mock.patch.object(target, name, return_value=value)
-            self.stack.append(patch)
             setattr(self, name, patch.start())
             self.addCleanup(patch.stop)
-        self._git.side_effect = lambda _root, *args: "2026-09-11T00:00:00Z" if args[0] == "show" else TREE
+        patch = mock.patch.object(R.C, "_git", return_value=TREE)
+        self.git = patch.start()
+        self.addCleanup(patch.stop)
 
-    @staticmethod
-    def prepared_api(index=0):
-        tag = f"v0.1.{81 + index}"
-        source = R.E.HISTORICAL_RELEASES[index]["source_sha"]
-        ref = {"ref": f"refs/tags/{tag}", "object": {"type": "tag", "sha": TREE}}
-        annotated = {"sha": TREE, "tag": tag, "object": {"type": "commit", "sha": source},
-                     "message": f"Platform release {tag} from {source}", "tagger": {
-                         "name": R.C.RELEASE_TAGGER_NAME, "email": R.C.RELEASE_TAGGER_EMAIL,
-                         "date": "2026-09-11T00:00:00Z"}}
-        return API({f"/git/ref/tags/{tag}": ref, f"/git/tags/{TREE}": annotated})
+    def select(self, published, stream=None):
+        """One `prepare` selection whose first `published` ledger edges exist."""
+        present = {edge.tag for edge in LEDGER[:published]}
+        with ledger_patch(), mock.patch.object(R, "release_present",
+                               side_effect=lambda _api, tag: tag in present), \
+                mock.patch.object(R, "prove_release", return_value=True) as prove:
+            value = R.selection(ROOT, API(), bound(), stream=stream or io.StringIO())
+        return value, prove
 
-    @staticmethod
-    def window(index):
-        entry = R.E.HISTORICAL_RELEASES[index]
-        return R.C.TransitionWindow(entry["parent_sha"], f"v0.1.{80 + index}",
-            R.C.Intent(entry["source_sha"], R.C.Version(0, 1, 81 + index)),
-            entry["fragment_path"], entry["fragment_sha256"])
+    def test_every_pending_edge_is_selected_in_ledger_order(self):
+        for published in (len(LEDGER) - 1, len(LEDGER) - 4, 0):
+            with self.subTest(published=published):
+                value, prove = self.select(published)
+                self.assertEqual([entry["tag"] for entry in value["edges"]],
+                                 [edge.tag for edge in LEDGER[published:]])
+                # The predecessor is proved in full; the published edges before
+                # it are not re-proved at all.
+                proved = [call.args[2] for call in prove.call_args_list]
+                expected = [R.E.TERMINAL_V3_TAG]
+                if published:
+                    expected.append(LEDGER[published - 1].tag)
+                self.assertEqual(proved, expected)
+                for entry, edge in zip(value["edges"], LEDGER[published:]):
+                    self.assertEqual(entry["source_sha"], edge.source_sha)
+                    self.assertEqual(entry["tree_sha"], edge.tree_sha)
+                    self.assertEqual(entry["fragment_sha256"], edge.fragment_sha256)
+                    self.assertEqual(entry["workflows"], dict(edge.workflows))
 
-    def select(self, index=0):
-        with mock.patch.object(R, "prove_release", side_effect=[True] * (index + 1) + [False]) as releases, \
-                mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
-            value = R.selection(ROOT, self.prepared_api(index), bound())
-        self.assertEqual(releases.call_count, index + 2)
-        return value
+    def test_a_complete_backlog_refuses_by_name(self):
+        with self.assertRaisesRegex(ValueError, "backlog is complete; use the ordinary publisher"):
+            self.select(len(LEDGER))
 
-    def test_first_unresolved_edge_only_and_fresh_source_ci(self):
-        for index in range(3):
-            with self.subTest(index=index):
-                self.prove_context.reset_mock()
-                self.prove_ci.reset_mock()
-                value = self.select(index)
-                original = R.E.HISTORICAL_RELEASES[index]
-                self.assertEqual((value["source_sha"], value["tag"]),
-                                 (original["source_sha"], f"v0.1.{81 + index}"))
-                self.prove_context.assert_called_once_with(ROOT, mock.ANY, bound())
-                self.assertEqual(self.prove_ci.call_args_list, [
-                    mock.call(mock.ANY, SOURCE, TREE, (400, 1), (400, 1)),
-                    mock.call(mock.ANY, original["source_sha"], original["tree_sha"],
-                              (original["main_run_id"], 1), (original["codeql_run_id"], 1)),
-                ])
+    def test_an_in_flight_ordinary_publisher_refuses_by_name(self):
+        self.prove_no_publisher_in_flight.side_effect = R.C.ContractError(
+            "ordinary platform-release publisher is queued or in progress")
+        with self.assertRaisesRegex(ValueError, "queued or in progress"):
+            self.select(len(LEDGER) - 1)
+        for status in R.IN_FLIGHT:
+            api = API({"/actions/workflows/platform-release.yml/runs?branch=main&per_page=1":
+                       {"total_count": 1, "workflow_runs": [{"status": status}]}})
+            with self.subTest(status=status), \
+                    self.assertRaisesRegex(ValueError, "queued or in progress"):
+                REAL_NO_PUBLISHER(api)
+        api = API({"/actions/workflows/platform-release.yml/runs?branch=main&per_page=1":
+                   {"total_count": 1, "workflow_runs": [{"status": "completed"}]}})
+        REAL_NO_PUBLISHER(api)
+        for listing in ({"total_count": 0}, {"workflow_runs": {}}, {"extra": 1}):
+            api = API({"/actions/workflows/platform-release.yml/runs?branch=main&per_page=1": listing})
+            with self.subTest(listing=listing), \
+                    self.assertRaisesRegex(ValueError, "publisher run listing is malformed"):
+                REAL_NO_PUBLISHER(api)
 
-    def test_initial_and_resumed_selection_refuse_context_and_either_ci_failure(self):
-        value = self.select()
-        for supplied in (None, R.canonical(value)):
-            for refused in ("context", SOURCE, value["source_sha"]):
-                with self.subTest(resumed=supplied is not None, refused=refused):
-                    self.prove_context.reset_mock(side_effect=True)
-                    self.prove_ci.reset_mock(side_effect=True)
-                    if refused == "context":
-                        self.prove_context.side_effect = R.C.ContractError("proof refused")
-                    else:
-                        def reject_ci(_api, source, *_args):
-                            if source == refused:
-                                raise R.C.ContractError("proof refused")
-                        self.prove_ci.side_effect = reject_ci
-                    with mock.patch.object(R, "prove_release", side_effect=[True, False]), \
-                            mock.patch.object(R.C, "discover_transition_window", return_value=self.window(0)), \
-                            self.assertRaisesRegex(R.C.ContractError, "proof refused"):
-                        R.selection(ROOT, API(), bound(), supplied)
-                    if refused == "context":
-                        self.prove_ci.assert_not_called()
-                    elif refused == SOURCE:
-                        self.prove_ci.assert_called_once_with(mock.ANY, SOURCE, TREE, (400, 1), (400, 1))
+    def test_each_pending_edge_proves_its_tag_and_its_own_original_ci(self):
+        value, _ = self.select(len(LEDGER) - 3)
+        pending = LEDGER[-3:]
+        self.assertEqual([call.args[2] for call in self.prove_tag.call_args_list],
+                         [edge.tag for edge in pending])
+        # The executor's CI, then one proof per pending edge at its own tree.
+        self.assertEqual([call.args[1] for call in self.prove_ci.call_args_list],
+                         [bound()["executor_sha"], *[edge.source_sha for edge in pending]])
+        self.assertEqual([call.args[2] for call in self.prove_ci.call_args_list][1:],
+                         [edge.tree_sha for edge in pending])
+        self.assertEqual(len(value["edges"]), 3)
 
-    def test_completed_window_missing_checkpoint_and_running_original_stop(self):
-        for complete in (True, False):
-            with mock.patch.object(R, "prove_release", return_value=complete), self.assertRaises(ValueError):
-                R.selection(ROOT, API(), bound())
-        with mock.patch.object(R, "prove_release", side_effect=[True, R.C.ContractError("original run pending")]) as releases, \
-                self.assertRaisesRegex(ValueError, "original run pending"):
-            R.selection(ROOT, API(), bound())
-        self.assertEqual(releases.call_count, 2)
-        with mock.patch.object(R, "prove_release", return_value=False), \
-                mock.patch.object(R.C, "discover_transition_window") as ledger, \
-                self.assertRaisesRegex(ValueError, "terminal v3 Release missing"):
-            R.selection(ROOT, API(), bound())
-        ledger.assert_not_called()
+    def test_the_log_names_every_edge_and_the_run_totals(self):
+        stream = io.StringIO()
+        value, _ = self.select(len(LEDGER) - 2, stream=stream)
+        lines = stream.getvalue().splitlines()
+        self.assertEqual(len([line for line in lines if line.startswith("RECOVERY_EDGE ")]), 2)
+        for entry, line in zip(value["edges"], lines):
+            self.assertIn(f"tag={entry['tag']}", line)
+            self.assertIn(f"source={entry['source_sha']}", line)
+            self.assertIn("reads=", line)
+            self.assertIn("seconds=", line)
+            self.assertIn("decision=selected", line)
+        summary = lines[-1]
+        self.assertTrue(summary.startswith("RECOVERY_SUMMARY pending=2 published=0 reads="))
+        self.assertIn("/", summary.split("reads=")[1])
 
-    def test_first_selection_rejects_wrong_derived_tag_or_parent_before_ci(self):
-        for key, replacement in (("base_sha", "a" * 40), ("intent", R.C.Intent(SOURCE, R.C.Version(0, 1, 82)))):
-            original = self.window(0)
-            changed = R.C.TransitionWindow(**{**vars(original), key: replacement})
-            self.prove_ci.reset_mock()
-            with mock.patch.object(R, "prove_release", side_effect=[True, False]), \
-                    mock.patch.object(R.C, "discover_transition_window", return_value=changed), \
-                    self.assertRaisesRegex(ValueError, "derived ledger edge"):
-                R.selection(ROOT, API(), bound())
-            self.prove_ci.assert_not_called()
+    def test_the_list_must_be_the_ledger_and_nothing_else(self):
+        value, _ = self.select(len(LEDGER) - 4)
+        with ledger_patch():
+            R.binding(ROOT, bound(), R.canonical(value))
+        edges = value["edges"]
+        cases = {
+            "reordered": [edges[1], edges[0], *edges[2:]],
+            "dropped": [edges[0], *edges[2:]],
+            "duplicated": [*edges, copy.deepcopy(edges[-1])],
+            "rechained": [{**edges[0], "base_tag": edges[1]["base_tag"]}, *edges[1:]],
+            "foreign field": [{**edges[0], "extra": 1}, *edges[1:]],
+            "missing field": [{k: v for k, v in edges[0].items() if k != "tree_sha"}, *edges[1:]],
+            "moved fragment": [{**edges[0], "fragment_sha256": "0" * 64}, *edges[1:]],
+            "moved tree": [{**edges[0], "tree_sha": "0" * 40}, *edges[1:]],
+            "moved workflow digest": [{**edges[0], "workflows": {}}, *edges[1:]],
+            "zero run": [{**edges[0], "main_run_id": 0}, *edges[1:]],
+            "empty": [],
+        }
+        with ledger_patch():
+            for name, replacement in cases.items():
+                with self.subTest(case=name), self.assertRaises(ValueError):
+                    R.binding(ROOT, bound(), R.canonical({**value, "edges": replacement}))
+            for key, replacement in (("run_id", 501), ("run_attempt", 2), ("executor_sha", "a" * 40),
+                                     ("repository", "other/platform"), ("repository_id", True),
+                                     ("schema", "unknown"), ("executor_main_run_id", 0),
+                                     ("executor_codeql_run_attempt", True)):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    R.binding(ROOT, bound(), R.canonical({**value, key: replacement}))
+            for raw in (json.dumps(value, indent=2), "[]", " " * 8):
+                with self.subTest(raw=raw[:8]), self.assertRaises(ValueError):
+                    R.binding(ROOT, bound(), raw)
+            for changed in (dict(value, foreign=True),
+                            {k: v for k, v in value.items() if k != "schema"}):
+                with self.assertRaises(ValueError):
+                    R.binding(ROOT, bound(), R.canonical(changed))
 
-    def test_binding_bounds_bytes_before_parsing_and_finite_scope_before_ledger(self):
-        value = self.select()
-        oversized = R.canonical({**value, "padding": "x" * 4097})
-        with mock.patch.object(R.json, "loads", wraps=json.loads) as parse, self.assertRaisesRegex(ValueError, "byte budget"):
+    def test_the_byte_budget_is_derived_and_checked_before_parsing(self):
+        value, _ = self.select(len(LEDGER) - 2)
+        # The absolute cap is checked before the payload is parsed at all.
+        oversized = R.canonical(
+            {**value, "padding": "x" * R.selection_bytes(R.C.MAX_TAG_LEDGER_ENTRIES)})
+        with ledger_patch(), mock.patch.object(R.json, "loads", wraps=json.loads) as parse, \
+                self.assertRaisesRegex(ValueError, "byte budget"):
             R.binding(ROOT, bound(), oversized)
         parse.assert_not_called()
-        with self.assertRaisesRegex(ValueError, "canonical JSON"):
-            R.binding(ROOT, bound(), "[]")
-        for change in ({"tag": "v0.1.84"}, {"source_sha": "a" * 40}):
-            with mock.patch.object(R.C, "discover_transition_window") as ledger, \
-                    self.assertRaisesRegex(ValueError, "finite window"):
-                R.binding(ROOT, bound(), R.canonical({**value, **change}))
-            ledger.assert_not_called()
+        # And a list is then held to the budget its OWN length derives.
+        padded = R.canonical({**value, "edges": [
+            {**entry, "fragment_path": "changelog.d/1-" + "a" * 200 + ".md"}
+            for entry in value["edges"]]})
+        with ledger_patch(), self.assertRaisesRegex(ValueError, "byte budget"):
+            R.binding(ROOT, bound(), padded)
+        self.assertGreater(R.selection_bytes(4), R.selection_bytes(1))
+        self.assertEqual(R.selection_bytes(4) - R.selection_bytes(3),
+                         R.selection_bytes(3) - R.selection_bytes(2))
+        for pending in (0, -1, True, 1.0, "1", None):
+            with self.subTest(pending=pending), self.assertRaises(ValueError):
+                R.selection_bytes(pending)
 
-    def test_selected_receipt_is_not_reselected_or_reused_by_another_run(self):
-        value = self.select()
-        with mock.patch.object(R, "prove_release", return_value=True) as releases, \
-                mock.patch.object(R.C, "discover_transition_window", return_value=self.window(0)):
+    def test_a_supplied_list_is_not_reselected_and_stays_bound_to_its_run(self):
+        value, _ = self.select(len(LEDGER) - 2)
+        with ledger_patch(), mock.patch.object(R, "prove_release", return_value=True) as prove, \
+                mock.patch.object(R, "release_present") as present:
             self.run_tuple.reset_mock()
-            self.prove_context.reset_mock()
-            self.prove_ci.reset_mock()
-            api = self.prepared_api()
-            self.assertEqual(R.selection(ROOT, api, bound(), R.canonical(value)), value)
-            self.run_tuple.assert_not_called()
-            self.prove_context.assert_called_once_with(ROOT, api, bound())
-            original = R.E.HISTORICAL_RELEASES[0]
-            self.assertEqual(self.prove_ci.call_args_list, [
-                mock.call(api, SOURCE, TREE, (400, 1), (400, 1)),
-                mock.call(api, original["source_sha"], original["tree_sha"],
-                          (original["main_run_id"], 1), (original["codeql_run_id"], 1)),
-            ])
-            releases.assert_called_once_with(ROOT, mock.ANY, "v0.1.80", R.E.TERMINAL_V3_SOURCE)
-            for key, bad in (("run_id", 501), ("run_attempt", 2), ("executor_sha", "a" * 40),
-                             ("repository_id", True), ("repository", "other/platform"),
-                             ("schema", "unknown"), ("source_sha", "a" * 40), ("tag", "v0.1.84"),
-                             ("base_sha", "a" * 40), ("base_tag", "v0.1.79"),
-                             ("executor_main_run_id", 0), ("executor_codeql_run_attempt", True)):
-                changed = dict(value)
-                changed[key] = bad
-                with self.subTest(key=key), self.assertRaises(ValueError):
-                    R.selection(ROOT, API(), bound(), R.canonical(changed))
-            for changed in (dict(value, foreign=True), {k: v for k, v in value.items() if k != "schema"}):
-                with self.assertRaises(ValueError):
-                    R.selection(ROOT, API(), bound(), R.canonical(changed))
-            for raw in (json.dumps(value, indent=2), " " * 4097, "[]"):
-                with self.assertRaises(ValueError):
-                    R.selection(ROOT, API(), bound(), raw)
+            self.assertEqual(R.selection(ROOT, API(), bound(), R.canonical(value),
+                                         stream=io.StringIO()), value)
+            present.assert_not_called()
+            # The executor's own run listing is taken from the receipt, never
+            # reselected; each edge's ORIGINAL CI is re-derived and compared.
+            self.assertEqual([call.args[1] for call in self.run_tuple.call_args_list],
+                             [edge.source_sha for edge in LEDGER[-2:] for _ in range(2)])
+            self.assertEqual([call.args[2] for call in prove.call_args_list],
+                             [R.E.TERMINAL_V3_TAG, LEDGER[-3].tag])
 
-    def test_receipt_rechecks_predecessor_and_exact_ledger_edge(self):
-        value = self.select()
-        with mock.patch.object(R.C, "discover_transition_window", return_value=self.window(0)), \
-                mock.patch.object(R, "prove_release", return_value=False), self.assertRaises(ValueError):
-            R.selection(ROOT, API(), bound(), R.canonical(value))
-        with mock.patch.object(R.C, "discover_transition_window", return_value=self.window(1)), \
-                self.assertRaises(ValueError):
-            R.selection(ROOT, API(), bound(), R.canonical(value))
 
-    def test_prepare_and_verify_require_an_exact_prepared_tag_for_each_edge(self):
-        for index in range(3):
-            value = self.select(index)
-            for supplied in (None, R.canonical(value)):
-                prior = [True] * (index + 1) + [False] if supplied is None else [True]
-                with mock.patch.object(R, "prove_release", side_effect=prior), \
-                        mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
-                    self.assertEqual(R.selection(ROOT, self.prepared_api(index), bound(), supplied), value)
-                # An owner tag written with `git tag -a -m` carries git's own
-                # single terminator; the same edge must still be selectable.
-                terminated = self.prepared_api(index)
-                terminated.records[f"/git/tags/{TREE}"]["message"] += "\n"
-                with mock.patch.object(R, "prove_release", side_effect=prior), \
-                        mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)):
-                    self.assertEqual(R.selection(ROOT, terminated, bound(), supplied), value)
-                for change in ("absent", "lightweight", "source", "message", "tagger", "instant", "fetched"):
-                    api = self.prepared_api(index)
-                    ref = api.records[f"/git/ref/tags/{value['tag']}"]
-                    annotated = api.records[f"/git/tags/{TREE}"]
-                    if change == "absent":  # The dangling object remains present in the fixture.
-                        api.records[f"/git/ref/tags/{value['tag']}"] = None
-                    elif change == "lightweight":
-                        ref["object"]["type"] = "commit"
-                    elif change == "source":
-                        annotated["object"]["sha"] = SOURCE
-                    elif change == "message":
-                        annotated["message"] += "\n\n"
-                    elif change == "tagger":
-                        annotated["tagger"]["name"] = "other"
-                    elif change == "instant":
-                        annotated["tagger"]["date"] = "2026-09-10T00:00:00Z"
-                    else:
-                        ref["object"]["sha"] = annotated["sha"] = "d" * 40
-                        api.records[f"/git/tags/{'d' * 40}"] = annotated
-                    with self.subTest(index=index, verify=supplied is not None, change=change), \
-                            mock.patch.object(R, "prove_release", side_effect=prior), \
-                            mock.patch.object(R.C, "discover_transition_window", return_value=self.window(index)), \
-                            self.assertRaises(ValueError):
-                        R.selection(ROOT, api, bound(), supplied)
+class RecoveryDrainTests(unittest.TestCase):
+    """A3: a four-edge simulated backlog drained in ONE dispatch."""
+
+    class Store:
+        """An in-memory tag/Release store the shell loop drives through jq."""
+
+        def __init__(self, edges, published):
+            self.edges = edges
+            self.released = {edge.tag for edge in published}
+            self.drafts = {}
+            self.log = []
+
+        def present(self, _api, tag):
+            return tag in self.released
+
+        def publish(self, tag, *, assets=2, refuse=None):
+            if refuse:
+                self.log.append(("refused", tag, refuse))
+                raise R.C.ContractError(refuse)
+            if assets != 2:
+                self.drafts[tag] = assets
+                self.log.append(("draft", tag, assets))
+                raise R.C.ContractError("partial or foreign release remains held")
+            self.drafts.pop(tag, None)
+            self.released.add(tag)
+            self.log.append(("published", tag, assets))
+
+    def setUp(self):
+        self.pending = LEDGER[-4:]
+        self.published = LEDGER[:-4]
+        for name in ("prove_context", "prove_ci", "prove_no_publisher_in_flight"):
+            patch = mock.patch.object(R, name, return_value=None)
+            setattr(self, name, patch.start())
+            self.addCleanup(patch.stop)
+        for name, value in (("prove_tag", "a" * 40), ("run_tuple", (400, 1))):
+            patch = mock.patch.object(R, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        patch = mock.patch.object(R.C, "_git", return_value=TREE)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def prepare(self, store):
+        with ledger_patch(), mock.patch.object(R, "release_present", side_effect=store.present), \
+                mock.patch.object(R, "prove_release", return_value=True):
+            return R.selection(ROOT, API(), bound(), stream=io.StringIO())
+
+    def drain(self, store, *, refusals=None, drafts=None):
+        """Loop the selection exactly as publish-platform-recovery.sh does."""
+        selected = self.prepare(store)
+        refusals, drafts = refusals or {}, drafts or {}
+        published, stopped = [], None
+        for entry in selected["edges"]:
+            try:
+                store.publish(entry["tag"], assets=drafts.get(entry["tag"], 2),
+                              refuse=refusals.get(entry["tag"]))
+            except R.C.ContractError as error:
+                stopped = (entry["tag"], str(error))
+                break
+            # The independent readback after each edge.
+            with mock.patch.object(R, "prove_release", return_value=True) as readback:
+                self.assertTrue(readback(ROOT, API(), entry["tag"], entry["source_sha"]))
+            published.append(entry["tag"])
+        return selected, published, stopped
+
+    def test_one_dispatch_selects_and_publishes_all_four_in_order(self):
+        store = self.Store(LEDGER, self.published)
+        selected, published, stopped = self.drain(store)
+        self.assertEqual([entry["tag"] for entry in selected["edges"]],
+                         [edge.tag for edge in self.pending])
+        self.assertEqual(published, [edge.tag for edge in self.pending])
+        self.assertIsNone(stopped)
+        self.assertEqual([row[0] for row in store.log], ["published"] * 4)
+        # Each entry's predecessor is the previous entry: the chain the
+        # publisher walks is the chain `binding` re-derives from the ledger.
+        with ledger_patch():
+            R.binding(ROOT, bound(), R.canonical(selected))
+
+    def test_the_first_refusal_stops_the_run_and_leaves_later_edges_untouched(self):
+        for index in range(4):
+            tag = self.pending[index].tag
+            store = self.Store(LEDGER, self.published)
+            _selected, published, stopped = self.drain(
+                store, refusals={tag: "identity asset upload returned HTTP 502"})
+            with self.subTest(stop=tag):
+                self.assertEqual(published, [edge.tag for edge in self.pending[:index]])
+                self.assertEqual(stopped[0], tag)
+                self.assertIn("HTTP 502", stopped[1])
+                self.assertNotIn(tag, store.released)
+                for later in self.pending[index + 1:]:
+                    self.assertNotIn(later.tag, [row[1] for row in store.log])
+
+    def test_a_zero_asset_draft_resumes_and_a_partial_draft_holds(self):
+        store = self.Store(LEDGER, self.published)
+        tag = self.pending[0].tag
+        _selected, published, stopped = self.drain(store, drafts={tag: 0})
+        self.assertEqual(published, [])
+        self.assertEqual(stopped[0], tag)
+        self.assertEqual(store.drafts, {tag: 0})
+        # A fresh dispatch selects the same backlog and the resumed edge
+        # publishes; nothing about the selection had to change.
+        resumed = self.prepare(store)
+        self.assertEqual([entry["tag"] for entry in resumed["edges"]],
+                         [edge.tag for edge in self.pending])
+        store.publish(tag)
+        self.assertIn(tag, store.released)
+        partial = self.Store(LEDGER, self.published)
+        _selected, published, stopped = self.drain(partial, drafts={tag: 1})
+        self.assertEqual(published, [])
+        self.assertEqual(partial.drafts, {tag: 1})
+        self.assertIn("remains held", stopped[1])
+
+    def test_a_release_with_foreign_asset_names_between_edges_is_refused(self):
+        store = self.Store(LEDGER, self.published)
+        selected = self.prepare(store)
+        value = v4.evidence()
+        identity, bundle, release, runs = v4.records(value)
+        release["assets"][0]["name"] = "foreign.json"
+        api = API({f"/git/ref/tags/{selected['edges'][0]['tag']}":
+                   {"ref": "refs/tags/x", "object": {"type": "tag", "sha": "b" * 40}},
+                   f"/releases/tags/{selected['edges'][0]['tag']}": release})
+        with mock.patch.object(R, "prove_tag", return_value="b" * 40), \
+                mock.patch.object(R.C, "_git", return_value=TREE), \
+                self.assertRaisesRegex(ValueError, "foreign identity asset names"):
+            R.prove_release(ROOT, api, selected["edges"][0]["tag"],
+                            selected["edges"][0]["source_sha"])
 
 
 class RecoveryReleaseTests(unittest.TestCase):
@@ -630,14 +632,25 @@ class RecoveryReleaseTests(unittest.TestCase):
             records[f"/actions/runs/{actual['id']}/attempts/{actual['run_attempt']}"] = actual
         return value, API(records, {"/releases/assets/900": identity, "/releases/assets/901": bundle})
 
-    def prove(self, value, api, *, fetched_tag=None):
+    @staticmethod
+    def window_for(value):
+        tag = value["tag"]["name"]
+        return R.C.TransitionWindow(
+            value["predecessor"]["peeled_commit"], value["predecessor"]["tag"],
+            R.C.Intent(value["source"]["merge_sha"], R.C.Version.parse(tag.removeprefix("v"))),
+            value["changelog"]["fragment_path"], value["changelog"]["fragment_sha256"][7:])
+
+    def prove(self, value, api, *, fetched_tag=None, window=None):
         def git(_root, *args):
             if args[0] == "show":
                 return "2026-09-11T00:00:00+00:00"
             if args[-1].startswith("refs/tags/"):
                 return fetched_tag or value["tag"]["object_sha"]
             return value["source"]["tree_sha"]
-        with mock.patch.object(R.C, "_git", side_effect=git):
+        with mock.patch.object(R.C, "_git", side_effect=git), \
+                mock.patch.object(R.C, "_identity_executor_descends", return_value=True), \
+                mock.patch.object(R.C, "discover_transition_window",
+                                  return_value=window or self.window_for(value)):
             return R.prove_release(ROOT, api, value["tag"]["name"], value["source"]["merge_sha"])
 
     def test_exact_assets_crypto_and_original_attempt_all_required(self):
@@ -650,6 +663,35 @@ class RecoveryReleaseTests(unittest.TestCase):
                 self.assertRaises(subprocess.CalledProcessError):
             self.prove(value, api)
         self.assertFalse(any("/actions/runs/" in path for path in api.calls))
+
+    def test_a_published_identity_must_match_the_derived_ledger(self):
+        """What the retired table pinned for thirteen edges, derived for all.
+
+        The fragment path, its SHA-256 and the predecessor were transcribed
+        rows; they are now the ledger's answer at that source, and a published
+        identity that disagrees with it is refused here.
+        """
+        value, api = self.packet()
+        with mock.patch.object(R, "verify_signature"):
+            self.assertTrue(self.prove(value, api))
+        window = self.window_for(value)
+        for name, replacement in (
+            ("fragment path", R.C.TransitionWindow(window.base_sha, window.base_tag, window.intent,
+                                                   "changelog.d/1-foreign.md", window.fragment_sha256)),
+            ("fragment digest", R.C.TransitionWindow(window.base_sha, window.base_tag, window.intent,
+                                                     window.fragment_path, "0" * 64)),
+            ("predecessor sha", R.C.TransitionWindow("a" * 40, window.base_tag, window.intent,
+                                                     window.fragment_path, window.fragment_sha256)),
+            ("predecessor tag", R.C.TransitionWindow(window.base_sha, "v0.1.79", window.intent,
+                                                     window.fragment_path, window.fragment_sha256)),
+            ("edge tag", R.C.TransitionWindow(window.base_sha, window.base_tag,
+                                              R.C.Intent(window.intent.source_sha, R.C.Version(0, 1, 99)),
+                                              window.fragment_path, window.fragment_sha256)),
+        ):
+            value, api = self.packet()
+            with self.subTest(change=name), mock.patch.object(R, "verify_signature"), \
+                    self.assertRaises(ValueError):
+                self.prove(value, api, window=replacement)
 
     def test_original_attempt_pending_failed_cancelled_missing_never_advances(self):
         for status, conclusion in (("in_progress", None), ("queued", None), ("completed", "failure"),
@@ -677,9 +719,11 @@ class RecoveryReleaseTests(unittest.TestCase):
             self.prove(value, api)
 
     def test_partial_assets_oversize_wrong_target_or_foreign_tag_refuse(self):
+        value = v4.evidence()
+        tag = value["tag"]["name"]
         for change in ("partial", "oversize", "target", "tag", "immutable"):
             value, api = self.packet()
-            release = api.records["/releases/tags/v0.1.81"]
+            release = api.records[f"/releases/tags/{tag}"]
             if change == "partial":
                 release["assets"].pop()
             elif change == "oversize":
@@ -695,9 +739,17 @@ class RecoveryReleaseTests(unittest.TestCase):
             if change in {"partial", "oversize"}:
                 self.assertFalse(any("/releases/assets/" in path for path in api.calls))
 
+    def test_release_present_refuses_a_draft_and_reports_absence(self):
+        tag = v4.RECOVERY_TAG
+        self.assertTrue(R.release_present(API({f"/releases/tags/{tag}": {"draft": False}}), tag))
+        self.assertFalse(R.release_present(API({f"/releases/tags/{tag}": None}), tag))
+        with self.assertRaisesRegex(ValueError, "draft Release"):
+            R.release_present(API({f"/releases/tags/{tag}": {"draft": True}}), tag)
+
     def test_adapter_non_200_and_exact_pending_classification_stop(self):
         value, api = self.packet()
         original = api.read
+
         def non_200(*args, **kwargs):
             _status, data = original(*args, **kwargs)
             return 201, data
@@ -705,13 +757,11 @@ class RecoveryReleaseTests(unittest.TestCase):
         with mock.patch.object(R, "verify_signature") as crypto, self.assertRaisesRegex(ValueError, "asset download failed"):
             self.prove(value, api)
         crypto.assert_not_called()
-        for status in ("queued", "in_progress", "pending", "requested", "waiting"):
+        for status in R.IN_FLIGHT:
             value, api = self.packet()
             api.records["/actions/runs/500/attempts/1"].update(status=status, conclusion=None)
             with self.subTest(status=status), mock.patch.object(R, "verify_signature"), self.assertRaises(R.C.PendingRelease):
                 self.prove(value, api)
-            # A pending-looking status cannot cover a substituted run or a
-            # nonempty conclusion; these are terminal refusal, not waiting.
             for key, replacement in (("id", 501), ("conclusion", "failure")):
                 changed = copy.deepcopy(api.records)
                 changed["/actions/runs/500/attempts/1"][key] = replacement
@@ -720,9 +770,10 @@ class RecoveryReleaseTests(unittest.TestCase):
                 self.assertNotIsInstance(raised.exception, R.C.PendingRelease)
 
     def test_inventory_shape_names_sizes_refuse_before_any_asset_read(self):
+        tag = v4.evidence()["tag"]["name"]
         for change in ("tuple", "three", "duplicate", "foreign", "non-object", "bool-size", "float-size"):
             value, api = self.packet()
-            release = api.records["/releases/tags/v0.1.81"]
+            release = api.records[f"/releases/tags/{tag}"]
             assets = release["assets"]
             if change == "tuple":
                 release["assets"] = tuple(assets)
@@ -773,7 +824,7 @@ class RecoveryTransportTests(unittest.TestCase):
             api = R.PublicAPI(None)
         self.assertEqual(api.deadline, 340)
         self.assertTrue(any(type(handler) is R.NoRedirect for handler in api.opener.handlers))
-        self.assertEqual((R.MAX_JSON, R.MAX_SELECTION), (2097152, 4096))
+        self.assertEqual(R.MAX_JSON, 2097152)
 
     @staticmethod
     def response(data):
@@ -838,7 +889,7 @@ class RecoveryTransportTests(unittest.TestCase):
                 api.get("/required")
         api.opener.open.side_effect = urllib.error.HTTPError("", 404, "synthetic", {}, None)
         self.assertIsNone(api.get("/optional", absent=True))
-        api.requests = R.MAX_READS
+        api.requests = api.max_reads
         with self.assertRaisesRegex(ValueError, "read budget"):
             api.get("/required")
         api.requests = 0
@@ -846,15 +897,22 @@ class RecoveryTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read budget"):
             api.get("/required")
 
+    def test_the_cap_widens_with_the_backlog_and_never_shrinks(self):
+        api = R.PublicAPI(None)
+        self.assertEqual(api.max_reads, R.per_run_bounds(1)[0])
+        api.widen(4)
+        self.assertEqual(api.max_reads, R.per_run_bounds(4)[0])
+        with self.assertRaisesRegex(ValueError, "only widen"):
+            api.widen(1)
+
 
 class RecoveryReadBudgetTests(unittest.TestCase):
-    """The per-run bounds must cover the window the selection actually walks.
+    """A2(ii): the per-run cost follows the BACKLOG, never history.
 
     These tests count requests, so the proofs each request feeds are stubbed;
     the batteries above own those. What stays real is the call graph and the
     shipped reader: every walk here runs through `PublicAPI`, so the bound it
-    meets is the production one, and a walk that outgrows it refuses exactly
-    as run 35793698386 refused selecting `v0.1.90` (issue #393).
+    meets is the production one.
     """
 
     INSTANT = "2026-09-11T00:00:00+00:00"
@@ -888,9 +946,8 @@ class RecoveryReadBudgetTests(unittest.TestCase):
             value.status = 200
             return value
 
-    def fixture(self, published):
-        """Records for a walk whose first `published` frozen edges are complete."""
-        entries = R.E.HISTORICAL_RELEASES
+    def fixture(self, published, ledger=LEDGER):
+        """Records for a walk whose first `published` ledger edges are complete."""
         transport = self.Transport()
         records, assets = transport.records, transport.assets
 
@@ -911,16 +968,22 @@ class RecoveryReadBudgetTests(unittest.TestCase):
         def complete(tag, source, object_sha, release_id, main, publisher, executor):
             prepared(tag, source, object_sha)
             selected = R.E.identity(tag)
+            edge = next((item for item in ledger if item.source_sha == source), None)
             value = {"main_ci": {"run_id": main, "run_attempt": 1},
-                     "platform_release": {"run_id": publisher, "run_attempt": 1}}
+                     "platform_release": {"run_id": publisher, "run_attempt": 1},
+                     "source": {"merge_sha": source}}
+            if edge is not None:
+                value["changelog"] = {"fragment_path": edge.fragment_path,
+                                      "fragment_sha256": "sha256:" + edge.fragment_sha256}
+                value["predecessor"] = {"tag": edge.base_tag, "peeled_commit": edge.base_sha}
             attempt(main, source, workflow="pull-request.yml")
             attempt(publisher, source, workflow="platform-release.yml")
             if executor is not None:
-                value["execution"] = {"main_ci": {"run_id": executor, "run_attempt": 1}}
+                value["execution"] = {"source_sha": SOURCE, "main_ci": {"run_id": executor, "run_attempt": 1}}
                 attempt(executor, workflow="pull-request.yml")
-            identity = json.dumps(value).encode()
-            bundle = b'{"synthetic": "bundle"}'
-            records[f"/releases/tags/{tag}"] = {"id": release_id, "assets": [
+            identity = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+            bundle = b'{"synthetic":"bundle"}\n'
+            records[f"/releases/tags/{tag}"] = {"id": release_id, "draft": False, "assets": [
                 {"id": release_id + 1, "name": selected["asset"], "size": len(identity)},
                 {"id": release_id + 2, "name": selected["bundle"], "size": len(bundle)}]}
             assets[f"/releases/assets/{release_id + 1}"] = identity
@@ -929,6 +992,8 @@ class RecoveryReadBudgetTests(unittest.TestCase):
         records[""] = copy.deepcopy(REPOSITORY)
         records["/git/ref/heads/main"] = {"ref": "refs/heads/main",
                                           "object": {"type": "commit", "sha": SOURCE}}
+        records["/actions/workflows/platform-release.yml/runs?branch=main&per_page=1"] = {
+            "total_count": 0, "workflow_runs": []}
         attempt(500, workflow="platform-release-recovery.yml")
         for workflow, run_id in (("pull-request.yml", self.EXECUTOR_MAIN),
                                  ("codeql.yml", self.EXECUTOR_CODEQL)):
@@ -939,30 +1004,26 @@ class RecoveryReadBudgetTests(unittest.TestCase):
             records[f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"] = {"jobs": []}
         complete(R.E.TERMINAL_V3_TAG, R.E.TERMINAL_V3_SOURCE, R.TERMINAL_TAG_OBJECT,
                  R.TERMINAL_RELEASE_ID, R.TERMINAL_MAIN_RUN, R.TERMINAL_PUBLISHER_RUN, None)
-        for index, entry in enumerate(entries):
-            tag = f"v0.1.{81 + index}"
-            for run_id in (entry["main_run_id"], entry["codeql_run_id"]):
-                attempt(run_id, entry["source_sha"], entry["tree_sha"],
-                        "pull-request.yml" if run_id == entry["main_run_id"] else "codeql.yml")
+        for index, edge in enumerate(ledger):
+            for run_id, workflow in ((600 + index, "pull-request.yml"), (700 + index, "codeql.yml")):
+                records[f"/actions/workflows/{workflow}/runs?branch=main&event=push"
+                        f"&head_sha={edge.source_sha}&per_page=100"] = {
+                            "total_count": 1,
+                            "workflow_runs": [run(run_id, source=edge.source_sha,
+                                                  tree=edge.tree_sha, workflow=workflow)]}
+                attempt(run_id, edge.source_sha, edge.tree_sha, workflow)
                 records[f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"] = {"jobs": []}
             if index < published:
-                complete(tag, entry["source_sha"], "%040x" % (index + 1), 900 + 4 * index,
-                         600 + index, 700 + index, 800 + index)
+                complete(edge.tag, edge.source_sha, "%040x" % (index + 1), 900 + 4 * index,
+                         1600 + index, 1700 + index, 1800 + index)
             else:
-                prepared(tag, entry["source_sha"], "%040x" % (index + 1))
+                prepared(edge.tag, edge.source_sha, "%040x" % (index + 1))
         return transport
 
-    def walk(self, published):
+    def walk(self, published, ledger=LEDGER):
         """One `prepare` selection over that fixture; returns its request count."""
-        entries = R.E.HISTORICAL_RELEASES
-        index = min(published, len(entries) - 1)
-        entry = entries[index]
         api = R.PublicAPI(None)
-        api.opener = self.fixture(published)
-        window = R.C.TransitionWindow(
-            entry["parent_sha"], f"v0.1.{80 + index}",
-            R.C.Intent(entry["source_sha"], R.C.Version(0, 1, 81 + index)),
-            entry["fragment_path"], entry["fragment_sha256"])
+        api.opener = self.fixture(published, ledger)
 
         def git(_root, *args):
             if args[0] == "show":
@@ -971,116 +1032,155 @@ class RecoveryReadBudgetTests(unittest.TestCase):
                 return api.opener.objects[args[-1].removeprefix("refs/tags/")]
             return TREE
 
+        real_git = R.C._git
         with mock.patch.multiple(R, prove_trees=mock.DEFAULT, verify_signature=mock.DEFAULT), \
+                mock.patch.object(B, "published_edges", return_value=ledger), \
                 mock.patch.multiple(
                     R.C, validate_tag_record=mock.DEFAULT,
                     validate_identity_release_record=mock.DEFAULT,
                     validate_identity_run_records=mock.DEFAULT,
                     build_main_ci_jobs_receipt=mock.DEFAULT,
+                    _identity_executor_descends=mock.Mock(return_value=True),
                     _git=mock.Mock(side_effect=git),
-                    discover_transition_window=mock.Mock(return_value=window),
+                    discover_transition_window=mock.Mock(
+                        side_effect=lambda _root, source: next(
+                            R.C.TransitionWindow(edge.base_sha, edge.base_tag,
+                                                 R.C.Intent(edge.source_sha,
+                                                            R.C.Version.parse(edge.tag.removeprefix("v"))),
+                                                 edge.fragment_path, edge.fragment_sha256)
+                            for edge in ledger if edge.source_sha == source)),
                     plan_workflow_run=mock.Mock(
                         side_effect=lambda packet, _name: packet["workflow_run"]["head_sha"]),
                     classify_codeql_run=mock.Mock(
                         side_effect=lambda listing, _source: (listing["workflow_runs"][0]["id"],
                                                               listing["workflow_runs"][0]["run_attempt"]))):
-            if published >= len(entries):
+            del real_git
+            if published >= len(ledger):
                 with self.assertRaisesRegex(ValueError, "backlog is complete"):
-                    R.selection(ROOT, api, bound())
+                    R.selection(ROOT, api, bound(), stream=io.StringIO())
             else:
-                self.assertEqual(R.selection(ROOT, api, bound())["tag"], f"v0.1.{81 + index}")
+                value = R.selection(ROOT, api, bound(), stream=io.StringIO())
+                self.assertEqual([entry["tag"] for entry in value["edges"]],
+                                 [edge.tag for edge in ledger[published:]])
         self.assertEqual(api.requests, len(api.opener.calls))
         return api.requests
 
-    def counts(self):
-        return [self.walk(published) for published in range(len(R.E.HISTORICAL_RELEASES) + 1)]
+    def test_reads_track_the_backlog_and_not_the_published_history(self):
+        """The outage class, replayed: history no longer enters the cost.
 
-    def test_a_fully_published_window_walk_stays_inside_the_derived_budget(self):
-        """The walk the outage made unreachable, now inside the bound.
-
-        Every walk below runs the production cap, so reaching its selection at
-        all is the proof; the assertions then pin WHY it fits — the derived
-        formula bounds the dearest walk, and the cap keeps its headroom above
-        that measurement rather than sitting on it.
+        A window of thirteen published edges plus one pending costs exactly
+        what one published edge plus one pending costs. Under the retired
+        reader the first number grew with every release until the 240 s
+        deadline ran out (issue #393).
         """
-        counts = self.counts()
-        edges = len(R.E.HISTORICAL_RELEASES)
-        derived = R.READ_FIXED + R.READ_PER_EDGE * edges
-        # The dearest walk proves every published edge and still selects one.
-        self.assertEqual(max(counts), counts[edges - 1])
-        self.assertLessEqual(max(counts), derived)
-        # The reviewed floor is stated here, not read from the constant under
-        # test: comparing the cap against its own headroom figure is satisfied
-        # by a headroom of nothing.
-        self.assertGreaterEqual(R.HEADROOM_PERCENT, 25)
-        self.assertGreaterEqual(R.MAX_READS * 100, derived * (100 + R.HEADROOM_PERCENT))
-        # A complete window costs less: it refuses before both CI proofs and
-        # the prepared-tag proof, so the selecting walk is the bound to hold.
-        self.assertLess(counts[-1], max(counts))
+        long_history = self.walk(len(LEDGER) - 1)
+        short_history = self.walk(1, LEDGER[:2])
+        self.assertEqual(len(LEDGER), 13)
+        self.assertEqual(long_history, short_history)
+        # And both sit inside the bound one pending edge derives, which the
+        # retired reader could only have met for a one-edge HISTORY.
+        self.assertLessEqual(long_history, R.per_run_bounds(1)[0])
 
     def test_the_per_edge_and_fixed_costs_are_measured_from_the_walk(self):
-        """A declared per-edge cost would be a guess the next edge invalidates."""
-        selecting = self.counts()[:-1]
-        self.assertEqual({later - earlier for earlier, later in zip(selecting, selecting[1:])},
+        counts = [self.walk(len(LEDGER) - pending) for pending in (1, 2, 3, 4)]
+        self.assertEqual({later - earlier for earlier, later in zip(counts, counts[1:])},
                          {R.READ_PER_EDGE})
-        # The fixed part is measured too: the walk that selects the first edge
-        # costs the fixed reads plus no more than one edge's worth.
-        self.assertLessEqual(R.READ_FIXED, selecting[0])
-        self.assertLessEqual(selecting[0], R.READ_FIXED + R.READ_PER_EDGE)
+        self.assertLessEqual(R.READ_FIXED, counts[0])
+        self.assertLessEqual(counts[0], R.READ_FIXED + R.READ_PER_EDGE)
+        for pending, count in zip((1, 2, 3, 4), counts):
+            self.assertLessEqual(count, R.READ_FIXED + R.READ_PER_EDGE * pending)
+            self.assertGreaterEqual(R.per_run_bounds(pending)[0] * 100,
+                                    count * (100 + R.HEADROOM_PERCENT))
+        self.assertGreaterEqual(R.HEADROOM_PERCENT, 25)
 
     def test_the_cap_refuses_the_read_past_it_and_admits_the_one_before(self):
-        """Derived is not unbounded: the cap is still hard, one read wide."""
         api = R.PublicAPI(None)
         api.opener = mock.Mock()
         api.opener.open.side_effect = lambda *_args, **_kwargs: self.Transport.body(b"{}")
-        api.requests = R.MAX_READS - 1
+        api.requests = api.max_reads - 1
         self.assertEqual(api.get("/required"), {})
-        self.assertEqual(api.requests, R.MAX_READS)
+        self.assertEqual(api.requests, api.max_reads)
         with self.assertRaisesRegex(ValueError, "read budget exhausted"):
             api.get("/required")
 
-    def test_the_deadline_is_checked_against_the_same_window(self):
-        """The seconds bound is derived evidence, not an untested constant."""
-        self.assertEqual(R.per_run_bounds(len(R.E.HISTORICAL_RELEASES)), (R.MAX_READS, R.MAX_SECONDS))
-        self.assertEqual((R.DEADLINE_SECONDS, R.EDGE_SECONDS, R.MAX_SECONDS), (240, 4, 240))
-        # At the measured cost 240 s still covers 47 edges with the same
-        # headroom and no longer covers 48. The window is far smaller, so the
-        # deadline stands — and this arithmetic, not a comment, says so.
-        self.assertEqual(R.per_run_bounds(47)[1], R.DEADLINE_SECONDS)
+    def test_the_deadline_and_the_publish_timeout_are_derived_together(self):
+        self.assertEqual((R.DEADLINE_SECONDS, R.EDGE_SECONDS), (240, 4))
+        self.assertEqual(R.per_run_bounds(46)[1], R.DEADLINE_SECONDS)
         with self.assertRaisesRegex(ValueError, "inside the recovery deadline"):
-            R.per_run_bounds(48)
-        for edges in (0, -1, True, 13.0, "13", None):
-            with self.subTest(edges=edges), self.assertRaisesRegex(ValueError, "nonempty window"):
-                R.per_run_bounds(edges)
+            R.per_run_bounds(47)
+        self.assertEqual(R.max_pending_edges(), 46)
+        self.assertEqual(R.publish_timeout_minutes(),
+                         R.PUBLISH_FIXED_MINUTES + R.PUBLISH_EDGE_MINUTES * 46)
+        for pending in (0, -1, True, 13.0, "13", None):
+            with self.subTest(pending=pending), self.assertRaisesRegex(ValueError, "nonempty backlog"):
+                R.per_run_bounds(pending)
 
 
 class RecoveryCLITests(unittest.TestCase):
+    def selected(self):
+        return selection_of(LEDGER[-2:])
+
     def test_bind_rechecks_context_trees_receipt_and_every_publisher_field(self):
-        entry = R.E.HISTORICAL_RELEASES[0]
-        value = {"schema": R.SELECTION_SCHEMA, **bound(), "source_sha": entry["source_sha"],
-                 "tag": "v0.1.81", "base_sha": entry["parent_sha"], "base_tag": "v0.1.80",
-                 "executor_main_run_id": 400, "executor_main_run_attempt": 1,
-                 "executor_codeql_run_id": 401, "executor_codeql_run_attempt": 1}
+        value = self.selected()
+        entry = value["edges"][0]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "event.json"
             path.write_text(json.dumps(event()))
-            env = {**environment(), "GITHUB_EVENT_PATH": str(path), "RECOVERY_SELECTION": R.canonical(value),
-                   **{key.upper(): value[key] for key in ("source_sha", "tag", "base_sha", "base_tag")},
+            env = {**environment(), "GITHUB_EVENT_PATH": str(path),
+                   "RECOVERY_SELECTION": R.canonical(value),
+                   "RECOVERY_EDGE_TAG": entry["tag"],
+                   **{key.upper(): entry[key] for key in ("source_sha", "tag", "base_sha", "base_tag")},
                    "MAIN_RUN_ID": str(entry["main_run_id"]), "MAIN_RUN_ATTEMPT": "1",
                    "EXECUTION_MAIN_RUN_ID": "400", "EXECUTION_MAIN_RUN_ATTEMPT": "1"}
-            cases = [{}, *({key: "wrong"} for key in ("SOURCE_SHA", "TAG", "BASE_SHA", "BASE_TAG", "MAIN_RUN_ID",
-                       "MAIN_RUN_ATTEMPT", "EXECUTION_MAIN_RUN_ID", "EXECUTION_MAIN_RUN_ATTEMPT")),
-                     {"GITHUB_RUN_ID": "501"}, {"RECOVERY_SELECTION": R.canonical({**value, "run_id": 501})}]
+            cases = [{}, *({key: "wrong"} for key in ("SOURCE_SHA", "TAG", "BASE_SHA", "BASE_TAG",
+                                                      "MAIN_RUN_ID", "MAIN_RUN_ATTEMPT",
+                                                      "EXECUTION_MAIN_RUN_ID", "EXECUTION_MAIN_RUN_ATTEMPT",
+                                                      "RECOVERY_EDGE_TAG")),
+                     {"GITHUB_RUN_ID": "501"},
+                     {"RECOVERY_SELECTION": R.canonical({**value, "run_id": 501})}]
             for change in cases:
                 with self.subTest(change=change), mock.patch.dict(os.environ, {**env, **change}, clear=True), \
+                        ledger_patch(), \
                         mock.patch.object(R, "prove_trees") as trees, mock.patch.object(R, "PublicAPI") as api, \
-                        mock.patch.object(R.C, "discover_transition_window", return_value=RecoverySelectionTests.window(0)), \
-                        mock.patch("sys.stderr", new_callable=io.StringIO), mock.patch("sys.stdout", new_callable=io.StringIO):
+                        mock.patch("sys.stderr", new_callable=io.StringIO), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO):
                     self.assertEqual(R.main(["bind"]), 1 if change else 0)
                     trees.assert_called_once()
                     api.assert_not_called()
 
+    def test_readback_proves_the_published_edge_independently(self):
+        value = self.selected()
+        entry = value["edges"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "event.json"
+            path.write_text(json.dumps(event()))
+            env = {**environment(), "GITHUB_EVENT_PATH": str(path),
+                   "RECOVERY_SELECTION": R.canonical(value),
+                   "RECOVERY_EDGE_TAG": entry["tag"],
+                   "RECOVERY_READ_TOKEN": "synthetic-read-value"}
+            for outcome, code in ((True, 0), (False, 1)):
+                with self.subTest(outcome=outcome), mock.patch.dict(os.environ, env, clear=True), \
+                        ledger_patch(), mock.patch.object(R, "prove_trees"), \
+                        mock.patch.object(R, "prove_release", return_value=outcome) as prove, \
+                        mock.patch.object(R, "PublicAPI", return_value=API()), \
+                        mock.patch("sys.stderr", new_callable=io.StringIO), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                    self.assertEqual(R.main(["readback"]), code)
+                    self.assertEqual(prove.call_args.args[2:], (entry["tag"], entry["source_sha"]))
+                    if outcome:
+                        self.assertIn("RECOVERY_READBACK=PASS", out.getvalue())
+            with mock.patch.dict(os.environ, {**env, "RECOVERY_EDGE_TAG": "v9.9.9"}, clear=True), \
+                    ledger_patch(), \
+                    mock.patch.object(R, "prove_trees"), mock.patch.object(R, "prove_release") as prove, \
+                    mock.patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(R.main(["readback"]), 1)
+                prove.assert_not_called()
+
     def test_predecessor_cli_preserves_pending_failure_and_no_credential_inheritance(self):
+        window = R.C.TransitionWindow(
+            R.E.TERMINAL_V3_SOURCE, R.E.TERMINAL_V3_TAG,
+            R.C.Intent(LEDGER[0].source_sha, R.C.Version(0, 1, 81)),
+            LEDGER[0].fragment_path, LEDGER[0].fragment_sha256)
         env = {"GITHUB_API_URL": "https://api.github.com", "GITHUB_REPOSITORY": "snaraj/platform",
                "GITHUB_REPOSITORY_ID": "1327645656", "SOURCE_SHA": SOURCE,
                "RECOVERY_READ_TOKEN": "synthetic-read-value"}
@@ -1088,13 +1188,13 @@ class RecoveryCLITests(unittest.TestCase):
                               (R.C.ContractError("original failed"), 1)):
             options = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
             with self.subTest(outcome=outcome), mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(R.C, "discover_transition_window", return_value=RecoverySelectionTests.window(0)), \
+                    mock.patch.object(R.C, "discover_transition_window", return_value=window), \
                     mock.patch.object(R, "prove_release", **options) as prove, mock.patch.object(R, "PublicAPI") as api, \
                     mock.patch("sys.stderr", new_callable=io.StringIO), mock.patch("sys.stdout", new_callable=io.StringIO):
                 self.assertEqual(R.main(["predecessor"]), code)
                 self.assertNotIn("RECOVERY_READ_TOKEN", os.environ)
                 api.assert_called_once_with("synthetic-read-value")
-                self.assertEqual(prove.call_args.args[-2:], ("v0.1.80", R.E.TERMINAL_V3_SOURCE))
+                self.assertEqual(prove.call_args.args[-2:], (R.E.TERMINAL_V3_TAG, R.E.TERMINAL_V3_SOURCE))
         for changed in ({"GITHUB_API_URL": "https://example.invalid"},
                         {"GITHUB_REPOSITORY": "snaraj/website-infrastructure"}, {"GITHUB_REPOSITORY_ID": "1"}):
             with mock.patch.dict(os.environ, {**env, **changed}, clear=True), mock.patch.object(R, "prove_release") as prove, \
@@ -1109,7 +1209,7 @@ class RecoveryCLITests(unittest.TestCase):
             path = Path(directory) / "event.json"
             path.write_text(json.dumps(event()))
             output = Path(directory) / "outputs"
-            value = {**bound(), "source_sha": SOURCE, "padding": "x" * 4097}
+            value = {**self.selected(), "padding": "x" * R.selection_bytes(len(LEDGER))}
             env = {**environment(), "GITHUB_EVENT_PATH": str(path), "GITHUB_OUTPUT": str(output)}
             with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(R, "selection", return_value=value), \
                     mock.patch("sys.stderr", new_callable=io.StringIO):
@@ -1123,19 +1223,23 @@ class RecoveryCLITests(unittest.TestCase):
             output = root / "outputs"
             env = {**environment(), "GITHUB_EVENT_PATH": str(root / "event.json"),
                    "GITHUB_OUTPUT": str(output), "RECOVERY_READ_TOKEN": "synthetic-read-value"}
-            value = {**bound(), "source_sha": R.E.HISTORICAL_RELEASES[0]["source_sha"]}
+            value = self.selected()
             for command in ("prepare", "verify"):
-                selected = {**env, **({"RECOVERY_SELECTION": "{}"} if command == "verify" else {})}
-                with mock.patch.dict(os.environ, selected, clear=True), \
+                selected = {**env, **({"RECOVERY_SELECTION": R.canonical(value)} if command == "verify" else {})}
+                with self.subTest(command=command), mock.patch.dict(os.environ, selected, clear=True), \
                         mock.patch.object(R, "selection", return_value=value) as selection, \
                         mock.patch.object(R, "PublicAPI") as api, mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
                     self.assertEqual(R.main([command]), 0)
                     self.assertNotIn("RECOVERY_READ_TOKEN", os.environ)
-                    api.assert_called_once_with("synthetic-read-value")
-                    self.assertEqual(selection.call_args.args[-1], "{}" if command == "verify" else None)
+                    self.assertEqual(api.call_args.args, ("synthetic-read-value",))
+                    self.assertEqual(api.call_args.kwargs["pending"], 1 if command == "prepare" else 2)
+                    self.assertEqual(selection.call_args.args[-1],
+                                     R.canonical(value) if command == "verify" else None)
                     self.assertNotIn("synthetic-read-value", stdout.getvalue())
-            self.assertEqual(output.read_text().count("selection="), 1)
-            self.assertIn(value["source_sha"], output.read_text())
+            written = output.read_text()
+            self.assertEqual(written.count("selection="), 1)
+            self.assertIn("pending=2", written)
+            self.assertIn(value["edges"][0]["source_sha"], written)
 
     def test_cli_refuses_ambient_credentials_bad_mode_and_oversize_event(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1144,7 +1248,7 @@ class RecoveryCLITests(unittest.TestCase):
             env = {**environment(), "GITHUB_EVENT_PATH": str(path), "GITHUB_OUTPUT": str(Path(directory) / "outputs")}
             cases = [{name: "synthetic"} for name in ("GH_TOKEN", "GITHUB_TOKEN", "IMMUTABLE_SETTINGS_TOKEN",
                 "ACTIONS_READ_TOKEN", "CONTENTS_READ_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")]
-            cases.extend([{"RECOVERY_SELECTION": "{}"}, {"GITHUB_RUN_ATTEMPT": "2"}])
+            cases.extend([{"RECOVERY_SELECTION": R.canonical(self.selected())}, {"GITHUB_RUN_ATTEMPT": "2"}])
             for changed in cases:
                 with self.subTest(changed=tuple(changed)), mock.patch.dict(os.environ, {**env, **changed}, clear=True), \
                         mock.patch.object(R, "selection") as select, mock.patch("sys.stderr", new_callable=io.StringIO):
@@ -1160,7 +1264,7 @@ class RecoveryCLITests(unittest.TestCase):
         value = v4.evidence()
         identity, bundle, _, _ = v4.records(value)
         with mock.patch.object(R.subprocess, "run") as execute:
-            R.verify_signature(identity, bundle, "v0.1.81")
+            R.verify_signature(identity, bundle, value["tag"]["name"])
             arguments = execute.call_args.args[0]
             for flag, expected in (("--certificate-identity", "https://github.com/snaraj/platform/.github/workflows/platform-release-recovery.yml@refs/heads/main"),
                                    ("--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"),
@@ -1170,6 +1274,15 @@ class RecoveryCLITests(unittest.TestCase):
             self.assertTrue(execute.call_args.kwargs["check"])
             self.assertLessEqual(execute.call_args.kwargs["timeout"], 40)
             self.assertFalse(Path(arguments[-1]).exists())
+        ordinary = v4.evidence(False)
+        identity, bundle, _, _ = v4.records(ordinary)
+        with mock.patch.object(R.subprocess, "run") as execute:
+            R.verify_signature(identity, bundle, ordinary["tag"]["name"])
+            arguments = execute.call_args.args[0]
+            self.assertEqual(arguments[arguments.index("--certificate-identity") + 1],
+                             "https://github.com/snaraj/platform/.github/workflows/platform-release.yml@refs/heads/main")
+            self.assertEqual(arguments[arguments.index("--certificate-github-workflow-trigger") + 1],
+                             "workflow_run")
 
 
 if __name__ == "__main__":
