@@ -65,10 +65,11 @@ identities. `platform-k8s-infra` consumes their independently verified releases:
 4. The owner merges the PR. Flux reads protected `main`, verifies the selected
    chart, and reconciles its digest-bound workload.
 
-Every protected-main merge also has a **platform source release**. After
-successful main CI, the publisher derives the next patch from the annotated
-tag ledger and signs a canonical identity binding the final source SHA,
-predecessor, and workflow attempts. That immutable source record supports
+Every protected-main merge is covered by a **platform source release**. The
+publisher releases the green main tip, binding every changelog fragment merged
+since the previous release, derives the next patch from the annotated tag
+ledger and signs a canonical identity binding the source SHA, fragments,
+predecessor, and workflow attempts; the owner's only action is the merge. That immutable source record supports
 audit and recovery. Application reconciliation follows the GitOps change;
 it does not wait for platform source publication.
 

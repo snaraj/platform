@@ -184,6 +184,11 @@ and dependency-governed Draft capacity is recorded durably in
   it permits only the three source edges recorded in that issue. This schema
   assignment grants no general replay, settings change, live-system or merge
   authority. Later ordinary v4 publication requires source/executor equality.
+  The owner's issue #397 ruling (drop one version per merge) assigns the
+  additive `platform-release-identity.v5.schema.json` to DELIVERY: a tip
+  Release binding every fragment since its predecessor and the evidence job
+  that finalizes it. `v0.1.94` is the terminal v4 Release and the v4 recovery
+  window is closed.
 - `policies/conftest/**` and `policies/release-conftest/**` — DELIVERY.
   The enumeration is exact, not shorthand for `policies/**`: these subtrees are the
   executable expression of the gates this lane already owns. Every other
@@ -289,7 +294,8 @@ Delivery-lane requirements, explicit and numbered:
 4. No co-author trailers: agent work is signed in the open with the ACTING
    agent's own identity — commit and PR bodies end with the signature that
    matches the agent label the same work carries, per the roster in "Agent
-   labels" (`- Fable5` ↔ `fable5`, `- 5.6 Sol` ↔ `5.6-sol`, `- Opus5` ↔
+   labels" (`- Fable5` ↔ `fable5`, `- 5.6 Sol` ↔ `5.6-sol`, `- Opus5.5` ↔
+   `opus5.5`, `- Opus5` ↔
    `opus5`, `- Sonnet5` ↔ `sonnet5`). A fixed lane signature is wrong on its
    face once several models work this repository: it would attribute one
    lane's work to another. Precedents: #123 signed `- 5.6 Sol`, #127 signed
@@ -312,11 +318,13 @@ Delivery-lane requirements, explicit and numbered:
    fragment, the frozen legacy `VERSION`, or the frozen legacy `CHANGELOG.md`.
    The PR and protected-main gate enforce the same exact-base diff for both
    one-commit squash and merge-free multi-commit rebase integrations. After
-   successful main CI, the publisher validates the immutable tag ledger anchored
-   at `v0.1.9`, requires one fragment across every adjacent ledger edge, waits
-   until an earlier main SHA has both its exact tag and exact immutable Release,
-   derives exactly one next patch, and publishes an annotated plain `vX.Y.Z` tag
-   plus an exact immutable GitHub Release at the complete final SHA. Starting
+   successful main CI and CodeQL, the tip-only publisher (issue #397)
+   validates the immutable tag ledger anchored at `v0.1.9` (one fragment per
+   adjacent edge through the terminal v4 Release `v0.1.94`, at least one after
+   it), requires the latest Release to be exact, derives exactly one next patch,
+   and publishes an annotated plain `vX.Y.Z` tag plus an exact immutable GitHub
+   Release at the current main tip, binding every fragment merged since the
+   previous Release. Merging is the owner's only routine release action. Starting
    with `v0.1.41`, that Release carries exactly the canonical identity JSON and
    its detached Sigstore bundle; `v0.1.40` is the sole zero-asset transition
    predecessor. Release notes bind the
@@ -552,10 +560,11 @@ authority: the owner alone merges.
 - **Agent labels.** Every agent-created PR and issue carries TWO further
   labels: the umbrella `agent-authored` AND the acting agent's own label —
   `fable5` (Claude Fable 5), `5.6-sol` (ChatGPT 5.6 SOL ULTRA), `opus5`
-  (Claude Opus 5), `opus4.8` (Claude Opus 4.8), `sonnet5` (Claude Sonnet 5,
+  (Claude Opus 5), `opus5.5` (Claude Opus 5.5), `opus4.8` (Claude Opus 4.8),
+  `sonnet5` (Claude Sonnet 5,
   color `0EA5E9`, description "Authored by Claude Sonnet 5"). The signature
   must match the label (delivery-lane bodies ending `- Fable5` ↔ `fable5`,
-  `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`;
+  `- Opus5` ↔ `opus5`, `- Opus5.5` ↔ `opus5.5`, `- Sonnet5` ↔ `sonnet5`;
   Codex-lane titles ending " - Codex 5.6 Sol Ultra" ↔ `5.6-sol`).
   The model-neutral `codex` label (description "Authored by Codex") pairs with
   `- Codex` when only that agent identity is asserted; do not fabricate a model
@@ -892,19 +901,15 @@ is the consolidated command view:
   deliberately skips event-bound transition/history checks.
 - **codeql.yml** — pull requests, `main` pushes, weekly cron, and manual
   dispatch.
-- **platform-release.yml** — `workflow_run` of the named Pull request workflow;
-  its publish job is eligible only after that workflow completed successfully
-  for a push to `main`, then binds and publishes the exact final SHA. A distinct
-  main SHA has an independent non-canceling transaction.
-- **platform-release-recovery.yml** — no-input, protected-main-only manual
-  dispatch for the finite issue #369 source backlog. Dispatches serialize,
-  rerun attempts refuse, and one canonical run-bound selection crosses all
-  jobs. Original source CI and current executor CI are both required. The
-  Administration-read App remains confined to settings proof; only the
-  ordinary job token and OIDC reach publication. Modeled pass/deny evidence
-  is required before Ready; the first protected post-merge execution proves
-  actual provider capability and remains a delivery gate, never a reason to
-  relax permissions or substitute a later run for failed signed evidence.
+- **platform-release.yml** — tip-only source publication (issue #397): the
+  completed Pull request workflow on `main` and an hourly reconciliation run the
+  same four jobs under one non-canceling concurrency group. `admit` proves the
+  tip, its CI and CodeQL and the latest Release; the settings job holds the
+  Administration-read App; `evidence` stages and signs every Release byte before
+  the commit point and is the job a v5 identity names; `publish` creates the tag
+  ref and flips the draft, or finalizes a committed Release. Modeled pass/deny
+  evidence drives the real entry points; the first protected post-merge run
+  proves actual provider capability and remains a delivery gate.
 - **scheduled-security.yml** — weekly cron full-history scan plus manual
   dispatch. Post-merge therefore consists of the full main-push battery and
   CodeQL, followed success-only by the source publisher; scheduled security is

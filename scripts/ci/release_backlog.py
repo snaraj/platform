@@ -3,16 +3,16 @@
 
 The backlog is derived from the publisher's own contract rather than
 configured beside it: ``plan`` walks the immutable tag ledger exactly as
-``platform_release_contract`` does, so a watchdog or an owner command can never
-admit an edge the publisher would refuse. That shared derivation is the point —
+``platform_release_contract`` does, so the watchdog can never report a release
+the publisher would refuse. That shared derivation is the point —
 issue #317 exists because a publisher died mid-flight and ten later merges
 queued behind it unnoticed for two weeks.
 
 Nothing in this module creates, moves, or deletes a Git ref, a tag, or a
 Release, and nothing here dispatches a workflow. Its only write is one GitHub
-issue that names the owner's command. Publication authority stays where it is:
-CI never mints release history, and the owner alone prepares release tags
-(issue #375).
+issue. Publication stays with the tip-only publisher (issue #397), which
+publishes a green tip within the hour on its own; an alert here therefore means
+the tip stayed red or the publisher refused, and names where to look.
 
 The checkout, the head and the repository object are arguments, not constants,
 so the same derivation serves another checkout or another repository without a
@@ -47,42 +47,34 @@ MAX_PLAN_EDGES = 64
 MAX_UNRELEASED_LOOKBACK = 64
 MAX_REQUESTS = 96
 MAX_RESPONSE_BYTES = 1 << 20
-PENDING_ALERT_HOURS = 24
+# The tip publisher reconciles hourly; a green tip still unreleased after this
+# long means main stayed red or the publisher refused, both worth a human look.
+PENDING_ALERT_HOURS = 6
 ISSUE_TITLE = "deploy-assurance[release-backlog]"
 ISSUE_LABELS = ("agentic-conversation-requested", "release")
 ISSUE_AUTHOR = "github-actions[bot]"
 PUBLISHER_WORKFLOW = "platform-release.yml"
-OWNER_COMMAND = (
-    "python3 -I -B scripts/prepare_recovery_tags.py --repository . "
-    "--head origin/main --push"
-)
 
 
 @dataclass(frozen=True)
-class Edge:
-    """One derived ledger edge: the next patch for one untagged main source."""
+class Pending:
+    """The one tip Release main is waiting for: every fragment since the ledger."""
 
     tag: str
     source_sha: str
     base_tag: str
     base_sha: str
-    fragment_path: str
+    fragment_paths: tuple[str, ...]
     source_date: str
 
-    @property
-    def message(self) -> str:
-        """The exact annotated-tag message the publisher's validators expect."""
-        return f"Platform release {self.tag} from {self.source_sha}"
-
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "tag": self.tag,
             "source_sha": self.source_sha,
             "base_tag": self.base_tag,
             "base_sha": self.base_sha,
-            "fragment_path": self.fragment_path,
+            "fragment_paths": list(self.fragment_paths),
             "source_date": self.source_date,
-            "message": self.message,
         }
 
 
@@ -103,13 +95,14 @@ def ledger(repository: Path) -> tuple:
     return C._platform_tag_boundaries(repository)
 
 
-def plan(repository: Path, head_sha: str) -> tuple[Edge, ...]:
-    """Derive one patch per untagged first-parent main commit after the ledger.
+def plan(repository: Path, head_sha: str) -> tuple[Pending, ...]:
+    """Derive the one tip Release the head is waiting for, or none.
 
     The rule is the publisher's, not a local reimplementation: the range must be
-    one contiguous single-parent chain (a merge commit, a gap, or a commit that
-    is not the first parent of its successor refuses in ``_linear_commits``) and
-    every adjacent edge must add exactly one immutable changelog fragment.
+    one contiguous single-parent chain (``_linear_commits`` refuses a merge
+    commit or a gap) and it binds every fragment added since the latest tag.
+    The pending age is the oldest unreleased commit's, which is how long the
+    change has been waiting.
     """
     head_sha = resolve(repository, head_sha)
     boundaries = ledger(repository)
@@ -119,30 +112,22 @@ def plan(repository: Path, head_sha: str) -> tuple[Edge, ...]:
     commits = C._linear_commits(repository, latest.source_sha, head_sha)
     if len(commits) > MAX_PLAN_EDGES:
         raise C.ContractError("release backlog exceeds its review bound")
-    edges: list[Edge] = []
-    version, base_tag, base_sha = latest.version, latest.tag, latest.source_sha
-    for commit in commits:
-        intents = C._release_surface_intents(repository, base_sha, commit)
-        if len(intents) != 1:
-            raise C.ContractError(
-                "every backlog edge must add exactly one changelog fragment"
-            )
-        version = C.next_version(version)
-        source_date = C._git(repository, "show", "-s", "--format=%cI", commit)
-        if not isinstance(source_date, str) or not source_date:
-            raise C.ContractError("backlog source commit has no committer date")
-        edges.append(
-            Edge(
-                version.tag,
-                commit,
-                base_tag,
-                base_sha,
-                intents[0].fragment_path,
-                source_date,
-            )
-        )
-        base_tag, base_sha = version.tag, commit
-    return tuple(edges)
+    intents = C._release_surface_intents(repository, latest.source_sha, head_sha)
+    if not intents:
+        return ()
+    source_date = C._git(repository, "show", "-s", "--format=%cI", commits[0])
+    if not isinstance(source_date, str) or not source_date:
+        raise C.ContractError("backlog source commit has no committer date")
+    return (
+        Pending(
+            C.next_version(latest.version).tag,
+            head_sha,
+            latest.tag,
+            latest.source_sha,
+            tuple(intent.fragment_path for intent in intents),
+            source_date,
+        ),
+    )
 
 
 class Reader:
@@ -254,7 +239,7 @@ def report(pending: tuple, failed: bool, now: dt.datetime) -> tuple[bool, str]:
     stale = oldest is not None and _age_hours(oldest[2], now) > PENDING_ALERT_HOURS
     lines = [
         "Automated read-only release-backlog check. It creates no tag, Release,",
-        "or dispatch; the owner alone prepares release tags (issue #375).",
+        "or dispatch; the tip publisher reconciles every hour on its own.",
         "",
         f"- Pending source releases: {len(pending)}",
     ]
@@ -269,14 +254,9 @@ def report(pending: tuple, failed: bool, now: dt.datetime) -> tuple[bool, str]:
     lines.extend(
         [
             "",
-            "Owner command to prepare every missing annotated tag:",
-            "",
-            "```",
-            OWNER_COMMAND,
-            "```",
-            "",
-            "Then drain one edge at a time with the recovery workflow as the",
-            "platform source releases runbook describes.",
+            "Read the latest Platform release run: its `RELEASE_DECISION` line",
+            "names why the tip is waiting (`ci-red` means main is red), and a",
+            "`RELEASE_REFUSED` line names the integrity check that needs the owner.",
         ]
     )
     return (stale or failed), "\n".join(lines) + "\n"
@@ -339,8 +319,8 @@ def watch(repository: Path, head_sha: str, api: Reader, now: dt.datetime) -> str
         for boundary in unreleased(boundaries, api)
     ]
     pending.extend(
-        (edge.tag, edge.source_sha, edge.source_date)
-        for edge in plan(repository, head_sha)
+        (waiting.tag, waiting.source_sha, waiting.source_date)
+        for waiting in plan(repository, head_sha)
     )
     alerting, body = report(tuple(pending), publisher_failed(api), now)
     state = announce(api, alerting=alerting, body=body, title=ISSUE_TITLE)

@@ -30,6 +30,7 @@ AGENT_LANES = (
     "fable5",
     "opus4.8",
     "opus5",
+    "opus5.5",
     "sonnet5",
 )
 

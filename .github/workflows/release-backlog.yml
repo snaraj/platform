@@ -4,12 +4,12 @@ name: Release backlog
 # incident this answers was silence: a publisher died mid-flight and ten later
 # merges queued behind it unnoticed for two weeks. This workflow only reads the
 # public tag ledger and the Releases it should have produced, then records the
-# result as exactly one issue naming the owner's command.
+# result as exactly one issue. The tip publisher reconciles hourly on its own
+# (issue #397), so an alert means main stayed red or the publisher refused.
 #
 # It creates no tag, no Release and no workflow dispatch, and it holds neither
 # the publication credential nor the settings App. Those stay in
-# platform-release.yml and platform-release-recovery.yml, so an edit here can
-# never reach publication authority.
+# platform-release.yml, so an edit here can never reach publication authority.
 on:
   schedule:
     - cron: '17 11 * * *'

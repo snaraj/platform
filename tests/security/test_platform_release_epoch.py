@@ -27,7 +27,46 @@ class PlatformReleaseEpochTests(unittest.TestCase):
         self.assertNotIn("selector_digest", current)
         self.assertNotIn("selector_source", current)
         self.assertEqual(EPOCH.identity("v0.1.80")["version"], 3)
-        self.assertEqual(EPOCH.identity("v9.9.9")["version"], 4)
+        self.assertEqual(EPOCH.identity("v0.1.94")["version"], 4)
+        tip = EPOCH.identity("v0.1.95")
+        self.assertEqual(tip["version"], 5)
+        self.assertEqual(tip["publisher_events"], ("schedule", "workflow_run"))
+        self.assertEqual(tip["evidence_job"], "evidence")
+        self.assertEqual(tip["subject"],
+                         "https://github.com/snaraj/platform/.github/workflows/platform-release.yml@refs/heads/main")
+        self.assertEqual(EPOCH.identity("v9.9.9")["version"], 5)
+
+    def test_first_v5_accepts_only_the_terminal_v4_checkpoint(self):
+        source = "c" * 40
+        value = EPOCH.publication("snaraj/platform", EPOCH.REPOSITORY_ID, "v0.1.95",
+                                  EPOCH.TERMINAL_V4_TAG, EPOCH.TERMINAL_V4_SOURCE, source)
+        self.assertEqual(value["version"], 5)
+        for base_tag, base_sha, candidate in (
+            ("v0.1.93", EPOCH.TERMINAL_V4_SOURCE, source),
+            (EPOCH.TERMINAL_V4_TAG, "0" * 40, source),
+            (EPOCH.TERMINAL_V4_TAG, EPOCH.TERMINAL_V4_SOURCE, EPOCH.TERMINAL_V4_SOURCE),
+            (EPOCH.TERMINAL_V4_TAG, EPOCH.TERMINAL_V4_SOURCE, None),
+        ):
+            with self.subTest(base=base_tag, sha=base_sha, source=candidate), self.assertRaises(ValueError):
+                EPOCH.publication("snaraj/platform", EPOCH.REPOSITORY_ID, "v0.1.95",
+                                  base_tag, base_sha, candidate)
+
+    def test_v5_schema_is_closed_and_binds_the_evidence_job(self):
+        folder = ROOT / "bootstrap/flux/release-selector"
+        schema = json.loads((folder / "platform-release-identity.v5.schema.json").read_bytes())
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["$id"], EPOCH.identity("v0.1.95")["schema"])
+        self.assertNotIn("execution", schema["properties"])
+        self.assertEqual(set(schema["required"]), {
+            "changelog", "main_ci", "platform_release", "predecessor", "release", "repository",
+            "repository_id", "schema", "source", "tag"})
+        fragments = schema["properties"]["changelog"]["properties"]["fragments"]
+        self.assertEqual((fragments["type"], fragments["minItems"], fragments["uniqueItems"]),
+                         ("array", 1, True))
+        publisher = schema["properties"]["platform_release"]["properties"]
+        self.assertEqual(publisher["job"], {"const": "evidence"})
+        self.assertEqual(publisher["event"], {"enum": ["schedule", "workflow_run"]})
+        self.assertEqual(publisher["workflow"], {"const": ".github/workflows/platform-release.yml"})
 
     def test_first_v3_accepts_only_the_verified_terminal_v2(self):
         value = EPOCH.publication(
@@ -96,7 +135,7 @@ class PlatformReleaseEpochTests(unittest.TestCase):
 
     def test_current_workflow_and_publisher_have_no_selector_build_surface(self):
         workflow = (ROOT / ".github/workflows/platform-release.yml").read_text()
-        publisher = (ROOT / "scripts/ci/publish-platform-release.sh").read_text()
+        publisher = (ROOT / "scripts/ci/platform_release_tip.py").read_text()
         pull_request = (ROOT / ".github/workflows/pull-request.yml").read_text()
         for retired in ("SELECTOR_IMAGE_DIGEST", "SELECTOR_BUILD_SHA"):
             self.assertNotIn(retired, workflow)

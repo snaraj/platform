@@ -253,13 +253,9 @@ class PlatformReleaseV4Tests(unittest.TestCase):
             with mock.patch.object(sys, "argv", args), mock.patch("sys.stderr", new_callable=io.StringIO):
                 self.assertEqual(C.main(), 1)
 
-    def test_closed_historical_lookup_and_publication_cli(self):
+    def test_closed_historical_publication_window(self):
         for index, entry in enumerate(E.HISTORICAL_RELEASES):
             tag = f"v0.1.{81 + index}"
-            with mock.patch.object(sys, "argv", ["epoch", tag, "--historical-main-run"]), \
-                    mock.patch("sys.stdout", new_callable=io.StringIO) as output:
-                self.assertEqual(E.main(), 0)
-                self.assertEqual(output.getvalue(), str(entry["main_run_id"]) + "\n")
             self.assertEqual(E.publication(E.NEW_REPOSITORY, E.REPOSITORY_ID, tag,
                              f"v0.1.{80 + index}", entry["parent_sha"], entry["source_sha"])["version"], 4)
             for source, parent in ((None, entry["parent_sha"]), ("a" * 40, entry["parent_sha"]),
@@ -271,11 +267,10 @@ class PlatformReleaseV4Tests(unittest.TestCase):
                               LAST_FROZEN_TAG, "a" * 40, entry["source_sha"])
             with self.assertRaises(ValueError):
                 E.release_target(tag, "a" * 40)
-        for argv in (["epoch", "v0.1.80", "--historical-main-run"],
-                     ["epoch", FIRST_ORDINARY_V4_TAG, "--historical-main-run"],
-                     ["epoch", "v0.1.81", "--historical-main-run", "--source-sha", "a" * 40]):
-            with self.subTest(argv=argv), mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new_callable=io.StringIO):
-                self.assertEqual(E.main(), 1)
+        # The recovery run lookup retired with the recovery workflow (issue #397).
+        with mock.patch.object(sys, "argv", ["epoch", "v0.1.81", "--historical-main-run"]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+            E.main()
 
     def frozen_evidence(self, index):
         """Evidence for another frozen edge, so the unpinned rule is exercised.

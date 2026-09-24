@@ -7,37 +7,26 @@ practical. With one trusted operator, do not create an impossible second-reviewe
 requirement.
 
 Keep default workflow token permissions read-only and Actions restricted to
-GitHub-hosted runners. Platform publication uses three jobs that never share a
-credential: one non-environment job receives Actions/Contents read and proves
-the exact completed-main job and step inventory; the `platform-release`
-environment job receives `contents: read` plus a short-lived GitHub App token
-with repository Administration read; and the dependent publish job receives
-only `contents: write` through its ordinary per-job `GITHUB_TOKEN`. No
-repository/environment secret may contain kubeconfig,
+GitHub-hosted runners. Tip-only platform publication (issue #397) uses four
+jobs that never share a credential: `admit` receives Actions/Contents read and
+proves the tip, its exact main-CI and CodeQL job and step inventories and the
+latest Release; the `platform-release` environment job receives
+`contents: read` plus a short-lived GitHub App token with repository
+Administration read; `evidence` receives Actions read, `contents: write` and
+OIDC to stage and sign every Release byte before the commit point; and
+`publish` receives Actions read and `contents: write` only, to create the tag
+ref and flip the draft. Every write goes through the ordinary per-job
+`GITHUB_TOKEN`. No repository/environment secret may contain kubeconfig,
 Cloudflare, SSH, age, Kubernetes PKI/bootstrap, API-encryption, or tunnel
 credentials. The sole exception in this release lane is the dedicated
 `PLATFORM_RELEASE_APP_PRIVATE_KEY`, held only by the selected-main
 `platform-release` environment and usable only to mint that read-only settings
 token.
 
-The finite issue #369 source recovery uses the same settings environment and
-App scope in a separate no-input `platform-release-recovery.yml` workflow.
-Its preparation and settings jobs additionally need ordinary `actions: read`
-to re-prove original and executor workflow attempts. Its publish job has
-`actions: read`, `contents: write` and `id-token: write`, no environment and no
-App material. The ordinary token reaches only bounded API reads and the exact
-tag/Release transaction; OIDC signs the actual executor identity. Main-only
-first-attempt guards, shared non-canceling concurrency and a canonical
-run-bound selection prevent cross-run settings or source reuse.
-
-The [finite recovery procedure](platform-source-releases.md#finite-historical-source-recovery)
-defines the closed sources, default-target Release payload and original-run
-delivery holds. Source review requires modeled success and HTTP 403/404 denial
-without broader credentials. Actual ordinary-token creation capability is
-proved only by the protected post-merge execution. A refusal stops delivery;
-it never authorizes changing App scope, a manual tag, or a replacement signed
-publisher attempt. Existing immutable-release and no-bypass settings proofs
-remain required before Ready and again in each dispatch.
+The issue #369 recovery workflow is retired: a tip Release is only ever
+published at the commit executing the workflow, so no historical tag, executor
+substitution or owner-prepared tag remains. The immutable-release and no-bypass
+settings proofs remain required before Ready and again in every publishing run.
 
 Posting source to GitHub remains a workstation responsibility. Authenticate Git
 with the dedicated passphrase-protected SSH agent or the OS credential manager/
@@ -88,9 +77,10 @@ The platform publisher supports both merge methods enabled for this repository:
 one-commit squash and merge-free multi-commit rebase. Merge commits stay
 disabled. Each range adds one immutable `changelog.d/` fragment and leaves the
 frozen legacy `VERSION` and `CHANGELOG.md` untouched. The publisher derives the
-next patch from the protected tag ledger anchored at `v0.1.9`; see
+next patch from the protected tag ledger anchored at `v0.1.9` and releases
+the green main tip; see
 [`platform-source-releases.md`](./platform-source-releases.md) for the exact
-fragment, rapid-merge, and dependency-queue state machine. That code cannot
+fragment rule, the tip-only decision table and the dependency queue. That code cannot
 prevent an owner from merging a failing or stale PR
 when server-side checks are optional, and repository code cannot make a GitHub
 Release immutable. The automatic-release policy must not become Ready until the
@@ -377,14 +367,10 @@ authority unavailable to `GITHUB_TOKEN`. A disposable-repository canary must
 still prove this exact existing-tag path before Ready; documentation is not a
 substitute for observed API behavior.
 
-The separate [finite historical-source prerequisite](platform-source-releases.md#owner-prepared-historical-tags)
-permits only the owner to prepare each of the three fixed annotated tags after
-reviewed merge and fresh source, executor, predecessor and settings proofs.
-Agents never create tag objects or refs. That prerequisite retains the current
-publisher's ordinary token and its exact two authenticated assets; it does not
-inherit v0.1.0's zero-asset format or grant a general manual recovery path.
-The owner creates neither Releases nor assets, and the automated recovery
-refuses before tag writes when the exact prepared tag is absent or inexact.
+The issue #375 owner-prepared historical tags are closed with the recovery
+workflow they served: the thirteen tags it needed exist and are published, and
+tip-only publication never tags a historical commit, so no owner tag step
+remains. Agents never create tag objects or refs outside the publisher.
 
 The failed `v0.1.41` and `v0.1.42` publications are not repaired in place.
 Their annotated tags are immutable and remain burned ledger boundaries. The
