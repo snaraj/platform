@@ -24,8 +24,9 @@ runs credential-free against fixtures, so findings are demonstrable offline.
 ## Supported versions
 
 Only the current tip of `main` is supported. After the repository owner's
-immutable-release and protected-main readiness receipt passes, every merge has
-an immutable plain `vX.Y.Z` platform-source release, but there are no maintained
+immutable-release and protected-main readiness receipt passes, every merge is
+covered by an immutable plain `vX.Y.Z` platform-source release of the green main
+tip, but there are no maintained
 release branches; a finding fixed on `main` is fixed everywhere. A source
 release is not a deployment or promotion. Per-site production graduation state
 lives in [`release-policy.env`](release-policy.env) (both sites are

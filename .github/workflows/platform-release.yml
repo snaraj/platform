@@ -1,95 +1,79 @@
 name: Platform release
 
-# One independent exact-SHA release path follows each successful main-CI run.
-# Publication names repository source only. It never deploys or promotes.
+# Tip-only source publication (issue #397). A run publishes only the current
+# protected-main tip, the commit whose workflow and scripts are executing,
+# after its main CI and CodeQL succeeded, and the Release binds every fragment
+# added since the previous Release. Publication names repository source only;
+# it never deploys or promotes, and no owner action is part of the routine path.
 on:
   workflow_run:
     workflows: [Pull request]
     types: [completed]
     branches: [main]
+  # Reconciliation: a green tip left unpublished by a lost, replaced, cancelled
+  # or failed trigger is published within the hour, with no owner action.
+  schedule:
+    - cron: '41 * * * *'
 
 permissions: {}
 
-# Identical reruns serialize and converge on the same exact REST state. Distinct
-# main SHAs never share a group and can neither cancel nor suppress each other.
+# One writer. GitHub may replace a pending run; every run re-derives the tip,
+# so the replacement or the next hourly run covers the replaced run's work.
 concurrency:
-  group: platform-release-${{ github.event.workflow_run.head_sha }}
+  group: platform-release
   cancel-in-progress: false
 
 jobs:
-  main-ci-jobs:
+  admit:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
+      github.event_name == 'schedule' ||
+      (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
-    outputs:
-      attestation: ${{ steps.required-jobs.outputs.attestation }}
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
+    outputs:
+      decision: ${{ steps.admit.outputs.decision }}
+      plan: ${{ steps.admit.outputs.plan }}
     steps:
-      - name: Check out exact completed main SHA
+      - name: Check out the protected-main tip that runs this workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-          fetch-depth: 1
-      - name: Verify required protected-main jobs and steps
-        id: required-jobs
+          fetch-depth: 0
+      - name: Install checksum-verified release tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Admit the tip, its CI and CodeQL, and the latest Release
+        id: admit
         env:
-          ACTIONS_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
-          COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          PLATFORM_RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          bash scripts/ci/verify-platform-release-main-jobs.sh
+          python3 -I -B scripts/ci/platform_release_tip.py admit
 
   immutable-settings:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
-    outputs:
-      attestation: ${{ steps.immutable-settings.outputs.attestation }}
-      predecessor: ${{ steps.predecessor.outputs.attestation }}
+    needs: admit
+    if: needs.admit.outputs.decision == 'publish' || needs.admit.outputs.decision == 'finalize'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     environment:
       name: platform-release
       deployment: false
     permissions:
       contents: read
+    outputs:
+      attestation: ${{ steps.immutable-settings.outputs.attestation }}
     steps:
-      - name: Check out exact completed main SHA
+      - name: Check out the protected-main tip that runs this workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-          fetch-depth: 0
-      - name: Bind event and exact source
-        id: source
-        env:
-          COMPLETED_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          event_sha="$(python3 -I -B scripts/ci/platform_release_contract.py workflow-run \
-            --event "${GITHUB_EVENT_PATH}" --repository "${GITHUB_REPOSITORY}")"
-          test "${event_sha}" = "${COMPLETED_SHA}"
-          test "$(git rev-parse HEAD)" = "${COMPLETED_SHA}"
-          printf 'source_sha=%s\n' "${event_sha}" >> "${GITHUB_OUTPUT}"
-      - name: Install checksum-verified predecessor verification tools
-        run: ./scripts/ci/install-tools.sh
-      - name: Await exact immutable predecessor release
-        id: predecessor
-        env:
-          CONTENTS_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          bash scripts/ci/wait-platform-release-predecessor.sh
+          fetch-depth: 1
       - name: Mint current-settings proof token
         id: immutable-settings-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -97,7 +81,7 @@ jobs:
           app-id: ${{ vars.PLATFORM_RELEASE_APP_ID }}
           private-key: ${{ secrets.PLATFORM_RELEASE_APP_PRIVATE_KEY }}
           owner: snaraj
-          repositories: ${{ steps.predecessor.outputs.repository_name }}
+          repositories: platform
           permission-administration: read
           skip-token-revoke: false
           github-api-url: ${{ github.api_url }}
@@ -105,76 +89,78 @@ jobs:
         id: immutable-settings
         env:
           IMMUTABLE_SETTINGS_TOKEN: ${{ steps.immutable-settings-token.outputs.token }}
-          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           bash scripts/ci/verify-platform-release-settings.sh
 
-  publish:
-    needs: [main-ci-jobs, immutable-settings]
+  # The finalization evidence: a v5 identity names this job, and verifiers
+  # require it to have completed successfully. Everything it writes is private
+  # and disposable until the publish job creates the tag ref.
+  evidence:
+    needs: [admit, immutable-settings]
     if: >-
-      needs.main-ci-jobs.outputs.attestation ==
-      format('PASS:{0}:{1}:{2}:{3}', github.repository,
-      github.event.workflow_run.id, github.event.workflow_run.run_attempt,
-      github.event.workflow_run.head_sha) &&
+      needs.admit.outputs.decision == 'publish' &&
       needs.immutable-settings.outputs.attestation ==
       format('PASS:{0}:{1}:{2}:{3}', github.repository, github.run_id,
-      github.run_attempt, github.event.workflow_run.head_sha) &&
-      needs.immutable-settings.outputs.predecessor ==
-      format('PASS:{0}:{1}', github.repository,
-      github.event.workflow_run.head_sha)
+      github.run_attempt, github.sha)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 20
     permissions:
+      actions: read
       contents: write
       id-token: write
+    outputs:
+      release_id: ${{ steps.stage.outputs.release_id }}
     steps:
-      - name: Check out exact completed main SHA
+      - name: Check out the protected-main tip that runs this workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Rebind event, source, and exact patch
-        id: release
-        env:
-          COMPLETED_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          event_sha="$(python3 -I -B scripts/ci/platform_release_contract.py workflow-run \
-            --event "${GITHUB_EVENT_PATH}" --repository "${GITHUB_REPOSITORY}")"
-          test "${event_sha}" = "${COMPLETED_SHA}"
-          test "$(git rev-parse HEAD)" = "${COMPLETED_SHA}"
-          # Ordering completed before the fresh immutable-settings proof. Rebind
-          # once here; any renewed pending or unsafe state fails before writes.
-          git fetch --quiet --tags origin
-          intent="$(python3 -I -B scripts/ci/platform_release_contract.py release-window \
-            --repository . --head "${COMPLETED_SHA}")"
-          base_sha="$(jq -er '.base_sha' <<<"${intent}")"
-          base_tag="$(jq -er '.base_tag' <<<"${intent}")"
-          source_sha="$(jq -er '.source_sha' <<<"${intent}")"
-          version="$(jq -er '.version' <<<"${intent}")"
-          tag="$(jq -er '.tag' <<<"${intent}")"
-          test "${source_sha}" = "${COMPLETED_SHA}"
-          test "${tag}" = "v${version}"
-          python3 -I -B scripts/ci/platform_release_epoch.py "${tag}" \
-            --repository "${GITHUB_REPOSITORY}" --repository-id "${GITHUB_REPOSITORY_ID}" \
-            --base-tag "${base_tag}" --base-sha "${base_sha}" --source-sha "${source_sha}" \
-            >/dev/null
-          printf 'base_sha=%s\nbase_tag=%s\nsource_sha=%s\nversion=%s\ntag=%s\n' \
-            "${base_sha}" "${base_tag}" "${source_sha}" "${version}" \
-            "${tag}" >> "${GITHUB_OUTPUT}"
       - name: Install checksum-verified release tools
         run: ./scripts/ci/install-tools.sh
-      - name: Publish or verify exact immutable source release
+      - name: Stage, sign and verify every Release byte before the commit point
+        id: stage
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BASE_SHA: ${{ steps.release.outputs.base_sha }}
-          BASE_TAG: ${{ steps.release.outputs.base_tag }}
-          MAIN_RUN_ID: ${{ github.event.workflow_run.id }}
-          MAIN_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
-          TAG: ${{ steps.release.outputs.tag }}
+          PLATFORM_RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PLAN: ${{ needs.admit.outputs.plan }}
         run: |
           set -euo pipefail
-          bash scripts/ci/publish-platform-release.sh
+          python3 -I -B scripts/ci/platform_release_tip.py stage
+
+  publish:
+    needs: [admit, immutable-settings, evidence]
+    if: >-
+      !cancelled() &&
+      needs.immutable-settings.outputs.attestation ==
+      format('PASS:{0}:{1}:{2}:{3}', github.repository, github.run_id,
+      github.run_attempt, github.sha) &&
+      ((needs.admit.outputs.decision == 'publish' &&
+      needs.evidence.result == 'success' &&
+      needs.evidence.outputs.release_id != '') ||
+      (needs.admit.outputs.decision == 'finalize' &&
+      needs.evidence.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out the protected-main tip that runs this workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified release tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Commit the tag and publish the immutable Release, or finalize it
+        env:
+          PLATFORM_RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PLAN: ${{ needs.admit.outputs.plan }}
+          STAGED_RELEASE_ID: ${{ needs.evidence.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          python3 -I -B scripts/ci/platform_release_tip.py publish

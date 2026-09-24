@@ -27,20 +27,7 @@ from unittest import mock
 from .support import hermetic_git_environment, load_script, REPO_ROOT
 
 BACKLOG = load_script("ci/release_backlog.py", module_name="release_backlog_subject")
-PREPARE = load_script(
-    "prepare_recovery_tags.py", module_name="prepare_recovery_tags_subject"
-)
-# Each ``load_script`` call executes its own copy of the subject, and each copy
-# loads its own copy of the contract, so the owner command would otherwise carry
-# a second ``ContractError`` class and a second ledger-floor constant that no
-# fixture patch reaches. Binding both subjects to one contract instance keeps
-# every assertion and every patch in this file pointed at the same objects.
-PREPARE.B = BACKLOG
-PREPARE.C = BACKLOG.C
 CONTRACT = BACKLOG.C
-# Emptied rather than deleted: mock.patch.dict restores exactly what it
-# replaced, and an empty value is falsy to the command's own check.
-WITHOUT_CI = {marker: "" for marker in PREPARE.CI_MARKERS}
 NOW = dt.datetime(2026, 9, 22, 12, 0, tzinfo=dt.timezone.utc)
 
 
@@ -158,7 +145,7 @@ class Ledger:
 class PlanDerivationTests(unittest.TestCase):
     """The plan is the publisher's ledger rule, not a second opinion of it."""
 
-    def test_every_untagged_first_parent_commit_becomes_exactly_one_patch(self):
+    def test_every_fragment_since_the_ledger_waits_for_one_tip_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             ledger = Ledger(Path(temporary))
             first = ledger.fragment(301, "first")
@@ -166,25 +153,29 @@ class PlanDerivationTests(unittest.TestCase):
             second = ledger.fragment(302, "second")
             third = ledger.fragment(303, "third")
             with ledger.floor_patch():
-                edges = BACKLOG.plan(ledger.root, "HEAD")
-            self.assertEqual([edge.tag for edge in edges], ["v0.1.11", "v0.1.12"])
-            self.assertEqual([edge.source_sha for edge in edges], [second, third])
-            self.assertEqual([edge.base_tag for edge in edges], ["v0.1.10", "v0.1.11"])
-            self.assertEqual([edge.base_sha for edge in edges], [first, second])
-            self.assertEqual(
-                [edge.fragment_path for edge in edges],
-                ["changelog.d/302-second.md", "changelog.d/303-third.md"],
-            )
-            self.assertEqual(
-                edges[0].message, f"Platform release v0.1.11 from {second}"
-            )
-            self.assertEqual(
-                edges[0].source_date,
-                ledger.git("show", "-s", "--format=%cI", second),
-            )
-            self.assertEqual(
-                json.loads(json.dumps(edges[0].as_dict()))["tag"], "v0.1.11"
-            )
+                waiting = BACKLOG.plan(ledger.root, "HEAD")
+            self.assertEqual(len(waiting), 1)
+            release = waiting[0]
+            self.assertEqual((release.tag, release.source_sha, release.base_tag, release.base_sha),
+                             ("v0.1.11", third, "v0.1.10", first))
+            self.assertEqual(release.fragment_paths,
+                             ("changelog.d/302-second.md", "changelog.d/303-third.md"))
+            # The age is the oldest unreleased change's, not the tip's.
+            self.assertEqual(release.source_date,
+                             ledger.git("show", "-s", "--format=%cI", second))
+            self.assertEqual(json.loads(json.dumps(release.as_dict()))["fragment_paths"],
+                             ["changelog.d/302-second.md", "changelog.d/303-third.md"])
+
+    def test_a_range_without_a_new_fragment_waits_for_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = Ledger(Path(temporary))
+            first = ledger.fragment(301, "first")
+            ledger.tag("v0.1.10", first)
+            (ledger.root / "unrelated.txt").write_text("no release consequence\n",
+                                                        encoding="utf-8", newline="\n")
+            ledger.commit("unrelated change only")
+            with ledger.floor_patch():
+                self.assertEqual(BACKLOG.plan(ledger.root, "HEAD"), ())
 
     def test_a_fully_tagged_head_plans_nothing(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -195,18 +186,17 @@ class PlanDerivationTests(unittest.TestCase):
                 self.assertEqual(BACKLOG.plan(ledger.root, "HEAD"), ())
 
     def test_the_plan_refuses_every_shape_the_publisher_refuses(self):
-        for case in ("two-fragments", "no-fragment", "merge-commit", "bound"):
+        for case in ("edited-fragment", "merge-commit", "bound"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 ledger = Ledger(Path(temporary))
                 first = ledger.fragment(301, "first")
                 ledger.tag("v0.1.10", first)
-                if case == "two-fragments":
-                    ledger.fragment(302, "second", extra="399-extra.md")
-                elif case == "no-fragment":
-                    (ledger.root / "unrelated.txt").write_text(
-                        "no release consequence\n", encoding="utf-8", newline="\n"
+                if case == "edited-fragment":
+                    (ledger.root / "changelog.d" / "301-first.md").write_text(
+                        "### Security\n\n- rewritten published fragment.\n",
+                        encoding="utf-8", newline="\n",
                     )
-                    ledger.commit("unrelated change only")
+                    ledger.commit("edit a published fragment")
                 elif case == "merge-commit":
                     ledger.git("checkout", "-q", "-b", "side", first)
                     ledger.fragment(302, "side")
@@ -242,313 +232,6 @@ class PlanDerivationTests(unittest.TestCase):
                     CONTRACT.ContractError
                 ):
                     BACKLOG.resolve(ledger.root, revision)
-
-
-class PreparedTagTests(unittest.TestCase):
-    """The owner's one command creates only exact tags, and only locally first."""
-
-    def remote(self, ledger: Ledger, temporary: Path) -> Path:
-        """A bare origin whose `main` the command's ancestry guard reads.
-
-        The tracking ref is part of the fixture, not decoration: the command
-        refuses any head `refs/remotes/origin/main` does not already contain,
-        so a fixture without one would only ever exercise that refusal.
-        """
-        bare = temporary / "remote.git"
-        subprocess.run(
-            ["git", "init", "-q", "--bare", str(bare)],
-            check=True, capture_output=True, timeout=60,
-            env=hermetic_git_environment(),
-        )
-        ledger.git("remote", "add", "origin", str(bare))
-        ledger.git("push", "-q", "origin", "refs/heads/main:refs/heads/main")
-        ledger.git("fetch", "-q", "origin")
-        return bare
-
-    def remote_tags(self, bare: Path) -> str:
-        return subprocess.run(
-            ["git", "-C", str(bare), "tag", "--list"],
-            check=True, capture_output=True, text=True, timeout=60,
-            env=hermetic_git_environment(),
-        ).stdout.strip()
-
-    def run_prepare(self, ledger: Ledger, *, push: bool):
-        # This battery runs inside CI, where the runner markers the command
-        # refuses on are genuinely set. Clearing them is what lets the positive
-        # paths execute at all; the refusal itself is proved separately, with
-        # exactly one marker restored.
-        stream = io.StringIO()
-        with ledger.floor_patch(), mock.patch.dict(PREPARE.os.environ, WITHOUT_CI):
-            code = PREPARE.prepare(
-                ledger.root, "HEAD", push=push, remote="origin", stream=stream
-            )
-        return code, stream.getvalue()
-
-    def two_pending(self, root: Path):
-        ledger = Ledger(root)
-        first = ledger.fragment(301, "first")
-        ledger.tag("v0.1.10", first)
-        second = ledger.fragment(302, "second")
-        third = ledger.fragment(303, "third")
-        return ledger, second, third
-
-    def test_push_creates_exactly_the_missing_tags_in_the_exact_shape(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, second, third = self.two_pending(root)
-            bare = self.remote(ledger, Path(temporary))
-            code, output = self.run_prepare(ledger, push=True)
-            self.assertEqual(code, 0)
-            self.assertIn("pushed v0.1.11", output)
-            self.assertIn("pushed v0.1.12", output)
-            for tag, target in (("v0.1.11", second), ("v0.1.12", third)):
-                raw = subprocess.run(
-                    ["git", "-C", str(ledger.root), "cat-file", "tag", tag],
-                    check=True, capture_output=True, timeout=60,
-                    env=hermetic_git_environment(),
-                ).stdout.decode("utf-8")
-                self.assertIn(f"object {target}\n", raw)
-                self.assertIn(
-                    f"tagger {CONTRACT.RELEASE_TAGGER_NAME} "
-                    f"<{CONTRACT.RELEASE_TAGGER_EMAIL}>",
-                    raw,
-                )
-                # git's own canonical encoding: exactly one terminator.
-                self.assertTrue(
-                    raw.endswith(f"Platform release {tag} from {target}\n")
-                )
-                self.assertFalse(raw.endswith("\n\n"))
-                local = ledger.git("rev-parse", f"refs/tags/{tag}")
-                pushed = subprocess.run(
-                    ["git", "-C", str(bare), "rev-parse", f"refs/tags/{tag}"],
-                    check=True, capture_output=True, text=True, timeout=60,
-                    env=hermetic_git_environment(),
-                ).stdout.strip()
-                self.assertEqual(local, pushed)
-            with ledger.floor_patch():
-                self.assertEqual(BACKLOG.plan(ledger.root, "HEAD"), ())
-
-    def test_plan_only_writes_nothing(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, _, _ = self.two_pending(root)
-            bare = self.remote(ledger, Path(temporary))
-            code, output = self.run_prepare(ledger, push=False)
-            self.assertEqual(code, 0)
-            self.assertIn("v0.1.11", output)
-            self.assertIn("Ledger edges pending a tag: 2", output)
-            self.assertNotIn("pushed", output)
-            self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
-            self.assertEqual(self.remote_tags(bare), "")
-
-    def test_an_already_exact_tag_is_a_ledger_boundary_and_is_never_rewritten(self):
-        """A present exact tag leaves the plan; only the remaining edge is cut."""
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, second, _ = self.two_pending(root)
-            self.remote(ledger, Path(temporary))
-            ledger.tag("v0.1.11", second)
-            before = ledger.git("rev-parse", "refs/tags/v0.1.11")
-            code, output = self.run_prepare(ledger, push=True)
-            self.assertEqual(code, 0)
-            self.assertIn("Ledger edges pending a tag: 1", output)
-            self.assertIn("pushed v0.1.12", output)
-            self.assertNotIn("pushed v0.1.11", output)
-            self.assertEqual(ledger.git("rev-parse", "refs/tags/v0.1.11"), before)
-
-    def test_a_disagreeing_existing_tag_stops_before_any_write(self):
-        mutations = {
-            "tagger-name": {"tagger_name": "repository-owner"},
-            "tagger-email": {"tagger_email": "foreign@example.invalid"},
-            "tagger-date": {"date": "2020-01-02T03:04:05+00:00"},
-            "message": {"message": "Platform release v0.1.11 from elsewhere"},
-            "double-newline": {},
-            "carriage-return": {},
-        }
-        # A LEADING newline is deliberately absent here: git's object format
-        # ends the header with a blank line, so ``%(contents)`` cannot observe
-        # one and no Git object can carry that mutation. The REST record can,
-        # and the contract battery refuses it there.
-        raw = {
-            "double-newline": "Platform release v0.1.11 from {sha}\n\n",
-            "carriage-return": "Platform release v0.1.11 from {sha}\r\n",
-        }
-        for case, keywords in mutations.items():
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary) / "work"
-                root.mkdir()
-                ledger, second, _ = self.two_pending(root)
-                self.remote(ledger, Path(temporary))
-                if case in raw:
-                    ledger.raw_tag("v0.1.11", second, raw[case].format(sha=second))
-                else:
-                    ledger.tag("v0.1.11", second, **keywords)
-                with self.assertRaises(CONTRACT.ContractError):
-                    self.run_prepare(ledger, push=True)
-                self.assertEqual(ledger.git("tag", "--list", "v0.1.12"), "")
-
-    def test_a_tag_on_a_commit_the_ledger_did_not_derive_stops_the_run(self):
-        for case in ("non-first-parent", "ledger-gap"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary) / "work"
-                root.mkdir()
-                ledger, second, third = self.two_pending(root)
-                self.remote(ledger, Path(temporary))
-                if case == "non-first-parent":
-                    # The next patch belongs to `second`; pointing it at a later
-                    # commit skips an edge the ledger must still bind.
-                    ledger.tag("v0.1.11", third)
-                else:
-                    ledger.tag("v0.1.13", third)
-                with self.assertRaises(CONTRACT.ContractError):
-                    self.run_prepare(ledger, push=True)
-
-    def test_the_post_create_ledger_rewalk_refuses_before_any_ref_is_pushed(self):
-        """The whole post-floor ledger is re-walked over the new objects.
-
-        Per-object verification and the re-walk are different guards: the first
-        judges one tag against its own derived edge, the second judges the
-        refs together. With `verify` stubbed out, only the re-walk stands
-        between a mis-targeted object and the remote.
-        """
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, _, third = self.two_pending(root)
-            bare = self.remote(ledger, Path(temporary))
-            third_date = ledger.git("show", "-s", "--format=%cI", third)
-            authentic = PREPARE.create
-
-            def mis_target(repository, edge):
-                # v0.1.11 belongs to `second`; cutting it at `third` skips an
-                # edge the ledger must still bind. Every other field stays
-                # exact, so nothing but the re-walk can notice.
-                if edge.tag == "v0.1.11":
-                    edge = BACKLOG.Edge(
-                        edge.tag, third, edge.base_tag, edge.base_sha,
-                        edge.fragment_path, third_date,
-                    )
-                authentic(repository, edge)
-
-            with mock.patch.object(PREPARE, "verify"), mock.patch.object(
-                PREPARE, "create", mis_target
-            ), self.assertRaises(CONTRACT.ContractError) as refusal:
-                self.run_prepare(ledger, push=True)
-            self.assertIn("must bind exactly one fragment", str(refusal.exception))
-            self.assertEqual(self.remote_tags(bare), "")
-
-    def test_a_conflicting_remote_tag_refuses_the_push_and_never_moves_it(self):
-        """The refspec push is never forced, so a remote tag is never replaced.
-
-        The remote is the immutable side: a ref that already exists there is
-        exactly the object the ruleset keeps forever, and repairing it is not
-        this command's authority.
-        """
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, _, _ = self.two_pending(root)
-            bare = self.remote(ledger, Path(temporary))
-            first = ledger.git("rev-parse", "v0.1.10^{commit}")
-            # A foreign v0.1.11 already published at a different target, then
-            # dropped locally so the plan still derives the edge it disagrees
-            # with — the shape a second operator's earlier run would leave.
-            ledger.tag("v0.1.11", first,
-                       message=f"Platform release v0.1.11 from {first}")
-            ledger.git("push", "-q", "origin", "refs/tags/v0.1.11:refs/tags/v0.1.11")
-            published = subprocess.run(
-                ["git", "-C", str(bare), "rev-parse", "refs/tags/v0.1.11"],
-                check=True, capture_output=True, text=True, timeout=60,
-                env=hermetic_git_environment(),
-            ).stdout.strip()
-            ledger.git("tag", "-d", "v0.1.11")
-            with self.assertRaises(subprocess.CalledProcessError):
-                self.run_prepare(ledger, push=True)
-            self.assertEqual(
-                subprocess.run(
-                    ["git", "-C", str(bare), "rev-parse", "refs/tags/v0.1.11"],
-                    check=True, capture_output=True, text=True, timeout=60,
-                    env=hermetic_git_environment(),
-                ).stdout.strip(),
-                published,
-            )
-            # The refused push stops the run; the later edge never ships either.
-            self.assertEqual(self.remote_tags(bare), "v0.1.11")
-
-    def test_a_head_the_protected_branch_does_not_hold_is_refused(self):
-        """`--head` is operator input, and the ledger it feeds is permanent."""
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "work"
-            root.mkdir()
-            ledger, second, _ = self.two_pending(root)
-            bare = self.remote(ledger, Path(temporary))
-            ledger.git("checkout", "-q", "-b", "side", second)
-            ledger.fragment(304, "side-only")
-            with self.assertRaises(CONTRACT.ContractError) as refusal:
-                self.run_prepare(ledger, push=True)
-            self.assertIn("refs/remotes/origin/main", str(refusal.exception))
-            self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
-            self.assertEqual(self.remote_tags(bare), "")
-            # The head the runbook documents is still planned, unchanged.
-            ledger.git("checkout", "-q", "main")
-            code, output = self.run_prepare(ledger, push=False)
-            self.assertEqual(code, 0)
-            self.assertIn("Ledger edges pending a tag: 2", output)
-
-    def test_the_command_refuses_to_run_inside_a_hosted_runner(self):
-        for marker in PREPARE.CI_MARKERS:
-            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary) / "work"
-                root.mkdir()
-                ledger, _, _ = self.two_pending(root)
-                stream = io.StringIO()
-                with ledger.floor_patch(), mock.patch.dict(
-                    PREPARE.os.environ, {**WITHOUT_CI, marker: "true"}
-                ), self.assertRaises(CONTRACT.ContractError):
-                    PREPARE.prepare(
-                        ledger.root, "HEAD", push=True, remote="origin", stream=stream
-                    )
-                self.assertEqual(ledger.git("tag", "--list", "v0.1.11", "v0.1.12"), "")
-
-    def test_redirecting_git_variables_never_reach_the_tag_command(self):
-        values = PREPARE.environment(GIT_COMMITTER_NAME="pinned")
-        for name in PREPARE.REDIRECTING_VARIABLES:
-            self.assertNotIn(name, values)
-        self.assertEqual(values["GIT_COMMITTER_NAME"], "pinned")
-        with mock.patch.dict(
-            PREPARE.os.environ,
-            {"GIT_DIR": "/elsewhere", "GIT_CONFIG_COUNT": "1",
-             "GIT_AUTHOR_NAME": "ambient", "GIT_SSH_COMMAND": "ssh -i key"},
-        ):
-            values = PREPARE.environment()
-        for name in ("GIT_DIR", "GIT_CONFIG_COUNT", "GIT_AUTHOR_NAME"):
-            self.assertNotIn(name, values)
-        # Transport stays: the owner's push credential arrives through it.
-        self.assertEqual(values["GIT_SSH_COMMAND"], "ssh -i key")
-
-    def test_absent_local_tag_metadata_is_absence_not_a_silent_pass(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = Ledger(Path(temporary))
-            self.assertIsNone(PREPARE.tag_records(ledger.root, "v9.9.9"))
-            records = PREPARE.tag_records(
-                ledger.root, CONTRACT.TAG_LEDGER_FLOOR_TAG
-            )
-            self.assertEqual(records[0]["ref"], "refs/tags/v0.1.9")
-            self.assertEqual(records[1]["object"]["sha"], ledger.floor)
-
-    def test_the_cli_reports_a_refusal_without_a_traceback(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            ledger = Ledger(Path(temporary))
-            with mock.patch.dict(PREPARE.os.environ, WITHOUT_CI):
-                self.assertEqual(
-                    PREPARE.main(
-                        ["--repository", str(ledger.root), "--head", "absent"]
-                    ),
-                    1,
-                )
 
 
 class FakeReader:
@@ -653,7 +336,9 @@ class WatchdogTests(unittest.TestCase):
                 self.assertIn(
                     f"Pending source releases: {len(pending)}", body
                 )
-                self.assertIn(BACKLOG.OWNER_COMMAND, body)
+                self.assertIn("RELEASE_DECISION", body)
+                self.assertIn("RELEASE_REFUSED", body)
+                self.assertNotIn("prepare_recovery_tags", body)
                 if pending:
                     self.assertIn(pending[0][1], body)
 
@@ -887,12 +572,14 @@ class WiringTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("release_backlog.py watch", text)
 
-    def test_the_runbook_names_the_owner_command_the_watchdog_prints(self):
+    def test_the_runbook_names_the_alert_and_the_lines_it_points_at(self):
         runbook = (REPO_ROOT / "docs/runbooks/platform-source-releases.md").read_text(
             encoding="utf-8"
         )
-        self.assertTrue(BACKLOG.OWNER_COMMAND in runbook, "runbook omits the command")
-        self.assertTrue(BACKLOG.ISSUE_TITLE in runbook, "runbook omits the alert")
+        self.assertIn(BACKLOG.ISSUE_TITLE, runbook, "runbook omits the alert")
+        for line in ("RELEASE_DECISION", "RELEASE_REFUSED"):
+            self.assertIn(line, runbook)
+        self.assertNotIn("prepare_recovery_tags", runbook)
 
 
 if __name__ == "__main__":

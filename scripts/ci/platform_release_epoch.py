@@ -22,7 +22,20 @@ FIRST_V3_TAG = "v0.1.78"
 WORKFLOW = ".github/workflows/platform-release.yml@refs/heads/main"
 TERMINAL_V3_TAG = "v0.1.80"
 TERMINAL_V3_SOURCE = "4f9b29339fec6ff06b37ecc0024b48cbe857f96f"
+# The last one-fragment-per-merge Release (issue #397). Every later Release is a
+# tip-only v5 Release that may bind several fragments; nothing before this
+# boundary is ever published again, so the v4 recovery window below is closed.
+TERMINAL_V4_TAG = "v0.1.94"
+TERMINAL_V4_SOURCE = "62f6ec1a51916e22956b72504e28a2932ee4b573"
+# The retired recovery workflow still names the executor of the nine published
+# recovery identities (v0.1.81-v0.1.89); verification keeps it, nothing runs it.
 RECOVERY_WORKFLOW = ".github/workflows/platform-release-recovery.yml"
+PUBLISHER_WORKFLOW = ".github/workflows/platform-release.yml"
+# A tip Release may be published by the main-CI completion or by the hourly
+# reconciliation; both run the same protected-main workflow at the tip itself.
+TIP_PUBLISHER_EVENTS = ("schedule", "workflow_run")
+# The job whose success is the finalization evidence a v5 identity names.
+EVIDENCE_JOB = "evidence"
 PULL_REQUEST_WORKFLOW_DIGEST = (
     "3fe60af5eb1f1e540cb2bbeda9888aa58fb85622f08c75f7246d50eb90c9d552"
 )
@@ -132,6 +145,8 @@ FROZEN_EDGE_FIELDS = frozenset({
 # publisher left behind, issue #391 froze the twelfth, the merge that repaired
 # the derivation, and issue #393 freezes the thirteenth, the merge that derives
 # the reader's per-run bounds from this list, because it moves main past it.
+# Issue #397 closes the window for good: every edge is published, tip-only
+# publication never produces a recovery edge, and nothing here is extended.
 HISTORICAL_RELEASES = (
     {
         "source_sha": "060c9678e130487b27cdaec395b0f1c5d74b9240",
@@ -337,6 +352,7 @@ def next_tag(tag: str) -> str:
 TERMINAL_V1_TAG = next_tag(CHECKPOINT_TAG)
 FIRST_V2_TAG = next_tag(TERMINAL_V1_TAG)
 FIRST_V4_TAG = next_tag(TERMINAL_V3_TAG)
+FIRST_V5_TAG = next_tag(TERMINAL_V4_TAG)
 
 
 def historical_release(tag: str) -> dict | None:
@@ -409,7 +425,8 @@ def git_remote(url: str) -> str:
 def identity(tag: str) -> dict[str, object]:
     epoch = (1 if version(tag) < version(FIRST_V2_TAG) else
              2 if version(tag) < version(FIRST_V3_TAG) else
-             3 if version(tag) < version(FIRST_V4_TAG) else 4)
+             3 if version(tag) < version(FIRST_V4_TAG) else
+             4 if version(tag) < version(FIRST_V5_TAG) else 5)
     name = OLD_REPOSITORY if epoch == 1 else NEW_REPOSITORY
     asset = f"platform-release-identity.v{epoch}.json"
     value = {"repository": name, "schema": f"https://snaraj.dev/schemas/platform-release-identity/v{epoch}",
@@ -418,6 +435,12 @@ def identity(tag: str) -> dict[str, object]:
     if epoch < 3:
         value.update(selector_digest=FROZEN_SELECTOR_DIGEST,
                      selector_source=FROZEN_SELECTOR_SOURCE)
+    if epoch == 5:
+        # One tip-only publisher; the trigger is recorded, never trusted to
+        # choose the subject, and the evidence job is the finalization proof.
+        value.update(publisher_workflow=PUBLISHER_WORKFLOW,
+                     publisher_events=TIP_PUBLISHER_EVENTS,
+                     evidence_job=EVIDENCE_JOB)
     if epoch == 4:
         recovering = historical_release(tag) is not None
         workflow = RECOVERY_WORKFLOW if recovering else WORKFLOW.split("@", 1)[0]
@@ -443,6 +466,13 @@ def publication(name: str, object_id: object, tag: str, base_tag: str, base_sha:
             raise ValueError("old-name publication is only the terminal v1 edge")
     if tag == FIRST_V3_TAG and (base_tag, base_sha) != (TERMINAL_V2_TAG, TERMINAL_V2_SOURCE):
         raise ValueError("first v3 publication has a foreign terminal-v2 predecessor")
+    if tag == FIRST_V5_TAG and (base_tag, base_sha) != (TERMINAL_V4_TAG, TERMINAL_V4_SOURCE):
+        raise ValueError("first v5 publication has a foreign terminal-v4 predecessor")
+    if selected["version"] == 5:
+        if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+            raise ValueError("v5 publication requires its exact source SHA")
+        if source_sha in {TERMINAL_V4_SOURCE, *(entry["source_sha"] for entry in HISTORICAL_RELEASES)}:
+            raise ValueError("a published source cannot choose another release edge")
     if selected["version"] == 4:
         if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
             raise ValueError("v4 publication requires its exact source SHA")
@@ -470,6 +500,8 @@ def validate_identity(evidence: dict) -> None:
         raise ValueError("signed release epoch has a foreign predecessor")
     if tag == TERMINAL_V1_TAG and predecessor != {"tag": CHECKPOINT_TAG, "peeled_commit": CHECKPOINT_SOURCE}:
         raise ValueError("terminal v1 identity has a foreign checkpoint")
+    if tag == FIRST_V5_TAG and predecessor != {"tag": TERMINAL_V4_TAG, "peeled_commit": TERMINAL_V4_SOURCE}:
+        raise ValueError("first v5 identity has a foreign terminal-v4 checkpoint")
     if selected["version"] < 3 and version(tag) >= version(TERMINAL_V1_TAG):
         selector = evidence["selector"]
         if (selector["digest"], selector["provenance"]["source_sha"]) != (FROZEN_SELECTOR_DIGEST, FROZEN_SELECTOR_SOURCE):
@@ -562,7 +594,6 @@ def metadata_repository(tag: str, name: str | None, object_id: object) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", nargs="?")
-    parser.add_argument("--historical-main-run", action="store_true", default=None)
     parser.add_argument("--git-remote")
     parser.add_argument("--repository")
     parser.add_argument("--repository-id", type=int)
@@ -572,15 +603,6 @@ def main() -> int:
     parser.add_argument("--source-sha")
     args = parser.parse_args()
     try:
-        if args.historical_main_run:
-            if any(value is not None for key, value in vars(args).items()
-                   if key not in {"tag", "historical_main_run"}):
-                raise ValueError("historical run lookup accepts only its closed tag")
-            frozen = historical_release(args.tag)
-            if frozen is None:
-                raise ValueError("tag is outside the finite recovery window")
-            print(frozen["main_run_id"])
-            return 0
         if args.git_remote is not None:
             if any(value is not None for key, value in vars(args).items() if key != "git_remote"):
                 raise ValueError("Git remote verification cannot carry release inputs")

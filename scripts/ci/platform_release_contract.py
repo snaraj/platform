@@ -491,7 +491,12 @@ def validate_transition(
 def _validate_unpublished_fragment_edit(
     repository: Path, base_sha: str, head_sha: str
 ) -> FragmentIntent:
-    """Allow only an exact edit to the one fragment pending since the latest tag."""
+    """Allow only an exact edit to one fragment pending since the latest tag.
+
+    Tip-only publication (issue #397) can leave several fragments pending
+    behind one tag; the edit still names exactly one of them and changes
+    nothing else on the release surface.
+    """
     _linear_commits(repository, base_sha, head_sha)
     ledger = _platform_tag_boundaries(repository)
     if _git(repository, "tag", "--points-at", base_sha) or _git(
@@ -505,14 +510,11 @@ def _validate_unpublished_fragment_edit(
 
     base_intents = _release_surface_intents(repository, latest.source_sha, base_sha)
     head_intents = _release_surface_intents(repository, latest.source_sha, head_sha)
-    if len(base_intents) != 1 or len(head_intents) != 1:
+    pending = tuple(intent.fragment_path for intent in base_intents)
+    if not pending or pending != tuple(intent.fragment_path for intent in head_intents):
         raise ContractError(
-            "base and head must each contain exactly one unpublished fragment"
+            "base and head must contain the same unpublished fragments"
         )
-    base_intent = base_intents[0]
-    head_intent = head_intents[0]
-    if base_intent.fragment_path != head_intent.fragment_path:
-        raise ContractError("base and head must contain the same unpublished fragment")
 
     pathspec = ("--", "VERSION", "CHANGELOG.md", "changelog.d")
     changed = _nul_paths(
@@ -536,12 +538,11 @@ def _validate_unpublished_fragment_edit(
         head_sha,
         *pathspec,
     )
-    expected = (base_intent.fragment_path,)
-    if changed != expected or modified != expected:
+    if len(changed) != 1 or modified != changed or changed[0] not in pending:
         raise ContractError(
-            "release surface must only modify the one unpublished fragment"
+            "release surface must only modify one unpublished fragment"
         )
-    return head_intent
+    return head_intents[pending.index(changed[0])]
 
 
 def _exact_tag_message(actual: object, expected: str) -> bool:
@@ -624,6 +625,9 @@ def _platform_tag_boundaries(repository: Path) -> tuple[TagBoundary, ...]:
     floor = ledger[0]
     if floor.tag != TAG_LEDGER_FLOOR_TAG or floor.source_sha != TAG_LEDGER_FLOOR_SHA:
         raise ContractError("tag-derived release ledger floor is not exact")
+    # One fragment per merge ends at the terminal v4 Release (issue #397). A tip
+    # Release binds every fragment added since its predecessor, never zero.
+    terminal_v4 = Version.parse(EPOCH.TERMINAL_V4_TAG.removeprefix("v"))
     previous = floor
     for boundary in ledger[1:]:
         if boundary.version != next_version(previous.version):
@@ -636,7 +640,12 @@ def _platform_tag_boundaries(repository: Path) -> tuple[TagBoundary, ...]:
         intents = _release_surface_intents(
             repository, previous.source_sha, boundary.source_sha
         )
-        if len(intents) != 1:
+        if boundary.version > terminal_v4:
+            if not intents:
+                raise ContractError(
+                    "every adjacent tip release must bind at least one fragment"
+                )
+        elif len(intents) != 1:
             raise ContractError(
                 "every adjacent tag-derived release must bind exactly one fragment"
             )

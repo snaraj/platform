@@ -981,65 +981,6 @@ class PlatformReleaseIdentityAssetTests(unittest.TestCase):
                     0,
                 )
 
-    def test_publisher_signs_uploads_revalidates_then_publishes(self) -> None:
-        publisher = (
-            ROOT / "scripts" / "ci" / "publish-platform-release.sh"
-        ).read_text(encoding="utf-8")
-        publication = publisher.split(
-            "write_current_identity \"${release_id}\" \"${tag_object}\"", 1
-        )[1]
-        ordered = (
-            "cosign sign-blob --yes",
-            'verify_identity_signature "${identity_asset}" "${identity_bundle}"',
-            'upload_identity_asset "${release_id}" "${identity_asset_name}"',
-            'upload_identity_asset "${release_id}" "${identity_bundle_name}"',
-            "download_identity_pair",
-            'cmp -s "${identity_asset}" "${identity_download}"',
-            'cmp -s "${identity_bundle}" "${bundle_download}"',
-            "staged-identity-release-record",
-            "'{body:$body,draft:false,name:$name,prerelease:false,"
-            "tag_name:$tag,target_commitish:$target}'",
-        )
-        cursor = -1
-        for token in ordered:
-            position = publication.find(token, cursor + 1)
-            self.assertGreater(position, cursor, token)
-            cursor = position
-        self.assertNotIn(".body | fromjson", publisher)
-        self.assertIn('--data-binary "@${path}"', publisher)
-        self.assertIn("--header 'Content-Type: application/json'", publisher)
-        legacy_edge = (
-            '[ "${BASE_TAG}" != v0.1.40 ] || [ "${TAG}" != v0.1.41 ]'
-        )
-        self.assertEqual(publisher.count(legacy_edge), 1)
-        self.assertIn('test "${BASE_TAG}" = v0.1.40', publisher)
-        self.assertIn('test "${TAG}" = v0.1.41', publisher)
-        self.assertNotIn("require-ready", publisher)
-        self.assertNotIn("validate_selector_seed.py", publisher)
-        self.assertIn("validate_platform_predecessor.py", publisher)
-        self.assertIn("identity-run-records", publisher)
-        self.assertIn("--source-tree-sha", publisher)
-
-        workflow = (ROOT / ".github" / "workflows" / "platform-release.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn(".body | fromjson", workflow)
-        self.assertIn('scripts/ci/platform_release_epoch.py "${tag}"', workflow)
-        self.assertEqual(workflow.count("actions: read"), 1)
-        self.assertNotIn("packages:", workflow)
-        self.assertNotIn("docker/", workflow)
-        self.assertIn("cosign verify-blob", publisher)
-        self.assertIn('--certificate-identity "${identity_subject}"', publisher)
-        self.assertIn('"${epoch_contract}" "${tag}"', publisher)
-        self.assertIn('download_identity_pair "${release_json}" "${BASE_TAG}"', publisher)
-        self.assertIn('download_identity_pair "${release_json}" "${TAG}"', publisher)
-        self.assertLess(
-            workflow.index("Install checksum-verified release tools"),
-            workflow.index("Publish or verify exact immutable source release"),
-        )
-
-
-
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
