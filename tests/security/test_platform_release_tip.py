@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import importlib.util
@@ -108,6 +109,8 @@ class FakeGitHub:
         self.listings: dict[tuple[str, str], list] = {}
         self.faults: list[list] = []
         self.on_publish = None
+        # Readbacks that still report a flipped Release as mutable.
+        self.immutable_lag = 0
         self.requests: list[tuple[str, str]] = []
         self.next_id = 5000
 
@@ -295,7 +298,13 @@ class FakeGitHub:
             return self.reply(201, self.ref_record(name))
         if match := re.fullmatch(r"/releases/tags/(v[0-9.]+)", path):
             release = self.published(match.group(1))
-            return self.reply(200, self.public(release)) if release else self.reply(404, {"message": "Not Found"})
+            if release is None:
+                return self.reply(404, {"message": "Not Found"})
+            answer = self.reply(200, self.public(release))
+            if not release["immutable"] and self.immutable_lag:
+                self.immutable_lag -= 1
+                release["immutable"] = self.immutable_lag == 0
+            return answer
         if method == "GET" and path == "/releases":
             records = sorted(self.releases.values(), key=lambda r: -r["id"])
             page = int(query["page"])
@@ -326,7 +335,7 @@ class FakeGitHub:
                     if self.ref_record(release["tag_name"]) is None:
                         # GitHub would mint a lightweight tag at the target.
                         self.git("update-ref", f"refs/tags/{release['tag_name']}", release["target_commitish"])
-                    release.update(draft=False, immutable=True)
+                    release.update(draft=False, immutable=self.immutable_lag == 0)
                     if self.on_publish is not None:
                         self.on_publish(release)
                 return self.reply(200, self.public(release))
@@ -428,6 +437,7 @@ class TipPublicationTests(unittest.TestCase):
                                        "platform-release-identity.v4.json.sigstore.json": bundle})
         self.assertEqual(release["id"], release_id)
         self.terminal_identity = identity
+        self.terminal_publisher = (publisher, 3)
 
     # -- driving the entry point -------------------------------------------------
 
@@ -911,6 +921,155 @@ class TipPublicationTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("v0.1.94 has no published Release", log)
 
+    def test_ci_job_receipts_gate_admission_beyond_run_conclusions(self):
+        tip = self.merge(395)
+        # CodeQL reports success before every job does: wait, never refuse.
+        self.github.green(tip)
+        codeql = self.github.listings[("codeql.yml", tip)][0]["id"]
+        self.github.jobs[(codeql, 1)][0].update(status="in_progress", conclusion=None)
+        result = self.cycle(tip)
+        self.assertEqual(result["admit"]["decision"], "none", result["log"])
+        self.assertIn("ci-pending: CodeQL has not completed", result["log"])
+        # A main CI run whose required job failed is not green, whatever the run says.
+        self.github.listings.clear()
+        main = self.github.green(tip)
+        self.github.jobs[(main, 1)][0]["conclusion"] = "failure"
+        run = next(self.run_ids)
+        self.github.publisher_run(run, 1, tip, "workflow_run")
+        code, _, log = self.invoke("admit", sha=tip, run=run)
+        self.assertEqual(code, 1, log)
+        self.assertIn("RELEASE_REFUSED", log)
+        self.assertIsNone(self.github.published("v0.1.95"))
+
+    def test_the_terminal_checkpoint_run_records_must_match_its_identity(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        self.github.runs[self.terminal_publisher]["head_sha"] = self.floor
+        code, _, log = self.invoke("admit", sha=tip, run=next(self.run_ids))
+        self.assertEqual(code, 1, log)
+        self.assertIn("RELEASE_REFUSED", log)
+        self.assertFalse(any(method != "GET" for method, _ in self.github.requests))
+
+    def test_a_tampered_v5_predecessor_refuses_before_any_write(self):
+        first = self.merge(395)
+        self.github.green(first)
+        self.assertEqual(self.cycle(first)["publish_code"], 0)
+        signed = self.identity("v0.1.95")
+        main_ci = (signed["main_ci"]["run_id"], signed["main_ci"]["run_attempt"])
+        publisher = (signed["platform_release"]["run_id"], signed["platform_release"]["run_attempt"])
+        tip = self.merge(396)
+        self.github.green(tip)
+
+        def release() -> dict:
+            return self.github.published("v0.1.95")
+
+        def asset(suffix: str) -> dict:
+            return next(a for a in release()["assets"] if a["name"].endswith(suffix))
+
+        def evidence_job() -> dict:
+            return next(job for job in self.github.jobs[publisher] if job["name"] == E.EVIDENCE_JOB)
+
+        def foreign_signer() -> None:
+            payload = fake_bundle(self.github.assets[asset(".v5.json")["id"]], subject=SUBJECT + "x",
+                                  sha=first, trigger="workflow_run")
+            record = asset(".sigstore.json")
+            self.github.assets[record["id"]] = payload
+            record.update(size=len(payload), digest="sha256:" + hashlib.sha256(payload).hexdigest())
+
+        cases = (
+            ("edited title", lambda: release().update(name="Platform v0.1.95 (edited)")),
+            ("prerelease", lambda: release().update(prerelease=True)),
+            ("foreign author", lambda: release().update(author={"login": "someone", "id": 7})),
+            ("foreign signer", foreign_signer),
+            ("failed main CI attempt", lambda: self.github.runs[main_ci].update(conclusion="failure")),
+            ("evidence job at another head", lambda: evidence_job().update(head_sha=tip)),
+            ("evidence job of another workflow", lambda: evidence_job().update(workflow_name="Other")),
+            ("publisher run of another workflow",
+             lambda: self.github.runs[publisher].update(path=".github/workflows/other.yml")),
+        )
+        state = (self.github.releases, self.github.assets, self.github.runs, self.github.jobs)
+        saved = copy.deepcopy(state)
+        for label, tamper in cases:
+            with self.subTest(label):
+                run = next(self.run_ids)
+                self.github.publisher_run(run, 1, tip, "workflow_run")
+                tamper()
+                before = len(self.github.requests)
+                code, _, log = self.invoke("admit", sha=tip, run=run)
+                self.assertEqual(code, 1, log)
+                self.assertIn("RELEASE_REFUSED", log)
+                self.assertFalse(any(method != "GET" for method, _ in self.github.requests[before:]))
+                for live, kept in zip(state, copy.deepcopy(saved)):
+                    live.clear()
+                    live.update(kept)
+
+    def test_an_immutable_flag_that_lags_the_flip_is_awaited(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        self.github.immutable_lag = 1
+        result = self.cycle(tip)
+        self.assertEqual(result["publish_code"], 0, result["publish_log"])
+        self.assertTrue(self.github.published("v0.1.95")["immutable"])
+
+    def test_a_published_release_claiming_the_next_title_is_never_deleted(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        claimant = self.github.seed_release("v9.9.9", tip, "hand-made", {})
+        claimant["name"] = "Platform v0.1.95"
+        result = self.cycle(tip)
+        self.assertEqual(result["stage_code"], 1)
+        self.assertIn("a published Release already claims v0.1.95", result["stage_log"])
+        self.assertIn(claimant["id"], self.github.releases)
+        self.assertFalse(any(method == "DELETE" for method, _ in self.github.requests))
+
+    def test_finalize_refuses_when_several_drafts_claim_the_committed_tag(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        self.github.fault("PATCH", r"/releases/\d+$", "503")
+        self.assertEqual(self.cycle(tip)["publish_code"], 1)
+        self.github.seed_release("v0.1.95", tip, "second", {}).update(draft=True, immutable=False)
+        result = self.cycle(tip, event="schedule")
+        self.assertEqual(result["admit"]["decision"], "finalize", result["log"])
+        self.assertEqual(result["publish_code"], 1)
+        self.assertIn("v0.1.95 is committed but 2 drafts claim it", result["publish_log"])
+        self.assertIsNone(self.github.published("v0.1.95"))
+
+    def test_stage_refuses_a_tag_committed_after_its_checkout(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        self.github.fault("PATCH", r"/releases/\d+$", "503")
+        self.assertEqual(self.cycle(tip)["publish_code"], 1)
+        committed = self.github.ref_record("v0.1.95")
+        # This checkout predates the commit that GitHub already holds.
+        self.git("update-ref", "-d", "refs/tags/v0.1.95")
+        remote = self.github.ref_record
+        self.github.ref_record = lambda tag: committed if tag == "v0.1.95" else remote(tag)
+        result = self.cycle(tip, event="schedule")
+        self.assertEqual(result["admit"]["decision"], "publish", result["log"])
+        self.assertEqual(result["stage_code"], 1)
+        self.assertIn("v0.1.95 is already committed", result["stage_log"])
+        self.assertFalse(any(method == "DELETE" for method, _ in self.github.requests))
+
+    def test_publish_never_flips_onto_a_foreign_tag_object(self):
+        tip = self.merge(395)
+        self.github.green(tip)
+        run, plan, release_id = self.stage_only(tip)
+        release = self.github.releases[int(release_id)]
+        record = next(a for a in release["assets"] if a["name"].endswith(".v5.json"))
+        staged = json.loads(self.github.assets[record["id"]])["tag"]["object_sha"]
+        # Same commit, tagger and instant, with git's trailing newline on the
+        # message: valid on its own, but not the object the identity signs.
+        raw = subprocess.run(["git", "-C", str(self.root), "cat-file", "tag", staged], check=True,
+                             stdout=subprocess.PIPE).stdout
+        foreign = subprocess.run(["git", "-C", str(self.root), "hash-object", "-t", "tag", "-w", "--stdin"],
+                                 check=True, input=raw + b"\n", stdout=subprocess.PIPE).stdout.decode().strip()
+        self.assertNotEqual(foreign, staged)
+        self.git("update-ref", "refs/tags/v0.1.95", foreign)
+        code, _, log = self.invoke("publish", sha=tip, run=run, plan=plan, staged=release_id)
+        self.assertEqual(code, 1, log)
+        self.assertIn("ref names a foreign tag object", log)
+        self.assertIsNone(self.github.published("v0.1.95"))
+
 
 class TipLedgerAndContentTests(unittest.TestCase):
     """The ledger epoch rule and the canonical content binding."""
@@ -954,6 +1113,8 @@ class TipLedgerAndContentTests(unittest.TestCase):
                       main_run=(identity["main_ci"]["run_id"], 1),
                       platform_run=(identity["platform_release"]["run_id"], 1), event="workflow_run")
         exact = TIP.render_identity(case.root, bound=bound, **kwargs)
+        with self.assertRaisesRegex(TIP.Refusal, "binds at least one fragment"):
+            TIP.render_identity(case.root, bound=(), **kwargs)
         for label, mutated in (("omitted", bound[:1]), ("duplicated", bound + bound[:1]),
                                ("altered", ((bound[0][0], "0" * 64),) + bound[1:]),
                                ("reordered", tuple(reversed(bound)))):
