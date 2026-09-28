@@ -289,20 +289,22 @@ inventory, the absence of a private-network surface, and the DNS record set.
 
 ### C.1 Issue a just-in-time read-only token
 
-The owner creates one custom Cloudflare API token with an expiry no more than
-60 minutes away. It contains only `Read` permission groups for Billing, API
-Tokens, account and zone metadata, subscriptions, DNS records and settings,
-SSL and certificates, Tunnel and connector state, and Zero Trust
-network/device state. Restrict it to the audited account and the two zones
-where the permission model allows. Record its non-secret permission names,
-resource bounds, issue time, and expiry in private operational evidence.
+The owner creates one custom Cloudflare API token whose complete issued-to-expiry
+lifetime is no more than 60 minutes. Its permission-group set is exactly:
+`API Tokens Read`, `Billing Read`, `Cloudflare Tunnel Read`, `DNS Read`,
+`SSL and Certificates Read`, `Zero Trust Read`, `Zone Read`, and
+`Zone Settings Read`. Restrict it to exactly the audited account and the two
+audited zones, plus the exact user resource needed by API Tokens Read. Use flat
+exact resources; wildcard and nested resource selectors are forbidden. Record
+its non-secret permission names, resource bounds, issue time, and expiry in
+private operational evidence.
 
-Billing Read is mandatory. The current OAuth scope catalog does not expose all
-billing reads, so a named profile can exercise the non-billing checks but does
-not earn a complete zero-charge PASS when a billing command is denied. API
-Tokens Read lets the token prove its own permission groups and expiry. The
-audit rejects a token containing a permission group whose name does not end in
-`Read`, and rejects an expiry more than 60 minutes away.
+Billing Read is mandatory. API Tokens Read lets the token prove its own policy
+shape, issue time, expiry, and resources. The audit rejects named profiles
+because `cf auth whoami` has no schema-backed request contract. It also rejects
+non-Read or deny policies, missing timestamps, a token that is not currently
+active, a total lifetime over 60 minutes, and wildcard, nested, extra, missing,
+or mismatched account and zone resources.
 
 The token is passed to `cf` only through `CLOUDFLARE_API_TOKEN`. It never appears
 in an argument, output, or evidence file. Unset global API-key/email variables,
@@ -327,10 +329,13 @@ from mode-0700 scratch space with telemetry disabled, a 30-second deadline, a
 5 MiB output bound, and explicit pagination until an empty page. It does not use
 `cf cli search`, local simulation, or dry-run output as live evidence. The
 zero-charge section fails unless cf proves: permanent zero-priced Free
-subscriptions, v1 billing coverage, zero values in every current-period cost
-field, complete billing history with zero amounts, no unpaid invoice or debt,
-Universal SSL only, and no Advanced Certificate Manager allocation. A denied
-read, missing field, or partial collection is a finding.
+subscriptions with the exact endpoint-specific plan IDs (`teams_free` for the
+account, including its documented uppercase `TEAMS_FREE` response form, and
+`free` for user-owned and directly queried zone subscriptions), v1 billing
+coverage, zero values in every current-period cost field, complete billing
+history with zero amounts, no unpaid invoice or debt, Universal SSL only, and
+no Advanced Certificate Manager allocation. A denied read, missing field,
+unknown or lookalike plan ID, or partial collection is a finding.
 
 ### C.3 Review the redacted diff
 

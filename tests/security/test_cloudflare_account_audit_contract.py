@@ -13,7 +13,9 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 from .support import required_tool
 
@@ -36,7 +38,12 @@ def synthetic_uuid(character: str) -> str:
 TUNNEL_A_ID = synthetic_uuid("1")
 TUNNEL_B_ID = synthetic_uuid("2")
 TOKEN_ID = "d" * 32
+USER_ID = "e" * 32
+OTHER_ACCOUNT_ID = "f" * 32
+OTHER_ZONE_ID = "9" * 32
+OTHER_USER_ID = "8" * 32
 API_TOKEN = "short_lived_read_only_fixture_token_12345"
+PRIVATE_TUNNEL_NAME = "private-customer-tunnel-do-not-print"
 
 EXPECTED_OPERATIONS = {
     "zones-list": (("zones", "list"), "/zones"),
@@ -130,6 +137,11 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
         TUNNEL_A_ID = __TUNNEL_A_ID__
         TUNNEL_B_ID = __TUNNEL_B_ID__
         TOKEN_ID = __TOKEN_ID__
+        USER_ID = __USER_ID__
+        OTHER_ACCOUNT_ID = __OTHER_ACCOUNT_ID__
+        OTHER_ZONE_ID = __OTHER_ZONE_ID__
+        OTHER_USER_ID = __OTHER_USER_ID__
+        PRIVATE_TUNNEL_NAME = __PRIVATE_TUNNEL_NAME__
 
         def emit(value):
             print(json.dumps(value, separators=(",", ":")))
@@ -144,6 +156,15 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
             return default
 
         def free_subscription(plan_id):
+            if MODE == "subscription-plan-near-match":
+                plan_id = "paid-but-free-looking"
+            elif MODE == "subscription-plan-unknown":
+                plan_id = "unknown-plan"
+            elif MODE == "subscription-plan-wrong-endpoint":
+                plan_id = {
+                    "teams_free": "free",
+                    "free": "teams_free",
+                }[plan_id]
             rate_plan = {
                 "id": plan_id,
                 "is_contract": False,
@@ -154,7 +175,14 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
                     rate_plan[field] = True
                 elif MODE == f"subscription-{field}-missing":
                     rate_plan.pop(field)
-            return {"price": 0, "rate_plan": rate_plan, "state": "Paid"}
+            result = {"price": 0, "rate_plan": rate_plan, "state": "Paid"}
+            if MODE.startswith("subscription-state-"):
+                state = MODE.removeprefix("subscription-state-")
+                if state == "missing":
+                    result.pop("state")
+                else:
+                    result["state"] = state
+            return result
 
         args = sys.argv[1:]
         logged_args = ["<token-id>" if item == TOKEN_ID else item for item in args]
@@ -175,29 +203,15 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
             path = SCHEMAS.get(command)
             if path is None:
                 raise SystemExit(7)
-            method = "POST" if MODE == "write-schema" and command == ("zones", "list") else "GET"
-            emit({"httpMethod": method, "path": path, "hasRequestBody": method != "GET"})
-            raise SystemExit(0)
-
-        if args[:2] == ["auth", "whoami"]:
-            scopes = ["offline", "openid", "account:read", "zone:read", "dns_records:read", "argotunnel.read", "teams:read"]
-            if MODE == "broad-auth":
-                scopes.append("zone.write")
-            emit({
-                "authenticated": True,
-                "tokenValid": True,
-                "email": "not-recorded@example.invalid",
-                "accounts": [{"id": ACCOUNT_ID, "name": "not-recorded"}],
-                "scopes": scopes,
-                "expiresAt": "2099-01-01T00:00:00Z",
-                "authSource": "/private/not-recorded",
-            })
+            targeted = command == ("zones", "list")
+            method = "POST" if MODE == "write-schema" and targeted else "GET"
+            if MODE == "path-schema" and targeted:
+                path = "/unexpected"
+            has_body = method != "GET" or (MODE == "body-schema" and targeted)
+            emit({"httpMethod": method, "path": path, "hasRequestBody": has_body})
             raise SystemExit(0)
 
         runtime = list(args)
-        if "--profile" in runtime:
-            index = runtime.index("--profile")
-            del runtime[index:index + 2]
         page = int(option(runtime, "--page", "1"))
 
         if runtime[:2] == ["zones", "list"]:
@@ -220,10 +234,12 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
                     },
                     "state": "Paid",
                 }])
+            elif MODE == "subscription-plan-account-uppercase":
+                emit([free_subscription("TEAMS_FREE")])
             else:
                 emit([free_subscription("teams_free")])
         elif runtime[:3] == ["user", "subscriptions", "get"]:
-            emit([free_subscription("user_free")])
+            emit([free_subscription("free")])
         elif runtime[:3] == ["zones", "subscriptions", "get"]:
             emit(free_subscription("free"))
         elif runtime[:4] == ["accounts", "billing", "history", "list"]:
@@ -289,9 +305,10 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
             emit({"status": "active" if zone == ZONE_A_ID else "disabled"})
         elif runtime[:2] == ["tunnels", "list"]:
             if page == 1:
+                tunnel_b_name = PRIVATE_TUNNEL_NAME if MODE == "unexpected-tunnel-name" else "lidersea-com"
                 emit([
                     {"id": TUNNEL_A_ID, "name": "naranjo-online", "status": "healthy", "tun_type": "cfd_tunnel"},
-                    {"id": TUNNEL_B_ID, "name": "lidersea-com", "status": "healthy", "tun_type": "cfd_tunnel"},
+                    {"id": TUNNEL_B_ID, "name": tunnel_b_name, "status": "healthy", "tun_type": "cfd_tunnel"},
                 ])
             else:
                 emit([])
@@ -325,22 +342,105 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
             if MODE == "denied-token-definition":
                 print("token definition read denied", file=sys.stderr)
                 raise SystemExit(13)
-            emit({
-                "id": TOKEN_ID,
-                "expires_on": (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            now = datetime.now(timezone.utc)
+            definition = {
+                "id": OTHER_USER_ID if MODE == "token-id-mismatch" else TOKEN_ID,
+                "issued_on": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+                "not_before": (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+                "expires_on": (now + timedelta(minutes=25)).isoformat().replace("+00:00", "Z"),
+                "value": "server-returned-secret-must-never-be-persisted-or-printed",
                 "policies": [{
                     "effect": "allow",
                     "permission_groups": [
-                        {"name": "Account Settings Read"},
-                        {"name": "Zone Read"},
-                        {"name": "DNS Read"},
                         {"name": "Cloudflare Tunnel Read"},
                         {"name": "Zero Trust Read"},
                         {"name": "Billing Read"},
+                    ],
+                    "resources": {"com.cloudflare.api.account." + ACCOUNT_ID: "*"},
+                }, {
+                    "effect": "allow",
+                    "permission_groups": [
+                        {"name": "Zone Read"},
+                        {"name": "Zone Settings Read"},
+                        {"name": "DNS Read"},
+                        {"name": "SSL and Certificates Read"},
+                    ],
+                    "resources": {
+                        "com.cloudflare.api.account.zone." + ZONE_A_ID: "*",
+                        "com.cloudflare.api.account.zone." + ZONE_B_ID: "*",
+                    },
+                }, {
+                    "effect": "allow",
+                    "permission_groups": [
                         {"name": "API Tokens Read"},
                     ],
+                    "resources": {"com.cloudflare.api.user." + USER_ID: "*"},
                 }],
-            })
+            }
+            if MODE == "token-issued-missing":
+                definition.pop("issued_on")
+            elif MODE == "token-issued-malformed":
+                definition["issued_on"] = "not-a-timestamp"
+            elif MODE == "token-issued-future":
+                definition["issued_on"] = (now + timedelta(minutes=1)).isoformat()
+            elif MODE == "token-issued-old":
+                definition["issued_on"] = (now - timedelta(days=365)).isoformat()
+            elif MODE == "token-expires-missing":
+                definition.pop("expires_on")
+            elif MODE == "token-expires-malformed":
+                definition["expires_on"] = "not-a-timestamp"
+            elif MODE == "token-expired":
+                definition["issued_on"] = (now - timedelta(minutes=30)).isoformat()
+                definition["expires_on"] = (now - timedelta(minutes=1)).isoformat()
+            elif MODE == "token-lifetime-long":
+                definition["issued_on"] = (now - timedelta(minutes=5)).isoformat()
+                definition["expires_on"] = (now + timedelta(minutes=56)).isoformat()
+            elif MODE == "token-not-before-future":
+                definition["not_before"] = (now + timedelta(minutes=1)).isoformat()
+            elif MODE == "token-not-before-malformed":
+                definition["not_before"] = "not-a-timestamp"
+
+            account_resources = definition["policies"][0]["resources"]
+            zone_resources = definition["policies"][1]["resources"]
+            user_resources = definition["policies"][2]["resources"]
+            if MODE == "token-resource-wildcard-account":
+                account_resources["com.cloudflare.api.account.*"] = account_resources.pop("com.cloudflare.api.account." + ACCOUNT_ID)
+            elif MODE == "token-resource-wildcard-zone":
+                zone_resources["com.cloudflare.api.account.zone.*"] = zone_resources.pop("com.cloudflare.api.account.zone." + ZONE_A_ID)
+            elif MODE == "token-resource-nested":
+                account_resources["com.cloudflare.api.account." + ACCOUNT_ID] = {"com.cloudflare.api.account.zone.*": "*"}
+            elif MODE == "token-resource-extra-account":
+                account_resources["com.cloudflare.api.account." + OTHER_ACCOUNT_ID] = "*"
+            elif MODE == "token-resource-other-account":
+                account_resources["com.cloudflare.api.account." + OTHER_ACCOUNT_ID] = account_resources.pop("com.cloudflare.api.account." + ACCOUNT_ID)
+            elif MODE == "token-resource-extra-zone":
+                zone_resources["com.cloudflare.api.account.zone." + OTHER_ZONE_ID] = "*"
+            elif MODE == "token-resource-other-zone":
+                zone_resources["com.cloudflare.api.account.zone." + OTHER_ZONE_ID] = zone_resources.pop("com.cloudflare.api.account.zone." + ZONE_B_ID)
+            elif MODE == "token-resource-extra-user":
+                user_resources["com.cloudflare.api.user." + OTHER_USER_ID] = "*"
+            elif MODE == "token-resource-missing-account":
+                account_resources.clear()
+                account_resources["com.cloudflare.api.account.zone." + ZONE_A_ID] = "*"
+            elif MODE == "token-resource-missing-zone":
+                zone_resources.pop("com.cloudflare.api.account.zone." + ZONE_B_ID)
+            elif MODE == "token-resource-missing-user":
+                user_resources.clear()
+                user_resources["com.cloudflare.api.account." + ACCOUNT_ID] = "*"
+            elif MODE == "token-resource-bad-value":
+                account_resources["com.cloudflare.api.account." + ACCOUNT_ID] = "read"
+
+            if MODE == "token-policies-empty":
+                definition["policies"] = []
+            elif MODE == "token-policy-deny-empty":
+                definition["policies"].append({"effect": "deny", "permission_groups": [], "resources": {}})
+            elif MODE == "token-permission-groups-empty":
+                definition["policies"][0]["permission_groups"] = []
+            elif MODE == "token-write-permission":
+                definition["policies"][0]["permission_groups"].append({"name": "Billing Write"})
+            elif MODE == "token-extra-read-permission":
+                definition["policies"][0]["permission_groups"].append({"name": "Account Settings Read"})
+            emit(definition)
         else:
             raise SystemExit(9)
         """
@@ -354,6 +454,11 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
         "__TUNNEL_A_ID__": repr(TUNNEL_A_ID),
         "__TUNNEL_B_ID__": repr(TUNNEL_B_ID),
         "__TOKEN_ID__": repr(TOKEN_ID),
+        "__USER_ID__": repr(USER_ID),
+        "__OTHER_ACCOUNT_ID__": repr(OTHER_ACCOUNT_ID),
+        "__OTHER_ZONE_ID__": repr(OTHER_ZONE_ID),
+        "__OTHER_USER_ID__": repr(OTHER_USER_ID),
+        "__PRIVATE_TUNNEL_NAME__": repr(PRIVATE_TUNNEL_NAME),
     }
     source = textwrap.dedent(template)
     for placeholder, value in replacements.items():
@@ -441,6 +546,13 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("cf-schema-read-only    -> FAIL", completed.stdout)
 
+    def test_self_test_rejects_schema_body_or_path_drift(self):
+        for mode in ("body-schema", "path-schema"):
+            with self.subTest(mode=mode):
+                completed = self.run_script("--self-test", mode=mode)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn("cf-schema-read-only    -> FAIL", completed.stdout)
+
     def test_self_test_rejects_an_unreviewed_cf_version(self):
         completed = self.run_script("--self-test", mode="old-version")
         self.assertEqual(completed.returncode, 2)
@@ -451,8 +563,9 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         self.assertIn("schema=cloudflare-account-audit/2", completed.stdout)
         self.assertIn("cf_auth=api-token-env", completed.stdout)
-        self.assertIn("auth-scope all 7 token permission group(s) are read-only", completed.stdout)
-        self.assertIn("auth-expiry the API token expires within 60 minutes", completed.stdout)
+        self.assertIn("auth-scope the token has exactly the 8 reviewed", completed.stdout)
+        self.assertIn("auth-lifetime the API token is active now", completed.stdout)
+        self.assertIn("auth-resources the token is restricted to this account", completed.stdout)
         self.assertIn("account-subscriptions all 1 subscription(s)", completed.stdout)
         self.assertIn("user-subscriptions all 1 subscription(s)", completed.stdout)
         self.assertIn("billing-coverage covered=true usage_subscriptions=0", completed.stdout)
@@ -472,6 +585,7 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
         self.assertNotIn(ACCOUNT_ID, completed.stdout)
         self.assertNotIn(ZONE_A_ID, completed.stdout)
         self.assertNotIn(TUNNEL_A_ID, completed.stdout)
+        self.assertNotIn("server-returned-secret", completed.stdout + completed.stderr)
 
         entries = self.log_entries()
         self.assertTrue(any(entry["token_present"] for entry in entries))
@@ -498,22 +612,50 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
                     f"operation was not exercised for {command}",
                 )
 
-    def test_named_profile_mode_remains_supported(self):
-        completed = self.run_script("--profile", "audit_read")
-        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
-        self.assertIn("cf_auth=named-profile", completed.stdout)
-        self.assertIn("auth-scope all 7 reported OAuth scope(s) are read-only", completed.stdout)
-        self.assertIn("findings=0 exit=0", completed.stdout)
-        self.assertIn(
-            ["auth", "whoami", "--profile", "audit_read"],
-            [entry["args"] for entry in self.log_entries()],
+    def test_named_profile_mode_is_rejected_before_any_live_read(self):
+        completed = self.run_script(
+            "--profile", "audit_read", extra_env={"CLOUDFLARE_API_TOKEN": API_TOKEN}
         )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("unknown argument: --profile", completed.stderr)
+        self.assertNotIn(API_TOKEN, completed.stdout + completed.stderr)
+        self.assertEqual(self.log_entries(), [])
 
     def test_paid_subscription_is_a_finding(self):
         self.assert_api_token_finding(
             "paid-subscription",
             "FINDING account-subscriptions 1 of 1 subscription(s)",
         )
+
+    def test_subscription_plan_ids_use_exact_endpoint_specific_allowlists(self):
+        for mode in (
+            "subscription-plan-near-match",
+            "subscription-plan-unknown",
+            "subscription-plan-wrong-endpoint",
+        ):
+            with self.subTest(mode=mode):
+                completed = self.run_api_token_audit(mode)
+                self.assertEqual(
+                    completed.returncode,
+                    1,
+                    completed.stderr + completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING account-subscriptions 1 of 1 subscription(s)",
+                    completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING user-subscriptions 1 of 1 subscription(s)",
+                    completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING zone-subscription[naranjo.online]",
+                    completed.stdout,
+                )
+
+    def test_documented_uppercase_account_free_plan_id_is_allowed(self):
+        completed = self.run_api_token_audit("subscription-plan-account-uppercase")
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
     def test_subscription_contract_and_external_flags_fail_closed(self):
         for field in ("is_contract", "externally_managed"):
@@ -543,6 +685,37 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
                         "FINDING zone-subscription[lidersea.com] the subscription is not a permanent zero-priced Free plan",
                         completed.stdout,
                     )
+
+    def test_every_non_paid_or_missing_subscription_state_fails_closed(self):
+        for state in (
+            "missing",
+            "Trial",
+            "Provisioned",
+            "AwaitingPayment",
+            "Cancelled",
+            "Failed",
+            "Expired",
+            "Unknown",
+        ):
+            with self.subTest(state=state):
+                completed = self.run_api_token_audit(f"subscription-state-{state}")
+                self.assertEqual(
+                    completed.returncode,
+                    1,
+                    completed.stderr + completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING account-subscriptions 1 of 1 subscription(s)",
+                    completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING user-subscriptions 1 of 1 subscription(s)",
+                    completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING zone-subscription[naranjo.online]",
+                    completed.stdout,
+                )
 
     def test_positive_billing_history_is_a_finding(self):
         self.assert_api_token_finding(
@@ -604,11 +777,93 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
             "FINDING auth-scope the token definition could not be read; add API Tokens Read",
         )
 
-    def test_broad_oauth_scope_is_a_finding(self):
-        completed = self.run_script("--profile", "audit_read", mode="broad-auth")
-        self.assertEqual(completed.returncode, 1)
-        self.assertRegex(completed.stdout, r"FINDING auth-scope 1 of \d+")
-        self.assertNotIn("zone.write", completed.stdout)
+    def test_token_identity_policy_shape_and_write_permissions_fail_closed(self):
+        cases = {
+            "token-id-mismatch": "FINDING auth-scope",
+            "token-policies-empty": "FINDING auth-scope",
+            "token-policy-deny-empty": "FINDING auth-scope",
+            "token-permission-groups-empty": "FINDING auth-scope",
+            "token-write-permission": "FINDING auth-scope",
+            "token-extra-read-permission": "FINDING auth-scope",
+        }
+        for mode, expected in cases.items():
+            with self.subTest(mode=mode):
+                self.assert_api_token_finding(mode, expected)
+
+    def test_old_future_expired_or_malformed_token_lifetime_fails_closed(self):
+        for mode in (
+            "token-issued-missing",
+            "token-issued-malformed",
+            "token-issued-future",
+            "token-issued-old",
+            "token-expires-missing",
+            "token-expires-malformed",
+            "token-expired",
+            "token-lifetime-long",
+            "token-not-before-future",
+            "token-not-before-malformed",
+        ):
+            with self.subTest(mode=mode):
+                self.assert_api_token_finding(mode, "FINDING auth-lifetime")
+
+    def test_wildcard_nested_extra_missing_or_malformed_resources_fail_closed(self):
+        for mode in (
+            "token-resource-wildcard-account",
+            "token-resource-wildcard-zone",
+            "token-resource-nested",
+            "token-resource-extra-account",
+            "token-resource-extra-zone",
+            "token-resource-extra-user",
+            "token-resource-missing-account",
+            "token-resource-missing-zone",
+            "token-resource-missing-user",
+            "token-resource-bad-value",
+        ):
+            with self.subTest(mode=mode):
+                completed = self.run_api_token_audit(mode)
+                self.assertEqual(
+                    completed.returncode,
+                    1,
+                    completed.stderr + completed.stdout,
+                )
+                self.assertIn("FINDING auth-resources", completed.stdout)
+                combined = completed.stdout + completed.stderr
+                for secret in (
+                    API_TOKEN,
+                    ACCOUNT_ID,
+                    ZONE_A_ID,
+                    ZONE_B_ID,
+                    USER_ID,
+                    OTHER_ACCOUNT_ID,
+                    OTHER_ZONE_ID,
+                    OTHER_USER_ID,
+                ):
+                    self.assertNotIn(secret, combined)
+
+    def test_exact_but_wrong_account_or_zone_resources_fail_after_resolution(self):
+        for mode in ("token-resource-other-account", "token-resource-other-zone"):
+            with self.subTest(mode=mode):
+                completed = self.run_api_token_audit(mode)
+                self.assertEqual(
+                    completed.returncode,
+                    1,
+                    completed.stderr + completed.stdout,
+                )
+                self.assertIn(
+                    "FINDING auth-resources the token resource identifiers do not exactly match",
+                    completed.stdout,
+                )
+                self.assertNotIn(OTHER_ACCOUNT_ID, completed.stdout + completed.stderr)
+                self.assertNotIn(OTHER_ZONE_ID, completed.stdout + completed.stderr)
+
+    def test_unexpected_tunnel_name_is_counted_without_disclosure(self):
+        completed = self.run_api_token_audit("unexpected-tunnel-name")
+        self.assertEqual(completed.returncode, 1, completed.stderr + completed.stdout)
+        self.assertIn(
+            "FINDING tunnel-inventory count=2 expected_present=1 unexpected=1",
+            completed.stdout,
+        )
+        self.assertNotIn(PRIVATE_TUNNEL_NAME, completed.stdout + completed.stderr)
 
     def test_repeated_pagination_fails_closed(self):
         completed = self.run_api_token_audit("repeat-page")
@@ -621,25 +876,17 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("zone-identity", completed.stdout)
 
-    def test_authentication_is_required_and_mixed_or_legacy_credentials_are_rejected(self):
+    def test_authentication_is_required_and_legacy_credentials_are_rejected(self):
         missing = self.run_script()
         self.assertEqual(missing.returncode, 2)
-        self.assertIn("set --profile NAME or a short-lived CLOUDFLARE_API_TOKEN", missing.stderr)
-
-        mixed = self.run_script(
-            "--profile",
-            "audit_read",
-            extra_env={"CLOUDFLARE_API_TOKEN": API_TOKEN},
-        )
-        self.assertEqual(mixed.returncode, 2)
-        self.assertIn("choose either --profile or CLOUDFLARE_API_TOKEN", mixed.stderr)
-        self.assertNotIn(API_TOKEN, mixed.stdout + mixed.stderr)
+        self.assertIn("set a short-lived CLOUDFLARE_API_TOKEN", missing.stderr)
 
         legacy_secret = "legacy-secret-must-not-appear"
         legacy = self.run_script(
-            "--profile",
-            "audit_read",
-            extra_env={"CF_API_TOKEN": legacy_secret},
+            extra_env={
+                "CLOUDFLARE_API_TOKEN": API_TOKEN,
+                "CF_API_TOKEN": legacy_secret,
+            },
         )
         self.assertEqual(legacy.returncode, 2)
         self.assertIn("unset CF_API_TOKEN", legacy.stderr)
@@ -707,8 +954,15 @@ class CloudflareAccountAuditSourceTests(unittest.TestCase):
         self.assertIn("[cf_bin, *arguments]", self.reader_source)
         self.assertIn('environment["CLOUDFLARE_API_TOKEN"] = api_token', self.reader_source)
 
+    def test_unschematized_profile_authentication_is_absent(self):
+        self.assertNotIn('"auth-whoami"', self.reader_source)
+        self.assertNotIn('"auth", "whoami"', self.reader_source)
+        self.assertNotIn('add_argument("--profile")', self.reader_source)
+        self.assertNotIn("CF_AUTH_MODE", self.shell_source)
+        self.assertNotIn("audit_profile_auth", self.shell_source)
+
     def test_api_token_value_is_never_interpolated_by_the_shell_or_put_in_argv(self):
-        self.assertEqual(self.shell_source.count('${CLOUDFLARE_API_TOKEN:-}'), 2)
+        self.assertEqual(self.shell_source.count('${CLOUDFLARE_API_TOKEN:-}'), 1)
         self.assertEqual(
             self.shell_source.count('CF_API_TOKEN_VALUE="${CLOUDFLARE_API_TOKEN}"'),
             1,
@@ -726,6 +980,110 @@ class CloudflareAccountAuditSourceTests(unittest.TestCase):
             with self.subTest(verb=verb):
                 self.assertNotIn(f'command.append("{verb}")', self.reader_source)
                 self.assertNotIn(f'command.extend(("{verb}"', self.reader_source)
+
+
+class CloudflareReaderGuardTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("cloudflare_cf_read_guards", READER)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("could not load the Cloudflare cf adapter")
+        cls.module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.module
+        spec.loader.exec_module(cls.module)
+
+    @classmethod
+    def tearDownClass(cls):
+        sys.modules.pop("cloudflare_cf_read_guards", None)
+
+    def test_schema_requires_method_body_and_exact_path(self):
+        operation = self.module.Operation(("zones", "list"), "/zones", "array")
+        cases = (
+            {"httpMethod": "POST", "path": "/zones", "hasRequestBody": False},
+            {"httpMethod": "GET", "path": "/zones", "hasRequestBody": True},
+            {"httpMethod": "GET", "path": "/other", "hasRequestBody": False},
+        )
+        for payload in cases:
+            with self.subTest(payload=payload), mock.patch.object(
+                self.module,
+                "run_process",
+                return_value=json.dumps(payload).encode("utf-8"),
+            ):
+                with self.assertRaises(self.module.AuditReadError):
+                    self.module.validate_schema("/usr/bin/false", operation, "/tmp")
+
+    def test_process_deadline_is_exactly_thirty_seconds(self):
+        completed = subprocess.CompletedProcess(
+            args=["/usr/bin/false"], returncode=0, stdout=b"{}", stderr=b""
+        )
+        with mock.patch.object(
+            self.module.subprocess, "run", return_value=completed
+        ) as run:
+            self.module.run_process(
+                "/usr/bin/false", ("--version",), scratch="/tmp"
+            )
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_process_rejects_oversized_stdout_and_stderr(self):
+        oversized = b"x" * (self.module.MAX_COMMAND_BYTES + 1)
+        for stdout, stderr in ((oversized, b""), (b"{}", oversized)):
+            completed = subprocess.CompletedProcess(
+                args=["/usr/bin/false"], returncode=0, stdout=stdout, stderr=stderr
+            )
+            with self.subTest(stream="stdout" if stdout is oversized else "stderr"), \
+                mock.patch.object(self.module.subprocess, "run", return_value=completed):
+                with self.assertRaisesRegex(
+                    self.module.AuditReadError, "5 MiB output limit"
+                ):
+                    self.module.run_process(
+                        "/usr/bin/false", ("zones", "list"), scratch="/tmp"
+                    )
+
+    def test_paginated_collection_has_total_size_and_page_count_bounds(self):
+        key = "guard-test-pages"
+        operation = self.module.Operation(("zones", "list"), "/zones", "array", True)
+        self.module.OPERATIONS[key] = operation
+        args = Namespace(account_id=None)
+        try:
+            large_pages = [
+                json.dumps(["a" * 3_000_000]).encode("utf-8"),
+                json.dumps(["b" * 3_000_000]).encode("utf-8"),
+            ]
+            with mock.patch.object(self.module, "validate_schema"), mock.patch.object(
+                self.module, "run_process", side_effect=large_pages
+            ):
+                with self.assertRaisesRegex(
+                    self.module.AuditReadError, "5 MiB total limit"
+                ):
+                    self.module.read_operation(
+                        "/usr/bin/false",
+                        key,
+                        args,
+                        "/tmp",
+                        api_token=API_TOKEN,
+                    )
+
+            def unique_page(_cf_bin, arguments, **_kwargs):
+                page = arguments[arguments.index("--page") + 1]
+                return json.dumps([page]).encode("utf-8")
+
+            with mock.patch.object(self.module, "validate_schema"), mock.patch.object(
+                self.module, "run_process", side_effect=unique_page
+            ) as run_process:
+                with self.assertRaisesRegex(
+                    self.module.AuditReadError, "100-page limit"
+                ):
+                    self.module.read_operation(
+                        "/usr/bin/false",
+                        key,
+                        args,
+                        "/tmp",
+                        api_token=API_TOKEN,
+                    )
+                self.assertEqual(run_process.call_count, self.module.MAX_PAGES)
+        finally:
+            self.module.OPERATIONS.pop(key, None)
 
 
 if __name__ == "__main__":

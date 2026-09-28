@@ -10,11 +10,12 @@
 # script reads exactly those facts through authenticated GET requests and
 # nothing else.
 #
-# CREDENTIAL HANDLING. The audit accepts exactly one explicit cf authentication
-# source: a named OAuth profile, or a short-lived API token in
+# CREDENTIAL HANDLING. The audit accepts only a just-in-time API token in
 # CLOUDFLARE_API_TOKEN. The token reaches cf only through its environment; it is
-# never accepted in argv, printed, or written to a file. Legacy keys, account
-# context, zone context, and mixed authentication are rejected.
+# never accepted in argv, printed, or written to a file. Only reduced non-secret
+# definition metadata is retained in the protected scratch directory long
+# enough to prove lifetime, read-only policy shape, and exact resource bounds.
+# Legacy keys and implicit account or zone context are rejected.
 #
 # OUTPUT IS REDACTED BY DEFAULT. Account, zone, Tunnel and connector
 # identifiers are replaced with stable short pseudonyms so two runs diff
@@ -79,15 +80,12 @@ WORKDIR=''
 CF_BIN=''
 CF_VERSION=''
 CF_BIN_DIGEST=''
-CF_PROFILE=''
-CF_AUTH_MODE=''
 CF_API_TOKEN_VALUE=''
 AUTH_READ=no
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/cloudflare-account-audit.sh --profile NAME [--raw]
   CLOUDFLARE_API_TOKEN=... scripts/cloudflare-account-audit.sh [--raw]
   scripts/cloudflare-account-audit.sh --self-test
   scripts/cloudflare-account-audit.sh --help
@@ -96,14 +94,14 @@ Read-only Cloudflare account/zone audit through Cloudflare's cf CLI. Owner-run
 only. Every provider request is schema-checked as GET with no request body; the
 script never creates, updates, deletes, plans, or applies anything.
 
-Authentication (choose exactly one):
-  --profile NAME          A dedicated named cf OAuth profile with the narrowest
-                          read-only scopes needed by this audit.
+Authentication:
   CLOUDFLARE_API_TOKEN    A short-lived read-only token supplied only through
                           the environment. A complete zero-charge proof needs
                           Billing Read and the resource read permissions used
                           by this audit. API Tokens Read is also required so the
-                          token's lifetime and permissions can be proved.
+                          token's issue time, expiry, policies, and exact account
+                          and zone resource bounds can be proved. Its total
+                          lifetime must be no more than 60 minutes.
 
 Options:
   --raw        Print real identifiers instead of stable pseudonyms. For the
@@ -130,8 +128,8 @@ What is audited (all read-only):
   * no Zero Trust private-network surface: no private routes, no WARP profile
   * DNS inventory: exactly one proxied apex CNAME per zone targeting its own
     Tunnel, no origin A/AAAA anywhere, and no unexpected record
-  * the selected cf credential: authenticated, valid, expiring, and read-only
-    as far as its reported OAuth scopes or token permission groups can prove
+  * the selected cf credential: authenticated, active, issued for no more than
+    60 minutes, read-only, and restricted to the audited account and two zones
 
 Exit codes: 0 all checks passed, 1 one or more findings, 2 usage or tooling
 error. A check that could not be completed counts as a finding.
@@ -225,82 +223,62 @@ select_authentication() {
     fi
   done
 
-  if [[ -n "${CF_PROFILE}" && -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
-    die 'choose either --profile or CLOUDFLARE_API_TOKEN, never both'
-  elif [[ -n "${CF_PROFILE}" ]]; then
-    [[ "${CF_PROFILE}" =~ ^[A-Za-z0-9_-]+$ ]] || die 'the cf profile name is malformed'
-    CF_AUTH_MODE=profile
-  elif [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+  if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
     (( ${#CLOUDFLARE_API_TOKEN} >= 20 && ${#CLOUDFLARE_API_TOKEN} <= 512 )) || \
       die 'CLOUDFLARE_API_TOKEN has an unsupported or unsafe format'
     [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] || \
       die 'CLOUDFLARE_API_TOKEN has an unsupported or unsafe format'
-    CF_AUTH_MODE=api-token
     CF_API_TOKEN_VALUE="${CLOUDFLARE_API_TOKEN}"
     unset CLOUDFLARE_API_TOKEN
   else
-    die 'set --profile NAME or a short-lived CLOUDFLARE_API_TOKEN for an account audit'
+    die 'set a short-lived CLOUDFLARE_API_TOKEN for an account audit'
   fi
 }
 
 cf_read() {
   local arguments=(--cf-bin "${CF_BIN}")
-  if [[ "${CF_AUTH_MODE}" == profile ]]; then
-    arguments+=(--profile "${CF_PROFILE}")
+  CLOUDFLARE_API_TOKEN="${CF_API_TOKEN_VALUE}" \
     python3 "${CF_READER}" "${arguments[@]}" "$@"
-  else
-    CLOUDFLARE_API_TOKEN="${CF_API_TOKEN_VALUE}" \
-      python3 "${CF_READER}" "${arguments[@]}" "$@"
-  fi
 }
 
 validate_cf_schemas() {
   python3 "${CF_READER}" --cf-bin "${CF_BIN}" --validate-schemas
 }
 
-audit_profile_auth() {
-  local whoami authenticated valid account_count scope_count non_read expiry
-  whoami="$(cf_read --operation auth-whoami 2>/dev/null || true)"
-  AUTH_READ=yes
-  if [[ -z "${whoami}" ]] || ! jq -e '.result | type == "object"' >/dev/null 2>&1 <<<"${whoami}"; then
-    finding 'auth the selected cf profile could not be verified; an audit never proceeds on unproven authentication'
-    return 1
-  fi
-  authenticated="$(jq -r '.result.authenticated // false | tostring' <<<"${whoami}")"
-  valid="$(jq -r '.result.tokenValid // false | tostring' <<<"${whoami}")"
-  account_count="$(jq -r '.result.accounts // [] | length' <<<"${whoami}")"
-  if [[ "${authenticated}" == true && "${valid}" == true && "${account_count}" -ge 1 ]]; then
-    ok "auth authenticated=true token_valid=true account_count=${account_count}"
-  else
-    finding "auth authenticated=${authenticated} token_valid=${valid} account_count=${account_count}"
-    return 1
-  fi
+validate_token_lifetime() {
+  python3 - "${WORKDIR}/token-definition.json" <<'PY'
+from datetime import datetime, timezone
+import json
+import sys
 
-  check
-  scope_count="$(jq -r '.result.scopes // [] | length' <<<"${whoami}")"
-  non_read="$(jq -r '[
-    .result.scopes[]? |
-    select((. == "openid" or . == "offline" or . == "offline_access" or . == "profile" or . == "email" or test("(^|[.:_-])read$"; "i")) | not)
-  ] | unique | length' <<<"${whoami}")"
-  if [[ "${scope_count}" -gt 0 && "${non_read}" == 0 ]]; then
-    ok "auth-scope all ${scope_count} reported OAuth scope(s) are read-only by name"
-  elif [[ "${scope_count}" == 0 ]]; then
-    finding 'auth-scope cf reported no OAuth scopes, so least privilege could not be verified'
-  else
-    finding "auth-scope ${non_read} of ${scope_count} reported OAuth scope(s) are not recognized read-only scopes; use a dedicated read-only profile"
-  fi
 
-  check
-  expiry="$(jq -r '.result.expiresAt // "" | tostring' <<<"${whoami}")"
-  if [[ -n "${expiry}" ]]; then
-    ok 'auth-expiry access-token expiry metadata is present; the OAuth profile persists through refresh until deleted'
-  else
-    finding 'auth-expiry cf reported no access-token expiry metadata'
-  fi
+def parse(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("missing timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    definition = json.load(stream)["result"]
+
+issued = parse(definition.get("issued_on"))
+expires = parse(definition.get("expires_on"))
+now = datetime.now(timezone.utc)
+lifetime = (expires - issued).total_seconds()
+if not (issued <= now < expires and 0 < lifetime <= 3600):
+    raise SystemExit(1)
+not_before = definition.get("not_before")
+if not_before is not None and not (parse(not_before) <= now < expires):
+    raise SystemExit(1)
+PY
 }
 
 audit_api_token_auth() {
-  local verify detail token_id status non_read permission_count expiry expiry_epoch now_epoch
+  local verify detail token_id status permission_count invalid_policy exact_permissions
   verify="$(cf_read --operation user-token-verify 2>/dev/null || true)"
   AUTH_READ=yes
   if [[ -z "${verify}" ]] || ! jq -e '.result | type == "object"' >/dev/null 2>&1 <<<"${verify}"; then
@@ -317,40 +295,97 @@ audit_api_token_auth() {
 
   check
   detail="$(cf_read --operation user-token-get --token-id "${token_id}" 2>/dev/null || true)"
-  if [[ -z "${detail}" ]] || ! jq -e '.result | type == "object"' >/dev/null 2>&1 <<<"${detail}"; then
+  if [[ -z "${detail}" ]] || ! jq -e --arg id "${token_id}" \
+    '.result | type == "object" and .id == $id' >/dev/null 2>&1 <<<"${detail}"; then
     finding 'auth-scope the token definition could not be read; add API Tokens Read so least privilege can be proved'
-    return 0
+    return 1
   fi
-  permission_count="$(jq -r '[.result.policies[]?.permission_groups[]?] | length' <<<"${detail}")"
-  non_read="$(jq -r '[
-    .result.policies[]? as $policy |
-    $policy.permission_groups[]? |
-    select(($policy.effect // "allow") != "allow" or ((.name // "") | test(" Read$") | not))
+  if ! jq -c '{result: (.result | {id, issued_on, expires_on, not_before, policies})}' \
+    <<<"${detail}" >"${WORKDIR}/token-definition.json"; then
+    finding 'auth-scope the token definition could not be reduced safely'
+    return 1
+  fi
+  invalid_policy="$(jq -r '[
+    .result.policies[]? |
+    select(
+      .effect != "allow" or
+      (.permission_groups | type) != "array" or
+      (.permission_groups | length) == 0 or
+      ([.permission_groups[] | select((.name | type) != "string" or (.name | test(" Read$") | not))] | length) != 0 or
+      (.resources | type) != "object" or
+      (.resources | length) == 0
+    )
   ] | length' <<<"${detail}")"
-  if [[ "${permission_count}" -gt 0 && "${non_read}" == 0 ]]; then
-    ok "auth-scope all ${permission_count} token permission group(s) are read-only"
+  permission_count="$(jq -r '[.result.policies[]?.permission_groups[]?.name] | unique | length' <<<"${detail}")"
+  exact_permissions="$(jq -r '
+    ([.result.policies[]?.permission_groups[]?.name] | unique | sort) ==
+    ([
+      "API Tokens Read",
+      "Billing Read",
+      "Cloudflare Tunnel Read",
+      "DNS Read",
+      "SSL and Certificates Read",
+      "Zero Trust Read",
+      "Zone Read",
+      "Zone Settings Read"
+    ] | sort)
+  ' <<<"${detail}")"
+  if jq -e '.result.policies | type == "array" and length > 0' >/dev/null 2>&1 <<<"${detail}" && \
+    [[ "${permission_count}" == 8 && "${invalid_policy}" == 0 && "${exact_permissions}" == true ]]; then
+    ok 'auth-scope the token has exactly the 8 reviewed allow-only Read permission groups'
   else
-    finding "auth-scope permission_groups=${permission_count} non_read=${non_read}; the token must contain only allow rules for Read permissions"
+    finding "auth-scope permission_groups=${permission_count} invalid_policies=${invalid_policy} exact_reviewed_set=${exact_permissions}; require exactly the reviewed allow-only Read permissions"
+    return 1
   fi
 
   check
-  expiry="$(jq -r '.result.expires_on // ""' <<<"${detail}")"
-  expiry_epoch="$(jq -r 'try (.result.expires_on | fromdateiso8601) catch 0' <<<"${detail}")"
-  now_epoch="$(date -u +%s)"
-  if [[ -n "${expiry}" && "${expiry_epoch}" =~ ^[0-9]+$ && "${expiry_epoch}" -gt "${now_epoch}" && $(( expiry_epoch - now_epoch )) -le 3600 ]]; then
-    ok 'auth-expiry the API token expires within 60 minutes'
+  if validate_token_lifetime >/dev/null 2>&1; then
+    ok 'auth-lifetime the API token is active now and its issued-to-expiry lifetime is at most 60 minutes'
   else
-    finding 'auth-expiry the API token must carry a valid expiry no more than 60 minutes from now'
+    finding 'auth-lifetime require valid issued_on/expires_on timestamps, current activation, and a total lifetime no more than 60 minutes'
+    return 1
+  fi
+
+  check
+  if jq -e '
+    [.result.policies[] | .resources | to_entries[]] as $entries |
+    ([$entries[].key] | unique) as $keys |
+    ($entries | all((.value | type) == "string" and .value == "*")) and
+    ($keys | length) == 4 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.account\\.[0-9a-f]{32}$"))] | length) == 1 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.account\\.zone\\.[0-9a-f]{32}$"))] | length) == 2 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.user\\.[0-9a-f]{32}$"))] | length) == 1
+  ' "${WORKDIR}/token-definition.json" >/dev/null 2>&1; then
+    ok 'auth-resources token definition has one exact account, two exact zones, and one exact user resource'
+  else
+    finding 'auth-resources require flat exact resources for one account, two zones, and one user; wildcard, nested, extra, or missing resources are forbidden'
+    return 1
   fi
 }
 
 audit_auth() {
   check
-  if [[ "${CF_AUTH_MODE}" == profile ]]; then
-    audit_profile_auth
-  else
-    audit_api_token_auth
+  audit_api_token_auth
+}
+
+audit_api_token_resources() {
+  local account_id="$1" zone_a_id="$2" zone_b_id="$3"
+  local account_key zone_a_key zone_b_key
+  account_key="com.cloudflare.api.account.${account_id}"
+  zone_a_key="com.cloudflare.api.account.zone.${zone_a_id}"
+  zone_b_key="com.cloudflare.api.account.zone.${zone_b_id}"
+  check
+  if jq -e --arg account "${account_key}" --arg zone_a "${zone_a_key}" --arg zone_b "${zone_b_key}" '
+    [.result.policies[] | .resources | keys[]] | unique as $keys |
+    [$keys[] | select(test("^com\\.cloudflare\\.api\\.user\\.[0-9a-f]{32}$"))] as $users |
+    ($users | length) == 1 and
+    ($keys | sort) == ([$account, $zone_a, $zone_b, $users[0]] | sort)
+  ' "${WORKDIR}/token-definition.json" >/dev/null 2>&1; then
+    ok 'auth-resources the token is restricted to this account, both audited zones, and its exact user resource'
+    return 0
   fi
+  finding 'auth-resources the token resource identifiers do not exactly match this account and both audited zones'
+  return 1
 }
 
 # Resolve one zone by name. Echoes "<zone_id> <account_id>" and prints nothing
@@ -366,16 +401,21 @@ zone_identity() {
 }
 
 audit_subscription_result() {
-  local label="$1" response="$2" disallowed total
+  local label="$1" response="$2" expected_plan_ids_json="$3" disallowed total
   total="$(jq -r '.result | length' <<<"${response}")"
-  disallowed="$(jq -r '[.result[]? | select(
-    ((.price | type) != "number") or (.price != 0) or
-    (((.rate_plan.id // .rate_plan.public_name // .rate_plan.name // "") | test("free"; "i")) | not) or
-    ((.trial // false) != false) or
-    (.rate_plan.is_contract != false) or
-    (.rate_plan.externally_managed != false) or
-    ((.state // "") | test("trial|awaiting"; "i"))
-  )] | length' <<<"${response}")"
+  disallowed="$(jq -r --argjson expected_plan_ids "${expected_plan_ids_json}" '[
+    .result[]? |
+    .rate_plan.id as $plan_id |
+    select(
+      ((.price | type) != "number") or (.price != 0) or
+      (($plan_id | type) != "string") or
+      (($expected_plan_ids | index($plan_id)) == null) or
+      ((.trial // false) != false) or
+      (.rate_plan.is_contract != false) or
+      (.rate_plan.externally_managed != false) or
+      (.state != "Paid")
+    )
+  ] | length' <<<"${response}")"
   if [[ "${disallowed}" == 0 ]]; then
     ok "${label} all ${total} subscription(s) are permanent, zero-priced Free plans"
   else
@@ -391,7 +431,7 @@ audit_account_subscriptions() {
     finding 'account-subscriptions the subscription inventory could not be read completely'
     return 0
   fi
-  audit_subscription_result account-subscriptions "${response}"
+  audit_subscription_result account-subscriptions "${response}" '["teams_free","TEAMS_FREE"]'
 }
 
 audit_user_subscriptions() {
@@ -402,7 +442,7 @@ audit_user_subscriptions() {
     finding 'user-subscriptions the user-level subscription inventory could not be read'
     return 0
   fi
-  audit_subscription_result user-subscriptions "${response}"
+  audit_subscription_result user-subscriptions "${response}" '["free"]'
 }
 
 audit_billing_coverage() {
@@ -557,12 +597,12 @@ audit_zone_plan() {
     return 0
   fi
   if jq -e '
-    ((.result.rate_plan.id // .result.rate_plan.public_name // .result.rate_plan.name // "") | test("free"; "i")) and
+    (.result.rate_plan.id == "free") and
     (.result.price | type) == "number" and .result.price == 0 and
     ((.result.trial // false) == false) and
     (.result.rate_plan.is_contract == false) and
     (.result.rate_plan.externally_managed == false) and
-    (((.result.state // "") | test("trial|awaiting"; "i")) | not)
+    (.result.state == "Paid")
   ' >/dev/null <<<"${subscription}"; then
     ok "zone-subscription[${name}] permanent Free plan price=0"
   else
@@ -652,7 +692,7 @@ audit_dnssec() {
 }
 
 audit_tunnels() {
-  local account_id="$1" response count names
+  local account_id="$1" response count expected unexpected
   check
   response="$(cf_read --operation tunnels-list --account-id "${account_id}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
@@ -662,11 +702,12 @@ audit_tunnels() {
   fi
   printf '%s\n' "${response}" >"${WORKDIR}/tunnels.json"
   count="$(jq -r '.result | length' <<<"${response}")"
-  names="$(jq -r '[.result[].name] | sort | join(",")' <<<"${response}")"
-  if [[ "${count}" == 2 && "${names}" == "${TUNNEL_B},${TUNNEL_A}" ]]; then
-    ok "tunnel-inventory exactly the two expected per-site Tunnels exist (${names})"
+  expected="$(jq -r --arg a "${TUNNEL_A}" --arg b "${TUNNEL_B}" '[.result[]? | select(.name == $a or .name == $b)] | length' <<<"${response}")"
+  unexpected="$(jq -r --arg a "${TUNNEL_A}" --arg b "${TUNNEL_B}" '[.result[]? | select(.name != $a and .name != $b)] | length' <<<"${response}")"
+  if [[ "${count}" == 2 && "${expected}" == 2 && "${unexpected}" == 0 ]]; then
+    ok "tunnel-inventory exactly the two expected per-site Tunnels exist (${TUNNEL_A},${TUNNEL_B})"
   else
-    finding "tunnel-inventory count=${count} names=${names} expected exactly ${TUNNEL_A} and ${TUNNEL_B}"
+    finding "tunnel-inventory count=${count} expected_present=${expected} unexpected=${unexpected}; expected exactly ${TUNNEL_A} and ${TUNNEL_B}"
   fi
 }
 
@@ -876,7 +917,7 @@ run_audit() {
   printf 'generated_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'cf_version=%s\n' "${CF_VERSION}"
   printf 'cf_executable_sha256=%s\n' "${CF_BIN_DIGEST}"
-  printf 'cf_auth=%s\n' "$([[ "${CF_AUTH_MODE}" == profile ]] && printf named-profile || printf api-token-env)"
+  printf 'cf_auth=api-token-env\n'
   printf 'mode=%s\n' "$([[ "${RAW}" == yes ]] && printf raw || printf redacted)"
   if [[ "${RAW}" == yes ]]; then
     printf '\n!! RAW MODE: the output below contains real Cloudflare identifiers.\n'
@@ -909,6 +950,12 @@ run_audit() {
     ok "zone-identity account=$(redact "${account_id}") zones=$(redact "${zone_a_id}"),$(redact "${zone_b_id}")"
   else
     finding 'zone-identity the two zones live in different accounts; the account-level checks below cover only the first'
+    printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
+    return 1
+  fi
+  if ! audit_api_token_resources "${account_id}" "${zone_a_id}" "${zone_b_id}"; then
+    printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
+    return 1
   fi
 
   printf '\n## zero spend\n'
@@ -943,7 +990,7 @@ run_audit() {
   printf '%s\n' \
     '- the two Registrar renewals, identified separately from infrastructure' \
     '- account members and their passkey/MFA posture' \
-    '- credentials other than the exact profile or token used for this run'
+    '- credentials other than the exact API token used for this run'
 
   printf '\nRESULT schema=%s checks=%s findings=%s exit=%s\n' \
     "${SCHEMA}" "${CHECKS}" "${FINDINGS}" "$(( FINDINGS > 0 ? 1 : 0 ))"
@@ -958,11 +1005,6 @@ main() {
     case "$1" in
       --raw) RAW=yes ;;
       --self-test) mode=self-test ;;
-      --profile)
-        (( $# >= 2 )) || die '--profile requires a name'
-        CF_PROFILE="$2"
-        shift ;;
-      --profile=*) CF_PROFILE="${1#--profile=}" ;;
       -h|--help) usage; return 0 ;;
       *) usage >&2; die "unknown argument: $1" ;;
     esac

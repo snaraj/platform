@@ -34,7 +34,6 @@ HEX_ID = re.compile(r"^[0-9a-f]{32}$")
 TUNNEL_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-PROFILE = re.compile(r"^[A-Za-z0-9_-]+$")
 API_TOKEN = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
 ZONE_NAME = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 SETTING_IDS = frozenset(
@@ -155,8 +154,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--cf-bin", required=True)
     result.add_argument("--validate-schemas", action="store_true")
-    result.add_argument("--operation", choices=("auth-whoami", *OPERATIONS))
-    result.add_argument("--profile")
+    result.add_argument("--operation", choices=tuple(OPERATIONS))
     result.add_argument("--account-id")
     result.add_argument("--zone-id")
     result.add_argument("--zone-name")
@@ -185,12 +183,11 @@ def minimal_environment(
     account_id: str | None,
     scratch: str,
     *,
-    profile_mode: bool = False,
     api_token: str | None = None,
 ) -> dict[str, str]:
     environment = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
-        "HOME": os.environ.get("HOME", "") if profile_mode else scratch,
+        "HOME": scratch,
         "TMPDIR": scratch,
         "DO_NOT_TRACK": "1",
         "CF_SEND_TELEMETRY": "false",
@@ -200,10 +197,7 @@ def minimal_environment(
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     }
-    if profile_mode and os.environ.get("XDG_CONFIG_HOME"):
-        environment["XDG_CONFIG_HOME"] = os.environ["XDG_CONFIG_HOME"]
-    elif not profile_mode:
-        environment["XDG_CONFIG_HOME"] = scratch
+    environment["XDG_CONFIG_HOME"] = scratch
     if api_token is not None:
         environment["CLOUDFLARE_API_TOKEN"] = api_token
     if account_id is not None:
@@ -217,16 +211,13 @@ def run_process(
     *,
     account_id: str | None = None,
     scratch: str,
-    profile_mode: bool = False,
     api_token: str | None = None,
 ) -> bytes:
     try:
         completed = subprocess.run(
             [cf_bin, *arguments],
             cwd=scratch,
-            env=minimal_environment(
-                account_id, scratch, profile_mode=profile_mode, api_token=api_token
-            ),
+            env=minimal_environment(account_id, scratch, api_token=api_token),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -280,23 +271,17 @@ def validate_schema(cf_bin: str, operation: Operation, scratch: str) -> dict[str
     return schema
 
 
-def validate_inputs(args: argparse.Namespace) -> tuple[bool, str | None]:
+def validate_inputs(args: argparse.Namespace) -> str | None:
     if args.validate_schemas:
         if args.operation is not None:
             raise AuditReadError("choose schema validation or one operation")
-        return False, None
+        return None
     if args.operation is None:
         raise AuditReadError("an operation is required")
 
     api_token = api_token_from_environment()
-    profile_mode = args.profile is not None
-    if profile_mode == (api_token is not None):
-        raise AuditReadError("select exactly one authentication source")
-    if profile_mode:
-        validate_identifier(args.profile, PROFILE, "profile")
-
-    if args.operation == "auth-whoami" and not profile_mode:
-        raise AuditReadError("auth-whoami requires a named profile")
+    if api_token is None:
+        raise AuditReadError("live operations require CLOUDFLARE_API_TOKEN")
     if args.operation in {"user-token-verify", "user-token-get"} and api_token is None:
         raise AuditReadError("token inspection requires CLOUDFLARE_API_TOKEN")
 
@@ -355,15 +340,12 @@ def validate_inputs(args: argparse.Namespace) -> tuple[bool, str | None]:
     elif args.token_id is not None:
         raise AuditReadError("token id is not valid for this operation")
 
-    return profile_mode, api_token
+    return api_token
 
 
 def command_arguments(
     key: str, args: argparse.Namespace, *, page: int | None = None
 ) -> tuple[list[str], str | None]:
-    if key == "auth-whoami":
-        return ["auth", "whoami", "--profile", args.profile], None
-
     operation = OPERATIONS[key]
     command = list(operation.command)
     account_id = args.account_id
@@ -399,8 +381,6 @@ def command_arguments(
         if page is None:
             raise AuditReadError("internal pagination state is missing")
         command.extend(("--per-page", str(PAGE_SIZE), "--page", str(page)))
-    if args.profile is not None:
-        command.extend(("--profile", args.profile))
     return command, account_id
 
 
@@ -410,22 +390,8 @@ def read_operation(
     args: argparse.Namespace,
     scratch: str,
     *,
-    profile_mode: bool,
     api_token: str | None,
 ) -> Any:
-    if key == "auth-whoami":
-        command, account_id = command_arguments(key, args)
-        return parse_json(
-            run_process(
-                cf_bin,
-                command,
-                account_id=account_id,
-                scratch=scratch,
-                profile_mode=True,
-            ),
-            "object",
-        )
-
     operation = OPERATIONS[key]
     validate_schema(cf_bin, operation, scratch)
     if not operation.paginated:
@@ -436,7 +402,6 @@ def read_operation(
                 command,
                 account_id=account_id,
                 scratch=scratch,
-                profile_mode=profile_mode,
                 api_token=api_token,
             ),
             operation.result_type,
@@ -452,7 +417,6 @@ def read_operation(
                 command,
                 account_id=account_id,
                 scratch=scratch,
-                profile_mode=profile_mode,
                 api_token=api_token,
             ),
             "array",
@@ -474,7 +438,7 @@ def read_operation(
 def main() -> int:
     args = parser().parse_args()
     try:
-        profile_mode, api_token = validate_inputs(args)
+        api_token = validate_inputs(args)
         cf_path = Path(args.cf_bin)
         if not cf_path.is_absolute() or not cf_path.is_file() or not os.access(cf_path, os.X_OK):
             raise AuditReadError("cf executable is unavailable")
@@ -507,7 +471,6 @@ def main() -> int:
                     args.operation,
                     args,
                     scratch,
-                    profile_mode=profile_mode,
                     api_token=api_token,
                 )
                 print(json.dumps({"result": result}, separators=(",", ":")))

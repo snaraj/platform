@@ -115,15 +115,21 @@ the owner. In order:
 Regular review, cybersecurity review, live validation, and security validation
 use Cloudflare's `cf` CLI for authenticated Cloudflare account state. Run
 `scripts/cloudflare-account-audit.sh` for this repository's full account
-baseline. It requires one explicit short-lived read-only cf credential: a named
-profile, or an API token supplied only through `CLOUDFLARE_API_TOKEN`. A complete
-zero-charge verdict requires Billing Read in addition to the resource reads.
-API-token mode also requires API Tokens Read so the audit can prove that the
-token is short-lived and read-only. The audit pins the reviewed `cf` beta, validates every
-command through `cf schema` as GET with no request body, pages collections to
-exhaustion, and emits redacted facts. Missing billing access, missing monetary
-fields, incomplete pagination, or ambiguous pricing is a finding rather than a
-zero-charge pass.
+baseline. It requires one just-in-time read-only API token supplied only through
+`CLOUDFLARE_API_TOKEN`; named profiles are rejected because `cf auth whoami` has
+no schema-backed request contract. A complete zero-charge verdict requires
+Billing Read in addition to the resource reads. API Tokens Read is also required
+so the audit can prove the token's issue time, expiry, allow-only Read policies,
+and exact account and zone resource bounds. The token's total lifetime may not
+exceed 60 minutes. The audit pins the reviewed `cf` beta, validates every
+provider command through `cf schema` as GET with no request body, pages
+collections to exhaustion, and emits redacted facts. Missing billing access,
+missing monetary fields, incomplete pagination, or ambiguous pricing is a
+finding rather than a zero-charge pass. Subscription plan IDs must exactly
+match the endpoint allowlist: `teams_free` for the account and `free` for
+user-owned and directly queried zone subscriptions. The account endpoint's
+documented uppercase `TEAMS_FREE` response form is also accepted.
+Unknown and lookalike IDs fail closed.
 
 For a new Cloudflare fact, discover the command with an anonymous
 `cf cli search` query, inspect only that command's help, and validate its schema
