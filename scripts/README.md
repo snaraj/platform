@@ -23,6 +23,14 @@ commands, evidence and recovery. Live actions require owner authorization.
 Private inputs and observations stay outside Git, CI and PRs. Missing evidence
 or an interrupted operation requires inspection before further changes.
 
-`cloudflare-account-audit.sh` provides owner-run read-only provider inspection;
-`edge-probe.sh` checks the approved public edges. Tunnel credential rotation and
-validation are separate from application promotion.
+`cloudflare-account-audit.sh` provides owner-run, redacted provider inspection
+through a pinned Cloudflare `cf` CLI and exactly one explicit read-only
+credential: a named profile or a short-lived API token in
+`CLOUDFLARE_API_TOKEN`. A complete zero-charge verdict requires Billing Read;
+API-token mode also requires API Tokens Read so the token's lifetime and
+permissions can be proved. The audit covers subscriptions, current-period cost,
+billing history, unpaid invoices, debt, and certificate products; denied or
+ambiguous billing evidence fails closed. It schema-checks its fixed command
+allowlist before authenticated reads and pages collections to exhaustion.
+`edge-probe.sh` separately checks the approved public edges. Tunnel credential
+rotation and validation are separate from application promotion.

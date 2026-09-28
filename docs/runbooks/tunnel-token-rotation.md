@@ -29,8 +29,8 @@ installed. Compromise response rotates first, force-disconnects every existing
 connection, and accepts downtime while trusted connectors receive the new
 token. Physical or trusted-LAN recovery is the admin-path fallback.
 
-Never place either Tunnel token or the API bearer used for rotation in a command
-line, shell history, Git, chat, logs, an unprotected operational artifact.
+Never place either Tunnel token or the short-lived cf credential used for
+rotation in a command line, shell history, Git, chat, logs, or an unprotected operational artifact.
 Use a protected file or process-local environment, disable shell tracing, and
 clear it immediately afterward.
 
@@ -57,20 +57,24 @@ connector's `values.yaml` key; the other is the PEER. `pi-websites` is denied.
    so it drains and replaces) and run public, terminal-404, origin-denial tests.
 4. Prove the peer untouched: its Secret's `resourceVersion` and
    `creationTimestamp` still equal step 1's, its Deployment still healthy.
-5. Confirm the Cloudflare Tunnel `<site>` shows no old-token connector, then
-   delete the protected old-token file. Never restore it: preserve admin
-   recovery, stop that site's rollout, and rotate again for a different token.
+5. Use `cf tunnels connections list` only after `cf schema tunnels connections
+   list` proves its bodyless `GET`, then confirm `<site>` shows no old-token
+   connector. Delete the protected old-token file. Never restore it: preserve
+   admin recovery, stop that site's rollout, and rotate again for a different token.
 
 Compromise of one `<site>` token: do step 1, then force-disconnect that one
-Tunnel's connections with the dashboard control or a short-lived API token
-holding exactly the connector-write permission —
-`DELETE /accounts/<ACCOUNT_ID>/cfd_tunnel/<TUNNEL_ID>/connections`, whose
-`<TUNNEL_ID>` is the UUID of the Cloudflare Tunnel named `<site>` and never
-anything resolved from the `<site>-tunnel` Deployment. Never put either bearer
-in the URL or command line. That site takes downtime because every old-token
-connector, a malicious one included, otherwise stays active; the peer keeps
-serving. Then do steps 2 to 5, revoke the API token against non-secret
-revocation evidence, and never restore the compromised token.
+Tunnel's connections with `cf tunnels connections cleanup <tunnel-id>`. Before
+the separately authorized mutation, inspect that command's help and require
+`cf schema tunnels connections cleanup` to show the reviewed bodyless `DELETE`;
+use `--dry-run` to bind the exact account and Tunnel, then execute once with
+`--force`. The short-lived cf credential holds exactly the connector-write
+permission and reaches cf through its environment, never argv. `<tunnel-id>` is
+the UUID of the Cloudflare Tunnel named `<site>` and never anything resolved
+from the `<site>-tunnel` Deployment. That site takes downtime because every
+old-token connector, a malicious one included, otherwise stays active; the peer
+keeps serving. Then do steps 2 to 5, revoke the cf credential against non-secret
+revocation evidence, and never restore the compromised token. The runbook does
+not itself authorize the DELETE.
 
 ## Admin connector — routine rotation
 
@@ -93,15 +97,16 @@ revocation evidence, and never restore the compromised token.
 ## Admin connector — suspected or confirmed compromise
 
 1. Retain physical/LAN recovery, rotate only `pi-admin`, and immediately
-   force-disconnect all of its existing connections using the same protected
-   dashboard/API procedure. Accept loss of remote administration during repair.
+   force-disconnect all of its existing connections using the same reviewed
+   `cf tunnels connections cleanup` procedure. Accept loss of remote
+   administration during repair.
 2. No repository host-token installation path exists. Stop the unit and use
    physical/LAN recovery until a new credential-replacement and verification
    transaction has been independently reviewed; do not bypass this boundary.
 3. Through that reviewed transaction, atomically install the new root-owned
    credential, restart `pi-admin`, and run every WARP and
    control-plane-stopped test before relying on it.
-4. Revoke the short-lived API token, remove protected copies of the compromised
+4. Revoke the short-lived cf credential, remove protected copies of the compromised
    Tunnel token, and prove both public connectors are unchanged. Never restore
    a compromised token.
 

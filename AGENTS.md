@@ -110,6 +110,34 @@ the owner. In order:
 - Use official upstream documentation to revalidate versions, schemas,
   entitlements, and billing immediately before any external change.
 
+### Cloudflare account evidence
+
+Regular review, cybersecurity review, live validation, and security validation
+use Cloudflare's `cf` CLI for authenticated Cloudflare account state. Run
+`scripts/cloudflare-account-audit.sh` for this repository's full account
+baseline. It requires one explicit short-lived read-only cf credential: a named
+profile, or an API token supplied only through `CLOUDFLARE_API_TOKEN`. A complete
+zero-charge verdict requires Billing Read in addition to the resource reads.
+API-token mode also requires API Tokens Read so the audit can prove that the
+token is short-lived and read-only. The audit pins the reviewed `cf` beta, validates every
+command through `cf schema` as GET with no request body, pages collections to
+exhaustion, and emits redacted facts. Missing billing access, missing monetary
+fields, incomplete pagination, or ambiguous pricing is a finding rather than a
+zero-charge pass.
+
+For a new Cloudflare fact, discover the command with an anonymous
+`cf cli search` query, inspect only that command's help, and validate its schema
+before adding it to the audit's allowlist. Never put a domain, email, account or
+resource identifier, or token in the search query. If `cf` lacks the read or
+cannot prove collection completeness, record the evidence gap; do not fall
+back silently to Wrangler, a raw API request, the dashboard, or a Cloudflare
+MCP tool.
+
+This rule governs provider account state. `scripts/edge-probe.sh` still proves
+public HTTP/DNS/TLS behavior, `cloudflared` still proves connector runtime,
+WARP proves client state, and Kubernetes or host checks prove their own layers.
+No read-only command or review receipt grants Cloudflare mutation authority.
+
 `kubeadm reset` is destructive, performs incomplete cleanup, and is never an
 upgrade or rollback procedure. If discovery finds stale K3s state, do not run
 its uninstall script; stop for a reviewed backup and migration decision.
