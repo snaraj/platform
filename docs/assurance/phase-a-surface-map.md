@@ -22,7 +22,7 @@ marked *(inference)* with the evidence that would prove them.
 | 11 | Flux GitOps | `kubernetes/flux-system` render, source/kustomization objects, `.sourceignore` | rendered + policy-tested, suspended |
 | 12 | Website workload contracts | `kubernetes/websites/*` (HelmRelease/OCIRepository/quotas/policies) | rendered + policy-tested, suspended |
 | 13 | Runtime admission | Kyverno retired; bootstrap-owned release-selector VAP only | exact narrow control |
-| 14 | Cloudflare edge (tunnel, DNS, zones) | `scripts/cloudflare-account-audit.sh`, `scripts/edge-probe.sh` and per-site connector policy | owner-authorized account audit and public-edge validation |
+| 14 | Cloudflare edge (tunnel, DNS, zones) | `scripts/cloudflare-account-audit.sh`, `scripts/edge-probe.sh` and per-site connector policy | owner-authorized `cf` account audit and public-edge validation |
 | 15 | GitHub Actions + GHCR | `.github/workflows/*`, pinned tooling, coverage/badges lanes in site repos | live |
 | 16 | Operator recovery + runbooks | `docs/runbooks/*` | retrained 2026-08-10 |
 | 17 | Evidence validators for the successor live gate | `validate_flux_release_evidence.py`, `validate_runtime_inventory_evidence.py` | executable, unit-tested |

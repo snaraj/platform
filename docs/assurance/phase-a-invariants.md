@@ -14,9 +14,9 @@ the platform contract; S3 = drift that misleads operators.
 
 | ID | Invariant | Checker | Evidence | Sev | Remediation |
 | --- | --- | --- | --- | --- | --- |
-| PLAT-COST-001 | Cloudflare products remain within the reviewed zero-spend allowlist | `scripts/cloudflare-account-audit.sh`; ADR 0006 | Fresh owner-run read-only audit; credential-free CI cannot prove provider state | S1 | owner |
+| PLAT-COST-001 | Cloudflare products remain within the reviewed zero-spend allowlist | `scripts/cloudflare-account-audit.sh`; ADR 0006 | Fresh owner-run, schema-checked `cf` audit proves permanent zero-price subscriptions, zero current-period cost, zero invoice/debt amounts, and free certificate products; denied or ambiguous billing evidence is a finding | S1 | owner |
 | PLAT-COST-002 | No paid GitHub feature: public repos, free runners, GHCR public pulls | repo settings are owner-controlled; CI asserts nothing pulls with credentials (`persist-credentials: false` and SHA pins enforced by `scripts/validate_repository.py` `check_workflows`) | CI PASS | S1 | owner |
-| PLAT-COST-003 | Registrar renewals are the only authorized charges; unknown billing = NO-GO | documented law (`README.md`, `docs/runbooks/public-launch.md`); no executable probe can exist without credentials — GAP accepted, owner audits billing UI | owner attestation | S1 | owner |
+| PLAT-COST-003 | Registrar renewals are the only authorized charges; unknown billing = NO-GO | documented law (`README.md`, `docs/runbooks/public-launch.md`); the cf audit reports any positive billing-history item for owner reconciliation and never treats it as infrastructure zero-spend | owner attestation plus fresh cf audit | S1 | owner |
 
 ## Supply chain and release identity
 

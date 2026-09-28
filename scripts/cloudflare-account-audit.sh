@@ -10,13 +10,12 @@
 # script reads exactly those facts through authenticated GET requests and
 # nothing else.
 #
-# CREDENTIAL HANDLING. The token is read from CF_API_TOKEN in the environment
-# only. It is never accepted as an argument, never echoed, never written to a
-# file, never placed in a URL, and never passed through argv: it reaches curl
-# through a configuration document on stdin, so it cannot appear in the process
-# table. Shell tracing and history are disabled at the top of this file, and
-# the variable is un-exported before any subprocess runs, so no child process
-# inherits it.
+# CREDENTIAL HANDLING. The audit accepts only a just-in-time API token in
+# CLOUDFLARE_API_TOKEN. The token reaches cf only through its environment; it is
+# never accepted in argv, printed, or written to a file. Only reduced non-secret
+# definition metadata is retained in the protected scratch directory long
+# enough to prove lifetime, read-only policy shape, and exact resource bounds.
+# Legacy keys and implicit account or zone context are rejected.
 #
 # OUTPUT IS REDACTED BY DEFAULT. Account, zone, Tunnel and connector
 # identifiers are replaced with stable short pseudonyms so two runs diff
@@ -26,19 +25,21 @@
 # are 128-bit random identifiers, so a pseudonym discloses nothing. --raw
 # prints real identifiers for the owner's eyes only and says so loudly.
 #
-# FAIL CLOSED. Any transport failure, non-2xx status, unsuccessful API
-# envelope, truncated collection, or unexpected schema is a finding that fails
-# the run. An unknown answer is never a pass.
+# FAIL CLOSED. Every allowlisted cf command is checked against `cf schema`
+# before use and must remain a GET with no body at its reviewed path. Transport
+# failure, malformed JSON, a repeated or unbounded page, or unexpected schema
+# is a finding that fails the run. An unknown answer is never a pass.
 set -Eeuo pipefail
 set +x
 set +o history
 
-# The API version is pinned here deliberately. Cloudflare versions its REST API
-# in the path; a floating base would let a schema change silently alter what
-# these assertions mean.
-readonly API_BASE='https://api.cloudflare.com/client/v4'
-readonly SCHEMA='cloudflare-account-audit/1'
+# The adapter pins both the cf beta and every API path. A cf upgrade fails
+# closed until its generated schema and output behavior receive review.
+readonly SCHEMA='cloudflare-account-audit/2'
 readonly REDACTION_DOMAIN='website-infrastructure/cloudflare-account-audit/v1'
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+readonly CF_READER="${SCRIPT_DIR}/cloudflare_cf_read.py"
 
 # The audited target state, per ADR 0015 (two per-site Tunnels) and the
 # 2026-08-12 edge attestation. Zone names are the site identities; Tunnel names
@@ -76,21 +77,31 @@ FINDINGS=0
 CHECKS=0
 DIGEST_TOOL=''
 WORKDIR=''
-TOKEN_READ=no
+CF_BIN=''
+CF_VERSION=''
+CF_BIN_DIGEST=''
+CF_API_TOKEN_VALUE=''
+AUTH_READ=no
 
 usage() {
   cat <<'USAGE'
 Usage:
-  CF_API_TOKEN=... scripts/cloudflare-account-audit.sh [--raw]
+  CLOUDFLARE_API_TOKEN=... scripts/cloudflare-account-audit.sh [--raw]
   scripts/cloudflare-account-audit.sh --self-test
   scripts/cloudflare-account-audit.sh --help
 
-Read-only Cloudflare account/zone audit. Owner-run only. Issues GET requests
-exclusively; it never creates, updates, deletes, plans, or applies anything.
+Read-only Cloudflare account/zone audit through Cloudflare's cf CLI. Owner-run
+only. Every provider request is schema-checked as GET with no request body; the
+script never creates, updates, deletes, plans, or applies anything.
 
-Input:
-  CF_API_TOKEN   A short-lived READ-ONLY API token, supplied in the
-                 environment only. Never pass a token as an argument.
+Authentication:
+  CLOUDFLARE_API_TOKEN    A short-lived read-only token supplied only through
+                          the environment. A complete zero-charge proof needs
+                          Billing Read and the resource read permissions used
+                          by this audit. API Tokens Read is also required so the
+                          token's issue time, expiry, policies, and exact account
+                          and zone resource bounds can be proved. Its total
+                          lifetime must be no more than 60 minutes.
 
 Options:
   --raw        Print real identifiers instead of stable pseudonyms. For the
@@ -98,13 +109,17 @@ Options:
                Tunnel and connector identifiers and must never be committed,
                pasted into an issue, pull request, comment or ticket, or
                shared.
-  --self-test  Offline invariant check: tooling, redaction determinism, and
-               proof that every request this script can issue is a GET against
-               the pinned API base. Needs no token and contacts no host.
+  --self-test  Local invariant check: tooling, redaction determinism, the
+               pinned cf version, and proof from cf schema that every provider
+               request is a GET with no body at its reviewed path. It reads no
+               credential and makes no Cloudflare account request.
   --help       This text.
 
 What is audited (all read-only):
-  * account subscriptions and per-zone plan/subscription: zero spend
+  * account, user, and zone subscriptions: zero price, permanent Free state
+  * billing coverage, current-period costs, complete billing history, unpaid
+    invoices, and bad debt: every monetary amount exactly zero
+  * certificate packs and Advanced Certificate Manager quota: free-only
   * zone settings: always_use_https, min_tls_version, tls_1_3, 0rtt, ssl, and
     that Cloudflare-managed HSTS stays off because the application owns it
   * DNSSEC status against the per-zone expectation
@@ -113,7 +128,8 @@ What is audited (all read-only):
   * no Zero Trust private-network surface: no private routes, no WARP profile
   * DNS inventory: exactly one proxied apex CNAME per zone targeting its own
     Tunnel, no origin A/AAAA anywhere, and no unexpected record
-  * the supplied token: active, expiring, and read-only as far as it can prove
+  * the selected cf credential: authenticated, active, issued for no more than
+    60 minutes, read-only, and restricted to the audited account and two zones
 
 Exit codes: 0 all checks passed, 1 one or more findings, 2 usage or tooling
 error. A check that could not be completed counts as a finding.
@@ -126,6 +142,8 @@ die() {
 }
 
 cleanup() {
+  CF_API_TOKEN_VALUE=''
+  unset CF_API_TOKEN_VALUE
   if [[ -n "${WORKDIR}" && -d "${WORKDIR}" ]]; then
     rm -rf -- "${WORKDIR}"
   fi
@@ -145,8 +163,11 @@ check() {
 }
 
 resolve_tools() {
-  command -v curl >/dev/null 2>&1 || die 'curl is required; this script never installs tools'
+  CF_BIN="$(command -v cf || true)"
+  [[ -n "${CF_BIN}" && -x "${CF_BIN}" ]] || die 'Cloudflare cf is required; this script never installs tools'
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required; this script never installs tools'
   command -v jq >/dev/null 2>&1 || die 'jq is required; this script never installs tools'
+  [[ -x "${CF_READER}" ]] || die 'the reviewed Cloudflare cf adapter is missing or not executable'
   if command -v sha256sum >/dev/null 2>&1; then
     DIGEST_TOOL='sha256sum'
   elif command -v shasum >/dev/null 2>&1; then
@@ -154,17 +175,17 @@ resolve_tools() {
   else
     die 'a SHA-256 tool (sha256sum or shasum) is required'
   fi
+  CF_VERSION="$(DO_NOT_TRACK=1 "${CF_BIN}" --version | sed -n -E 's/.*(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?).*/\1/p' | head -n 1)"
+  [[ "${CF_VERSION}" == v1.0.0-beta.5 ]] || die 'cf must be the reviewed pinned version v1.0.0-beta.5'
+  # shellcheck disable=SC2086 # DIGEST_TOOL is a fixed one- or two-word command
+  CF_BIN_DIGEST="$(${DIGEST_TOOL} "${CF_BIN}" | cut -d ' ' -f 1)"
 }
 
 # Stable pseudonym for one identifier. Domain-separated so a value hashed here
 # can never collide with the same value hashed for another purpose, and
 # unsalted so two audits of the same account diff cleanly.
-redact() {
+pseudonym() {
   local value="$1" digest
-  if [[ "${RAW}" == yes ]]; then
-    printf '%s\n' "${value}"
-    return 0
-  fi
   if [[ -z "${value}" ]]; then
     printf 'none\n'
     return 0
@@ -177,172 +198,415 @@ redact() {
   printf 'id:%s\n' "${digest}"
 }
 
-# One GET, fail-closed. The method is fixed inside the configuration document;
-# the path is validated against a conservative character set so no caller can
-# smuggle a second URL, a header, or a curl option into it.
-api_get() {
-  local path="$1"
-  [[ "${path}" =~ ^/[A-Za-z0-9._~/?\&=%:,+-]+$ ]] || return 1
-  printf 'silent\nshow-error\nfail\nrequest = "GET"\nproto = "=https"\ntlsv1.2\nconnect-timeout = 10\nmax-time = 30\nmax-filesize = 5242880\nheader = "Authorization: Bearer %s"\nheader = "Accept: application/json"\nurl = "%s%s"\n' \
-    "${CF_API_TOKEN}" "${API_BASE}" "${path}" | curl --disable --config -
-}
-
-# GET one endpoint and require a successful envelope. Prints the body on
-# success; prints nothing and returns 1 on any transport, status, or envelope
-# failure, so every caller has to decide explicitly what an absent answer
-# means.
-api_object() {
-  local path="$1" response
-  response="$(api_get "${path}" 2>/dev/null)" || return 1
-  jq -e '.success == true and has("result")' >/dev/null 2>&1 <<<"${response}" || return 1
-  printf '%s\n' "${response}"
-}
-
-# GET a collection and prove it was not truncated. Cloudflare returns
-# result_info for paginated collections; more than one page means this script
-# saw part of an inventory, and a partial inventory can never support an
-# "exactly N and nothing else" assertion.
-api_collection() {
-  local path="$1" separator='?' response
-  [[ "${path}" != *'?'* ]] || separator='&'
-  response="$(api_get "${path}${separator}per_page=100&page=1" 2>/dev/null)" || return 1
-  jq -e '
-    .success == true and (.result | type == "array") and
-    ((.result_info // null) as $info |
-      ($info == null or (
-        (($info | has("total_pages") | not) or $info.total_pages <= 1) and
-        (($info | has("count") | not) or $info.count == (.result | length))
-      )))
-  ' >/dev/null 2>&1 <<<"${response}" || return 1
-  printf '%s\n' "${response}"
-}
-
-require_token() {
-  if [[ -z "${CF_API_TOKEN:-}" ]]; then
-    die 'set a short-lived READ-ONLY token in CF_API_TOKEN; never pass a token as an argument'
+redact() {
+  local value="$1"
+  if [[ "${RAW}" == yes ]]; then
+    printf '%s\n' "${value}"
+  else
+    pseudonym "${value}"
   fi
-  # Reject control characters and curl-config injection before the value is
-  # interpolated into the configuration document.
-  if ! [[ "${CF_API_TOKEN}" =~ ^[A-Za-z0-9_-]{40}$ ||
-          "${CF_API_TOKEN}" =~ ^(cfk_|cfut_|cfat_)[A-Za-z0-9]{40}[0-9A-Fa-f]{8}$ ]]; then
-    die 'CF_API_TOKEN has an unsupported or unsafe format'
-  fi
-  # Keep the bearer in this shell only: no child process inherits it.
-  export -n CF_API_TOKEN
-  TOKEN_READ=yes
 }
 
-audit_token() {
-  local verify status token_id detail non_read expiry
-  check
-  verify="$(api_object '/user/tokens/verify' || true)"
-  if [[ -z "${verify}" ]]; then
-    finding 'token-verify the supplied token could not be verified; an audit never proceeds on an unproven credential'
+select_authentication() {
+  local variable
+  for variable in \
+    CF_API_TOKEN \
+    CF_ACCOUNT_ID \
+    CF_ZONE_ID \
+    CLOUDFLARE_API_KEY \
+    CLOUDFLARE_EMAIL \
+    CLOUDFLARE_API_USER_SERVICE_KEY \
+    CLOUDFLARE_ACCOUNT_ID \
+    CLOUDFLARE_ZONE_ID; do
+    if [[ -n "${!variable:-}" ]]; then
+      die "unset ${variable}; legacy credentials and target context may not affect this audit"
+    fi
+  done
+
+  if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+    (( ${#CLOUDFLARE_API_TOKEN} >= 20 && ${#CLOUDFLARE_API_TOKEN} <= 512 )) || \
+      die 'CLOUDFLARE_API_TOKEN has an unsupported or unsafe format'
+    [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] || \
+      die 'CLOUDFLARE_API_TOKEN has an unsupported or unsafe format'
+    CF_API_TOKEN_VALUE="${CLOUDFLARE_API_TOKEN}"
+    unset CLOUDFLARE_API_TOKEN
+  else
+    die 'set a short-lived CLOUDFLARE_API_TOKEN for an account audit'
+  fi
+}
+
+cf_read() {
+  local arguments=(--cf-bin "${CF_BIN}")
+  CLOUDFLARE_API_TOKEN="${CF_API_TOKEN_VALUE}" \
+    python3 "${CF_READER}" "${arguments[@]}" "$@"
+}
+
+validate_cf_schemas() {
+  python3 "${CF_READER}" --cf-bin "${CF_BIN}" --validate-schemas
+}
+
+validate_token_lifetime() {
+  python3 - "${WORKDIR}/token-definition.json" <<'PY'
+from datetime import datetime, timezone
+import json
+import sys
+
+
+def parse(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("missing timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    definition = json.load(stream)["result"]
+
+issued = parse(definition.get("issued_on"))
+expires = parse(definition.get("expires_on"))
+now = datetime.now(timezone.utc)
+lifetime = (expires - issued).total_seconds()
+if not (issued <= now < expires and 0 < lifetime <= 3600):
+    raise SystemExit(1)
+not_before = definition.get("not_before")
+if not_before is not None and not (parse(not_before) <= now < expires):
+    raise SystemExit(1)
+PY
+}
+
+audit_api_token_auth() {
+  local verify detail token_id status permission_count invalid_policy exact_permissions
+  verify="$(cf_read --operation user-token-verify 2>/dev/null || true)"
+  AUTH_READ=yes
+  if [[ -z "${verify}" ]] || ! jq -e '.result | type == "object"' >/dev/null 2>&1 <<<"${verify}"; then
+    finding 'auth the API token could not be verified; an audit never proceeds on an unproven credential'
     return 1
   fi
   status="$(jq -r '.result.status // "unknown"' <<<"${verify}")"
-  if [[ "${status}" == active ]]; then
-    ok "token-verify status=active id=$(redact "$(jq -r '.result.id // ""' <<<"${verify}")")"
-  else
-    finding "token-verify status=${status} expected=active"
-  fi
-
-  check
   token_id="$(jq -r '.result.id // ""' <<<"${verify}")"
-  if [[ ! "${token_id}" =~ ^[0-9a-f]{32}$ ]]; then
-    finding 'token-scope the verify response carried no usable token id, so the permissions were NOT machine-verified; review them in the dashboard'
-    return 0
+  if [[ "${status}" != active || ! "${token_id}" =~ ^[0-9a-f]{32}$ ]]; then
+    finding "auth token_status=${status} token_id_present=$([[ -n "${token_id}" ]] && printf true || printf false)"
+    return 1
   fi
-  detail="$(api_object "/user/tokens/${token_id}" || true)"
-  if [[ -z "${detail}" ]]; then
-    # A minimal read-only token normally cannot read the token API. That is the
-    # healthy answer, and it is still reported as a limitation, not a pass.
-    finding 'token-scope the token cannot read its own definition (expected for a minimal read-only token), so its permissions were NOT machine-verified; confirm read-only scope and the expiry in the dashboard'
-    return 0
+  ok "auth token_status=active token_id=$(pseudonym "${token_id}")"
+
+  check
+  detail="$(cf_read --operation user-token-get --token-id "${token_id}" 2>/dev/null || true)"
+  if [[ -z "${detail}" ]] || ! jq -e --arg id "${token_id}" \
+    '.result | type == "object" and .id == $id' >/dev/null 2>&1 <<<"${detail}"; then
+    finding 'auth-scope the token definition could not be read; add API Tokens Read so least privilege can be proved'
+    return 1
   fi
-  non_read="$(jq -r '
-    [ .result.policies[]? |
-      (.effect // "allow") as $effect |
-      .permission_groups[]? |
-      select(($effect != "allow") or ((.name // "") | test("Read$") | not)) |
-      (.name // "unnamed")
-    ] | unique | join(",")
+  if ! jq -c '{result: (.result | {id, issued_on, expires_on, not_before, policies})}' \
+    <<<"${detail}" >"${WORKDIR}/token-definition.json"; then
+    finding 'auth-scope the token definition could not be reduced safely'
+    return 1
+  fi
+  invalid_policy="$(jq -r '[
+    .result.policies[]? |
+    select(
+      .effect != "allow" or
+      (.permission_groups | type) != "array" or
+      (.permission_groups | length) == 0 or
+      ([.permission_groups[] | select((.name | type) != "string" or (.name | test(" Read$") | not))] | length) != 0 or
+      (.resources | type) != "object" or
+      (.resources | length) == 0
+    )
+  ] | length' <<<"${detail}")"
+  permission_count="$(jq -r '[.result.policies[]?.permission_groups[]?.name] | unique | length' <<<"${detail}")"
+  exact_permissions="$(jq -r '
+    ([.result.policies[]?.permission_groups[]?.name] | unique | sort) ==
+    ([
+      "API Tokens Read",
+      "Billing Read",
+      "Cloudflare Tunnel Read",
+      "DNS Read",
+      "SSL and Certificates Read",
+      "Zero Trust Read",
+      "Zone Read",
+      "Zone Settings Read"
+    ] | sort)
   ' <<<"${detail}")"
-  if [[ -z "${non_read}" ]]; then
-    ok 'token-scope every permission group is an allow of a Read permission'
+  if jq -e '.result.policies | type == "array" and length > 0' >/dev/null 2>&1 <<<"${detail}" && \
+    [[ "${permission_count}" == 8 && "${invalid_policy}" == 0 && "${exact_permissions}" == true ]]; then
+    ok 'auth-scope the token has exactly the 8 reviewed allow-only Read permission groups'
   else
-    finding "token-scope the token carries non-read permission groups: ${non_read}; an audit token must be read-only"
+    finding "auth-scope permission_groups=${permission_count} invalid_policies=${invalid_policy} exact_reviewed_set=${exact_permissions}; require exactly the reviewed allow-only Read permissions"
+    return 1
   fi
 
   check
-  expiry="$(jq -r '.result.expires_on // ""' <<<"${detail}")"
-  if [[ -n "${expiry}" ]]; then
-    ok "token-expiry expires_on=${expiry}"
+  if validate_token_lifetime >/dev/null 2>&1; then
+    ok 'auth-lifetime the API token is active now and its issued-to-expiry lifetime is at most 60 minutes'
   else
-    finding 'token-expiry the token has no expiry; the audit ceremony issues a just-in-time token of at most 60 minutes'
+    finding 'auth-lifetime require valid issued_on/expires_on timestamps, current activation, and a total lifetime no more than 60 minutes'
+    return 1
   fi
+
+  check
+  if jq -e '
+    [.result.policies[] | .resources | to_entries[]] as $entries |
+    ([$entries[].key] | unique) as $keys |
+    ($entries | all((.value | type) == "string" and .value == "*")) and
+    ($keys | length) == 4 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.account\\.[0-9a-f]{32}$"))] | length) == 1 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.account\\.zone\\.[0-9a-f]{32}$"))] | length) == 2 and
+    ([$keys[] | select(test("^com\\.cloudflare\\.api\\.user\\.[0-9a-f]{32}$"))] | length) == 1
+  ' "${WORKDIR}/token-definition.json" >/dev/null 2>&1; then
+    ok 'auth-resources token definition has one exact account, two exact zones, and one exact user resource'
+  else
+    finding 'auth-resources require flat exact resources for one account, two zones, and one user; wildcard, nested, extra, or missing resources are forbidden'
+    return 1
+  fi
+}
+
+audit_auth() {
+  check
+  audit_api_token_auth
+}
+
+audit_api_token_resources() {
+  local account_id="$1" zone_a_id="$2" zone_b_id="$3"
+  local account_key zone_a_key zone_b_key
+  account_key="com.cloudflare.api.account.${account_id}"
+  zone_a_key="com.cloudflare.api.account.zone.${zone_a_id}"
+  zone_b_key="com.cloudflare.api.account.zone.${zone_b_id}"
+  check
+  if jq -e --arg account "${account_key}" --arg zone_a "${zone_a_key}" --arg zone_b "${zone_b_key}" '
+    [.result.policies[] | .resources | keys[]] | unique as $keys |
+    [$keys[] | select(test("^com\\.cloudflare\\.api\\.user\\.[0-9a-f]{32}$"))] as $users |
+    ($users | length) == 1 and
+    ($keys | sort) == ([$account, $zone_a, $zone_b, $users[0]] | sort)
+  ' "${WORKDIR}/token-definition.json" >/dev/null 2>&1; then
+    ok 'auth-resources the token is restricted to this account, both audited zones, and its exact user resource'
+    return 0
+  fi
+  finding 'auth-resources the token resource identifiers do not exactly match this account and both audited zones'
+  return 1
 }
 
 # Resolve one zone by name. Echoes "<zone_id> <account_id>" and prints nothing
 # else, so it is safe to call from a command substitution.
 zone_identity() {
   local name="$1" zones
-  zones="$(api_collection "/zones?name=${name}" || true)"
+  zones="$(cf_read --operation zones-list --zone-name "${name}" 2>/dev/null || true)"
   [[ -n "${zones}" ]] || return 1
   [[ "$(jq -r '.result | length' <<<"${zones}")" == 1 ]] || return 1
+  jq -e '.result[0].id | type == "string" and test("^[0-9a-f]{32}$")' >/dev/null 2>&1 <<<"${zones}" || return 1
+  jq -e '.result[0].account.id | type == "string" and test("^[0-9a-f]{32}$")' >/dev/null 2>&1 <<<"${zones}" || return 1
   jq -r '.result[0] | (.id // "") + " " + (.account.id // "")' <<<"${zones}"
 }
 
+audit_subscription_result() {
+  local label="$1" response="$2" expected_plan_ids_json="$3" disallowed total
+  total="$(jq -r '.result | length' <<<"${response}")"
+  disallowed="$(jq -r --argjson expected_plan_ids "${expected_plan_ids_json}" '[
+    .result[]? |
+    .rate_plan.id as $plan_id |
+    select(
+      ((.price | type) != "number") or (.price != 0) or
+      (($plan_id | type) != "string") or
+      (($expected_plan_ids | index($plan_id)) == null) or
+      ((.trial // false) != false) or
+      (.rate_plan.is_contract != false) or
+      (.rate_plan.externally_managed != false) or
+      (.state != "Paid")
+    )
+  ] | length' <<<"${response}")"
+  if [[ "${disallowed}" == 0 ]]; then
+    ok "${label} all ${total} subscription(s) are permanent, zero-priced Free plans"
+  else
+    finding "${label} ${disallowed} of ${total} subscription(s) have nonzero, trial, contract, external, ambiguous, or non-Free state"
+  fi
+}
+
 audit_account_subscriptions() {
-  local account_id="$1" response paid total
+  local account_id="$1" response
   check
-  response="$(api_collection "/accounts/${account_id}/subscriptions" || true)"
+  response="$(cf_read --operation account-subscriptions --account-id "${account_id}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding 'account-subscriptions the subscription inventory could not be read completely'
     return 0
   fi
-  total="$(jq -r '.result | length' <<<"${response}")"
-  paid="$(jq -r '
-    [.result[]? | select(
-      ((.price // 0) != 0) or
-      (((.rate_plan.public_name // .rate_plan.name // "") | test("free"; "i")) | not) or
-      ((.trial // false) == true)
-    )] | length' <<<"${response}")"
-  if [[ "${paid}" == 0 ]]; then
-    ok "account-subscriptions all ${total} subscription(s) are named Free, zero-priced, and not trials"
+  audit_subscription_result account-subscriptions "${response}" '["teams_free","TEAMS_FREE"]'
+}
+
+audit_user_subscriptions() {
+  local response
+  check
+  response="$(cf_read --operation user-subscriptions 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding 'user-subscriptions the user-level subscription inventory could not be read'
+    return 0
+  fi
+  audit_subscription_result user-subscriptions "${response}" '["free"]'
+}
+
+audit_billing_coverage() {
+  local account_id="$1" response covered subscriptions
+  check
+  response="$(cf_read --operation billing-usage-info-v1 --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding 'billing-coverage the current-period billing coverage could not be read; zero charge is unproved'
+    return 0
+  fi
+  covered="$(jq -r '.result.covered // false | tostring' <<<"${response}")"
+  subscriptions="$(jq -r 'if (.result.subscriptions | type) == "array" then (.result.subscriptions | length) else -1 end' <<<"${response}")"
+  if [[ "${covered}" == true && "${subscriptions}" -ge 0 ]]; then
+    ok "billing-coverage covered=true usage_subscriptions=${subscriptions}"
   else
-    finding "account-subscriptions ${paid} of ${total} subscription(s) are not zero-priced non-trial Free plans; this is a zero-spend finding"
+    finding "billing-coverage covered=${covered} usage_subscriptions=${subscriptions}; v1 cannot prove current-period cost"
+  fi
+}
+
+audit_billable_usage() {
+  local account_id="$1" response total invalid metrics metric_count
+  check
+  response="$(cf_read --operation billing-usage-v1 --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding 'billing-usage the current billing-period cost inventory could not be read; zero charge is unproved'
+  else
+    total="$(jq -r '.result | length' <<<"${response}")"
+    invalid="$(jq -r '[.result[]? |
+      [.BilledCost, .ContractedCost, .CumulatedContractedCost, .EffectiveCost, .ListCost] as $costs |
+      select((($costs | all(type == "number")) | not) or ($costs | any(. != 0)))
+    ] | length' <<<"${response}")"
+    if [[ "${invalid}" == 0 ]]; then
+      ok "billing-usage all ${total} current-period record(s) have zero billed, contracted, cumulative, effective, and list cost"
+    else
+      finding "billing-usage ${invalid} of ${total} current-period record(s) have nonzero or missing monetary fields"
+    fi
+  fi
+
+  check
+  metrics="$(cf_read --operation billable-metrics --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${metrics}" ]]; then
+    finding 'billable-metrics the enabled usage-billing metric inventory could not be read'
+  else
+    metric_count="$(jq -r '.result | length' <<<"${metrics}")"
+    ok "billable-metrics complete current-period inventory count=${metric_count}; monetary verdict comes from billing-usage"
+  fi
+}
+
+audit_billing_history() {
+  local account_id="$1" response total positive malformed
+  check
+  response="$(cf_read --operation billing-history --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding 'billing-history the paginated invoice and payment history could not be read completely'
+    return 0
+  fi
+  total="$(jq -r '.result | length' <<<"${response}")"
+  malformed="$(jq -r '[.result[]? | select(
+    ((.amount | type) != "number") or ((.amount_to_pay | type) != "number")
+  )] | length' <<<"${response}")"
+  positive="$(jq -r '[.result[]? | select(.amount != 0 or .amount_to_pay != 0)] | length' <<<"${response}")"
+  if [[ "${malformed}" == 0 && "${positive}" == 0 ]]; then
+    ok "billing-history all ${total} item(s) have amount=0 and amount_to_pay=0"
+  else
+    finding "billing-history nonzero_items=${positive} malformed_items=${malformed} total=${total}; zero historical charge is unproved"
+  fi
+}
+
+audit_unpaid_and_debt() {
+  local account_id="$1" response count positive malformed total_debt
+  check
+  response="$(cf_read --operation unpaid-invoices --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]] || ! jq -e '.result.invoices | type == "array"' >/dev/null 2>&1 <<<"${response}"; then
+    finding 'unpaid-invoices the unpaid invoice inventory could not be read as a complete array'
+  else
+    count="$(jq -r '.result.invoices | length' <<<"${response}")"
+    malformed="$(jq -r '[.result.invoices[]? | select(
+      ((.amount | type) != "number") or ((.amount_to_pay | type) != "number")
+    )] | length' <<<"${response}")"
+    positive="$(jq -r '[.result.invoices[]? | select(.amount != 0 or .amount_to_pay != 0)] | length' <<<"${response}")"
+    if [[ "${count}" == 0 && "${malformed}" == 0 && "${positive}" == 0 ]]; then
+      ok 'unpaid-invoices none exist'
+    else
+      finding "unpaid-invoices count=${count} nonzero=${positive} malformed=${malformed}; zero amount due is unproved"
+    fi
+  fi
+
+  check
+  response="$(cf_read --operation bad-debt --account-id "${account_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding 'bad-debt outstanding debt state could not be read'
+    return 0
+  fi
+  total_debt="$(jq -r 'if (.result.total_debt_amount | type) == "number" then .result.total_debt_amount else "invalid" end' <<<"${response}")"
+  if [[ "${total_debt}" == 0 ]]; then
+    ok 'bad-debt total_debt_amount=0'
+  else
+    finding "bad-debt total_debt_amount=${total_debt}; zero outstanding debt is unproved"
+  fi
+}
+
+audit_certificate_products() {
+  local name="$1" zone_id="$2" response total non_universal quota allocated used
+  check
+  response="$(cf_read --operation certificate-packs --zone-id "${zone_id}" 2>/dev/null || true)"
+  if [[ -z "${response}" ]]; then
+    finding "certificate-packs[${name}] the all-status certificate inventory could not be read completely"
+  else
+    total="$(jq -r '.result | length' <<<"${response}")"
+    non_universal="$(jq -r '[.result[]? | select(.type != "universal")] | length' <<<"${response}")"
+    if [[ "${non_universal}" == 0 ]]; then
+      ok "certificate-packs[${name}] all ${total} pack(s) are Universal SSL"
+    else
+      finding "certificate-packs[${name}] ${non_universal} of ${total} pack(s) are non-universal and may be billable"
+    fi
+  fi
+
+  check
+  quota="$(cf_read --operation certificate-pack-quota --zone-id "${zone_id}" 2>/dev/null || true)"
+  if [[ -z "${quota}" ]]; then
+    finding "certificate-quota[${name}] Advanced Certificate Manager allocation could not be read"
+    return 0
+  fi
+  allocated="$(jq -r 'if (.result.advanced.allocated | type) == "number" then .result.advanced.allocated else "invalid" end' <<<"${quota}")"
+  used="$(jq -r 'if (.result.advanced.used | type) == "number" then .result.advanced.used else "invalid" end' <<<"${quota}")"
+  if [[ "${allocated}" == 0 && "${used}" == 0 ]]; then
+    ok "certificate-quota[${name}] advanced allocated=0 used=0"
+  else
+    finding "certificate-quota[${name}] advanced allocated=${allocated} used=${used}; zero paid-certificate capacity is unproved"
   fi
 }
 
 audit_zone_plan() {
   local name="$1" zone_id="$2" zones subscription plan
   check
-  zones="$(api_collection "/zones?name=${name}" || true)"
+  zones="$(cf_read --operation zones-list --zone-name "${name}" 2>/dev/null || true)"
   if [[ -z "${zones}" ]]; then
     finding "zone-plan[${name}] the zone record could not be read"
     return 0
   fi
   plan="$(jq -r '.result[0].plan.name // "unknown"' <<<"${zones}")"
-  if [[ "${plan}" =~ ^Free ]]; then
-    ok "zone-plan[${name}] plan=${plan} status=$(jq -r '.result[0].status // "unknown"' <<<"${zones}")"
+  if [[ "${plan}" =~ ^Free && "$(jq -r '.result[0].status // "unknown"' <<<"${zones}")" == active ]]; then
+    ok "zone-plan[${name}] plan=${plan} status=active"
   else
-    finding "zone-plan[${name}] plan=${plan} expected=Free; this is a zero-spend finding"
+    finding "zone-plan[${name}] plan=${plan} status=$(jq -r '.result[0].status // "unknown"' <<<"${zones}") expected an active Free zone"
   fi
 
   check
-  subscription="$(api_object "/zones/${zone_id}/subscription" || true)"
+  subscription="$(cf_read --operation zone-subscription --zone-id "${zone_id}" 2>/dev/null || true)"
   if [[ -z "${subscription}" ]]; then
     finding "zone-subscription[${name}] the zone subscription could not be read"
     return 0
   fi
   if jq -e '
-    (.result.rate_plan.id // "") == "free" and
-    (.result.price | type) == "number" and .result.price == 0
+    (.result.rate_plan.id == "free") and
+    (.result.price | type) == "number" and .result.price == 0 and
+    ((.result.trial // false) == false) and
+    (.result.rate_plan.is_contract == false) and
+    (.result.rate_plan.externally_managed == false) and
+    (.result.state == "Paid")
   ' >/dev/null <<<"${subscription}"; then
-    ok "zone-subscription[${name}] rate_plan=free price=0"
+    ok "zone-subscription[${name}] permanent Free plan price=0"
   else
-    finding "zone-subscription[${name}] the subscription is not exactly the zero-priced Free rate plan"
+    finding "zone-subscription[${name}] the subscription is not a permanent zero-priced Free plan"
   fi
 }
 
@@ -350,7 +614,7 @@ audit_setting() {
   local name="$1" zone_id="$2" setting="$3" expected="$4" why="$5"
   local response value
   check
-  response="$(api_object "/zones/${zone_id}/settings/${setting}" || true)"
+  response="$(cf_read --operation zone-setting --zone-id "${zone_id}" --setting-id "${setting}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding "zone-setting[${name}/${setting}] could not be read; an unknown setting is not a pass"
     return 0
@@ -366,7 +630,7 @@ audit_setting() {
 audit_ssl_mode() {
   local name="$1" zone_id="$2" response value
   check
-  response="$(api_object "/zones/${zone_id}/settings/ssl" || true)"
+  response="$(cf_read --operation zone-setting --zone-id "${zone_id}" --setting-id ssl 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding "zone-setting[${name}/ssl] could not be read; an unknown setting is not a pass"
     return 0
@@ -381,18 +645,19 @@ audit_ssl_mode() {
 }
 
 audit_managed_hsts() {
-  local name="$1" zone_id="$2" response enabled
+  local name="$1" zone_id="$2" response enabled enabled_type
   check
-  response="$(api_object "/zones/${zone_id}/settings/security_header" || true)"
+  response="$(cf_read --operation zone-setting --zone-id "${zone_id}" --setting-id security_header 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding "zone-setting[${name}/security_header] could not be read; an unknown setting is not a pass"
     return 0
   fi
-  enabled="$(jq -r '.result.value.strict_transport_security.enabled // false | tostring' <<<"${response}")"
-  if [[ "${enabled}" == false ]]; then
+  enabled_type="$(jq -r '.result.value.strict_transport_security.enabled | type' <<<"${response}")"
+  enabled="$(jq -r '.result.value.strict_transport_security.enabled | tostring' <<<"${response}")"
+  if [[ "${enabled_type}" == boolean && "${enabled}" == false ]]; then
     ok "zone-setting[${name}/managed-hsts] enabled=false (the application owns Strict-Transport-Security)"
   else
-    finding "zone-setting[${name}/managed-hsts] enabled=${enabled}; two writers would publish contradictory HSTS policies"
+    finding "zone-setting[${name}/managed-hsts] enabled=${enabled} type=${enabled_type}; expected the explicit boolean false because the application owns HSTS"
   fi
 }
 
@@ -413,7 +678,7 @@ audit_zone_settings() {
 audit_dnssec() {
   local name="$1" zone_id="$2" expected="$3" response status
   check
-  response="$(api_object "/zones/${zone_id}/dnssec" || true)"
+  response="$(cf_read --operation dnssec --zone-id "${zone_id}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding "zone-dnssec[${name}] status could not be read"
     return 0
@@ -427,9 +692,9 @@ audit_dnssec() {
 }
 
 audit_tunnels() {
-  local account_id="$1" response count names
+  local account_id="$1" response count expected unexpected
   check
-  response="$(api_collection "/accounts/${account_id}/cfd_tunnel?is_deleted=false" || true)"
+  response="$(cf_read --operation tunnels-list --account-id "${account_id}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding 'tunnel-inventory the Tunnel inventory could not be read completely'
     printf '%s\n' '{"result":[]}' >"${WORKDIR}/tunnels.json"
@@ -437,11 +702,12 @@ audit_tunnels() {
   fi
   printf '%s\n' "${response}" >"${WORKDIR}/tunnels.json"
   count="$(jq -r '.result | length' <<<"${response}")"
-  names="$(jq -r '[.result[].name] | sort | join(",")' <<<"${response}")"
-  if [[ "${count}" == 2 && "${names}" == "${TUNNEL_B},${TUNNEL_A}" ]]; then
-    ok "tunnel-inventory exactly the two expected per-site Tunnels exist (${names})"
+  expected="$(jq -r --arg a "${TUNNEL_A}" --arg b "${TUNNEL_B}" '[.result[]? | select(.name == $a or .name == $b)] | length' <<<"${response}")"
+  unexpected="$(jq -r --arg a "${TUNNEL_A}" --arg b "${TUNNEL_B}" '[.result[]? | select(.name != $a and .name != $b)] | length' <<<"${response}")"
+  if [[ "${count}" == 2 && "${expected}" == 2 && "${unexpected}" == 0 ]]; then
+    ok "tunnel-inventory exactly the two expected per-site Tunnels exist (${TUNNEL_A},${TUNNEL_B})"
   else
-    finding "tunnel-inventory count=${count} names=${names} expected exactly ${TUNNEL_A} and ${TUNNEL_B}"
+    finding "tunnel-inventory count=${count} expected_present=${expected} unexpected=${unexpected}; expected exactly ${TUNNEL_A} and ${TUNNEL_B}"
   fi
 }
 
@@ -462,10 +728,14 @@ audit_tunnel_detail() {
     return 0
   fi
   status="$(jq -r --arg name "${tunnel_name}" '.result[] | select(.name == $name) | .status // "unknown"' "${WORKDIR}/tunnels.json")"
-  ok "tunnel[${tunnel_name}] id=$(redact "${tunnel_id}") status=${status}"
+  if [[ "${status}" == healthy ]]; then
+    ok "tunnel[${tunnel_name}] id=$(redact "${tunnel_id}") status=healthy"
+  else
+    finding "tunnel[${tunnel_name}] id=$(redact "${tunnel_id}") status=${status} expected=healthy"
+  fi
 
   check
-  config="$(api_object "/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations" || true)"
+  config="$(cf_read --operation tunnel-config --account-id "${account_id}" --tunnel-id "${tunnel_id}" 2>/dev/null || true)"
   if [[ -z "${config}" ]]; then
     finding "tunnel[${tunnel_name}] the ingress configuration could not be read"
   elif jq -e --arg hostname "${hostname}" --arg origin "${origin}" '
@@ -482,7 +752,7 @@ audit_tunnel_detail() {
   fi
 
   check
-  connections="$(api_object "/accounts/${account_id}/cfd_tunnel/${tunnel_id}/connections" || true)"
+  connections="$(cf_read --operation tunnel-connections --account-id "${account_id}" --tunnel-id "${tunnel_id}" 2>/dev/null || true)"
   if [[ -z "${connections}" ]]; then
     finding "tunnel[${tunnel_name}] the connector inventory could not be read"
     return 0
@@ -496,8 +766,10 @@ audit_tunnel_detail() {
   done <<<"$(jq -r '.result[]?.id // empty' <<<"${connections}")"
   printf 'RECORD tunnel[%s] connectors=%s idle=%s ids=%s\n' \
     "${tunnel_name}" "${total}" "${idle}" "${pseudonyms# }"
-  if [[ "${idle}" == 0 ]]; then
+  if [[ "${total}" -gt 0 && "${idle}" == 0 ]]; then
     ok "tunnel[${tunnel_name}] every listed connector holds live connections"
+  elif [[ "${total}" == 0 ]]; then
+    finding "tunnel[${tunnel_name}] no connector is present; a vacuous idle count is not healthy"
   else
     finding "tunnel[${tunnel_name}] ${idle} connector(s) hold no live connection; check whether an old-token connector is lingering"
   fi
@@ -506,7 +778,7 @@ audit_tunnel_detail() {
 audit_no_private_network() {
   local account_id="$1" routes profiles count
   check
-  routes="$(api_collection "/accounts/${account_id}/teamnet/routes?is_deleted=false" || true)"
+  routes="$(cf_read --operation private-routes --account-id "${account_id}" 2>/dev/null || true)"
   if [[ -z "${routes}" ]]; then
     finding 'private-routes the private-route inventory could not be read completely'
   else
@@ -519,7 +791,7 @@ audit_no_private_network() {
   fi
 
   check
-  profiles="$(api_collection "/accounts/${account_id}/devices/policies" || true)"
+  profiles="$(cf_read --operation warp-profiles --account-id "${account_id}" 2>/dev/null || true)"
   if [[ -z "${profiles}" ]]; then
     # A token scoped to exactly the audited surface may legitimately lack Zero
     # Trust read permission. That is a limitation, not a pass.
@@ -538,7 +810,7 @@ audit_dns_records() {
   local name="$1" zone_id="$2" tunnel_id="$3"
   local response apex_count address_count unexpected
   check
-  response="$(api_collection "/zones/${zone_id}/dns_records" || true)"
+  response="$(cf_read --operation dns-records --zone-id "${zone_id}" 2>/dev/null || true)"
   if [[ -z "${response}" ]]; then
     finding "zone-dns[${name}] the DNS inventory could not be read completely; a partial inventory cannot support an exactness claim"
     return 0
@@ -567,24 +839,29 @@ audit_dns_records() {
   fi
 
   check
-  unexpected="$(jq -r --arg apex "${name}" '
-    [.result[] | select((.name == $apex and .type == "CNAME") | not) | .type] | sort | unique | join(",")
+  unexpected="$(jq -r --arg apex "${name}" --arg target "${tunnel_id}.cfargotunnel.com" '
+    [.result[] | select((
+      .name == $apex and .type == "CNAME" and .content == $target and
+      .proxied == true and .ttl == 1
+    ) | not)] | length
   ' <<<"${response}")"
-  if [[ -z "${unexpected}" ]]; then
+  if [[ "${unexpected}" == 0 ]]; then
     ok "zone-dns[${name}] no record beyond the apex CNAME exists"
   else
-    finding "zone-dns[${name}] record types beyond the apex CNAME are present: ${unexpected}; every additional name is public surface"
+    finding "zone-dns[${name}] ${unexpected} record(s) beyond the exact apex CNAME are present; every additional name is public surface"
   fi
 }
 
 self_test() {
-  local failures first second repeated call_sites
-  local method_declarations egress_points method_literal egress_literal verb
+  local failures first second repeated schemas operation_count raw_api_literal
   failures=0
+  unset CF_API_TOKEN CF_ACCOUNT_ID CF_ZONE_ID CLOUDFLARE_API_TOKEN
+  unset CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL CLOUDFLARE_API_USER_SERVICE_KEY
+  unset CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID
   resolve_tools
-  printf 'cloudflare-account-audit self-test (offline; no credential is read, no host is contacted)\n'
-  printf 'schema=%s api_base=%s digest=%s grep=%s\n' \
-    "${SCHEMA}" "${API_BASE}" "${DIGEST_TOOL}" "${GREP}"
+  printf 'cloudflare-account-audit self-test (no credential or Cloudflare account is read)\n'
+  printf 'schema=%s cf_version=%s cf_executable_sha256=%s digest=%s grep=%s\n' \
+    "${SCHEMA}" "${CF_VERSION}" "${CF_BIN_DIGEST}" "${DIGEST_TOOL}" "${GREP}"
 
   first="$(redact 'sample-identifier-one')"
   second="$(redact 'sample-identifier-one')"
@@ -596,30 +873,27 @@ self_test() {
   printf 'redaction-hides-input  -> %s\n' "$([[ "${first}" == *sample-identifier* ]] && printf FAIL || printf ok)"
   [[ "${first}" != *sample-identifier* ]] || failures=$(( failures + 1 ))
 
-  # Every request this script can issue goes through one helper, that helper
-  # invokes curl exactly once, and it declares exactly one method. A write verb
-  # anywhere in the file is a self-test failure, not a review comment.
-  #
-  # The two literals below are assembled from fragments on purpose: written out
-  # whole they would appear in this file and each check would count itself.
-  verb='GET'
-  method_literal="request = \"${verb}\""
-  egress_literal='curl --disable'' --config'
-  call_sites="$("${GREP}" -c -E -e '\bapi_(get|object|collection)[[:space:]]' "$0" || true)"
-  method_declarations="$("${GREP}" -c -F -e "${method_literal}" "$0" || true)"
-  egress_points="$("${GREP}" -c -F -e "${egress_literal}" "$0" || true)"
-  printf 'single-method-surface  -> api helper references=%s method declarations=%s curl invocations=%s\n' \
-    "${call_sites}" "${method_declarations}" "${egress_points}"
-  [[ "${method_declarations}" == 1 ]] || failures=$(( failures + 1 ))
-  [[ "${egress_points}" == 1 ]] || failures=$(( failures + 1 ))
-  if "${GREP}" -q -E -e '--request[[:space:]]+(POST|PUT|PATCH|DELETE)' -e '[[:space:]]-X[[:space:]]+(POST|PUT|PATCH|DELETE)' "$0"; then
-    printf 'write-method-absent    -> FAIL\n'
+  schemas="$(validate_cf_schemas 2>/dev/null || true)"
+  if [[ -n "${schemas}" ]] && jq -e '
+    .version == "v1.0.0-beta.5" and
+    (.operations | type == "array" and length == 22) and
+    all(.operations[]; .method == "GET" and (.path | startswith("/")))
+  ' >/dev/null 2>&1 <<<"${schemas}"; then
+    operation_count="$(jq -r '.operations | length' <<<"${schemas}")"
+    printf 'cf-schema-read-only    -> %s operations are pinned GET requests with no body\n' "${operation_count}"
+  else
+    printf 'cf-schema-read-only    -> FAIL\n'
+    failures=$(( failures + 1 ))
+  fi
+  raw_api_literal='api.cloudflare.com/''client'
+  if "${GREP}" -q -F -e "${raw_api_literal}" "$0" "${CF_READER}"; then
+    printf 'raw-api-absent         -> FAIL\n'
     failures=$(( failures + 1 ))
   else
-    printf 'write-method-absent    -> ok\n'
+    printf 'raw-api-absent         -> ok\n'
   fi
-  printf 'credential-untouched   -> %s\n' "$([[ "${TOKEN_READ}" == no ]] && printf ok || printf FAIL)"
-  [[ "${TOKEN_READ}" == no ]] || failures=$(( failures + 1 ))
+  printf 'credential-untouched   -> %s\n' "$([[ "${AUTH_READ}" == no ]] && printf ok || printf FAIL)"
+  [[ "${AUTH_READ}" == no ]] || failures=$(( failures + 1 ))
 
   if (( failures > 0 )); then
     printf '\nRESULT schema=%s mode=self-test failures=%s exit=1\n' "${SCHEMA}" "${failures}"
@@ -631,15 +905,19 @@ self_test() {
 
 run_audit() {
   local identity_a identity_b zone_a_id zone_b_id account_id account_b
+  select_authentication
   resolve_tools
-  require_token
+  validate_cf_schemas >/dev/null 2>&1 || die 'cf schema no longer matches the reviewed read-only command surface'
+  umask 077
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/cloudflare-account-audit.XXXXXX")"
   trap cleanup EXIT
 
   printf '# Cloudflare read-only account audit\n'
   printf 'schema=%s\n' "${SCHEMA}"
   printf 'generated_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'api_base=%s\n' "${API_BASE}"
+  printf 'cf_version=%s\n' "${CF_VERSION}"
+  printf 'cf_executable_sha256=%s\n' "${CF_BIN_DIGEST}"
+  printf 'cf_auth=api-token-env\n'
   printf 'mode=%s\n' "$([[ "${RAW}" == yes ]] && printf raw || printf redacted)"
   if [[ "${RAW}" == yes ]]; then
     printf '\n!! RAW MODE: the output below contains real Cloudflare identifiers.\n'
@@ -647,10 +925,10 @@ run_audit() {
     printf '!! issue, pull request, comment, chat, or ticket, and delete the capture\n'
     printf '!! as soon as the review is finished.\n'
   fi
-  printf '\nEvery request below is a GET. Nothing is created, updated, or deleted.\n\n'
+  printf '\nEvery provider request below is a cf command whose schema was verified as GET with no body. Nothing is created, updated, or deleted.\n\n'
 
-  printf '## token\n'
-  if ! audit_token; then
+  printf '## authentication\n'
+  if ! audit_auth; then
     printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
     return 1
   fi
@@ -672,12 +950,25 @@ run_audit() {
     ok "zone-identity account=$(redact "${account_id}") zones=$(redact "${zone_a_id}"),$(redact "${zone_b_id}")"
   else
     finding 'zone-identity the two zones live in different accounts; the account-level checks below cover only the first'
+    printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
+    return 1
+  fi
+  if ! audit_api_token_resources "${account_id}" "${zone_a_id}" "${zone_b_id}"; then
+    printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
+    return 1
   fi
 
   printf '\n## zero spend\n'
   audit_account_subscriptions "${account_id}"
+  audit_user_subscriptions
   audit_zone_plan "${ZONE_A}" "${zone_a_id}"
   audit_zone_plan "${ZONE_B}" "${zone_b_id}"
+  audit_billing_coverage "${account_id}"
+  audit_billable_usage "${account_id}"
+  audit_billing_history "${account_id}"
+  audit_unpaid_and_debt "${account_id}"
+  audit_certificate_products "${ZONE_A}" "${zone_a_id}"
+  audit_certificate_products "${ZONE_B}" "${zone_b_id}"
 
   printf '\n## zone settings\n'
   audit_zone_settings "${ZONE_A}" "${zone_a_id}"
@@ -695,12 +986,11 @@ run_audit() {
   audit_dns_records "${ZONE_A}" "${zone_a_id}" "$(tunnel_id_for "${TUNNEL_A}")"
   audit_dns_records "${ZONE_B}" "${zone_b_id}" "$(tunnel_id_for "${TUNNEL_B}")"
 
-  printf '\n## still needs the owner eyes (not machine-checkable here)\n'
+  printf '\n## declared evidence gaps (this audit makes no claim)\n'
   printf '%s\n' \
-    '- the billing page: no trial, add-on, usage-based product, or paid certificate' \
     '- the two Registrar renewals, identified separately from infrastructure' \
     '- account members and their passkey/MFA posture' \
-    '- the API token inventory: nothing long-lived, nothing broader than its purpose'
+    '- credentials other than the exact API token used for this run'
 
   printf '\nRESULT schema=%s checks=%s findings=%s exit=%s\n' \
     "${SCHEMA}" "${CHECKS}" "${FINDINGS}" "$(( FINDINGS > 0 ? 1 : 0 ))"
