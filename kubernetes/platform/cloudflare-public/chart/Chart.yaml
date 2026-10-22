@@ -3,5 +3,5 @@ name: cloudflare-public
 description: Restricted in-cluster connector for public website hostnames only
 type: application
 version: 0.1.0
-appVersion: "2026.8.3"
+appVersion: "2026.10.3"
 kubeVersion: ">=1.36.0-0"
