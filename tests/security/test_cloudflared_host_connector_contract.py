@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,16 +49,51 @@ class CloudflaredHostBinaryInstallerTests(unittest.TestCase):
         self.assertGreaterEqual(tuple(map(int, version.split("."))), (2026, 10, 3))
         self.assertEqual(pins["CLOUDFLARED_TAG"], version)
         chart = ROOT / "kubernetes/platform/cloudflare-public/chart"
-        self.assertIn(f'appVersion: "{version}"', (chart / "Chart.yaml").read_text())
-        values = (chart / "values.yaml").read_text()
-        self.assertIn(f'  tag: "{version}"', values)
-        self.assertIn(f'  digest: {pins["CLOUDFLARED_DIGEST"]}', values)
+        self.assert_rendered_chart_pins(self.render_chart(chart), version, pins["CLOUDFLARED_DIGEST"])
         # Bind the security floor to the independently verified vendor artifacts;
         # syntactically valid hashes alone could select a vulnerable old binary.
         self.assertEqual(pins["CLOUDFLARED_HOST_ARM64_SHA256"],
                          "89297ebfb9e8c99c0dc013a1140601453cf3798d8306c5591651f4a3f5210be8")
         self.assertEqual(pins["CLOUDFLARED_DIGEST"],
                          "sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39")
+
+    def render_chart(self, chart):
+        result = subprocess.run(
+            [required_tool(shutil.which("helm"), "Helm is required"), "template",
+             "cloudflare-public", str(chart), "--namespace", "cloudflare-public"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def assert_rendered_chart_pins(self, rendered, version, digest):
+        # Check Helm's interpretation, not text that may be an inert YAML comment.
+        images = re.findall(r'^ +image: "([^"\n]+)"$', rendered, re.MULTILINE)
+        self.assertEqual(images, [f"cloudflare/cloudflared:{version}@{digest}"] * 3)
+        versions = re.findall(r'^ +app\.kubernetes\.io/version: "([^"\n]+)"$',
+                              rendered, re.MULTILINE)
+        self.assertEqual(set(versions), {version})
+
+    def test_chart_pin_comments_cannot_hide_active_regressions(self):
+        chart = ROOT / "kubernetes/platform/cloudflare-public/chart"
+        version = "2026.10.3"
+        digest = "sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39"
+        mutations = (
+            ("Chart.yaml", f'appVersion: "{version}"', 'appVersion: "2026.8.3"'),
+            ("values.yaml", f'  tag: "{version}"', '  tag: "2026.8.3"'),
+            ("values.yaml", f"  digest: {digest}", "  digest: sha256:" + "a" * 64),
+        )
+        for filename, active, replacement in mutations:
+            with self.subTest(field=active), tempfile.TemporaryDirectory() as temporary:
+                copied = Path(temporary) / "chart"
+                shutil.copytree(chart, copied)
+                path = copied / filename
+                source = path.read_text()
+                self.assertEqual(source.count(active), 1)
+                path.write_text(source.replace(active, replacement) + "\n# " + active + "\n")
+                rendered = self.render_chart(copied)
+                with self.assertRaises(AssertionError):
+                    self.assert_rendered_chart_pins(rendered, version, digest)
 
     def test_mutable_staging_path_is_never_executed(self):
         self.assertIn("PATH=/usr/sbin:/usr/bin:/sbin:/bin", self.installer)
