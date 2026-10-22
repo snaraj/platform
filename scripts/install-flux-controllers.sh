@@ -113,7 +113,7 @@ INSTALL_NAMESPACE='flux-system'
 # The reviewed inventory after the least-privilege RBAC patches: 1 Namespace,
 # 8 CRDs, 6 ClusterRoles, 4 ClusterRoleBindings, 3 NetworkPolicies,
 # 1 ResourceQuota, 3 ServiceAccounts,
-# 1 Service, 3 Deployments. A render of a different size is not the reviewed
+# 1 Service, 2 public-trust ConfigMaps, 3 Deployments. A render of a different size is not the reviewed
 # install no matter what its digest says.
 #
 # The ClusterRole count went 3 -> 6 and the binding count 1 -> 4 with issue #98:
@@ -122,17 +122,17 @@ INSTALL_NAMESPACE='flux-system'
 # transaction, because this transaction is what removes the authority they
 # replace. Rendering them from kubernetes/flux-system/access.yaml instead would
 # install three controllers that cannot watch their own custom resources.
-EXPECTED_OBJECTS=30
+EXPECTED_OBJECTS=32
 # The inventory splits by scope, which is what the fresh-cluster dry run below
 # turns on: 19 cluster-scoped objects (the Namespace, 8 CRDs, 6 ClusterRoles,
-# 4 ClusterRoleBindings) plus 11 objects that live IN flux-system (1
-# ResourceQuota, 3 ServiceAccounts, 1 Service, 3 Deployments, 3 NetworkPolicies).
+# 4 ClusterRoleBindings) plus 13 objects that live IN flux-system (1
+# ResourceQuota, 3 ServiceAccounts, 1 Service, 3 Deployments, 3 NetworkPolicies, 2 public-trust ConfigMaps).
 EXPECTED_CLUSTER_SCOPED=19
-EXPECTED_NAMESPACED=11
+EXPECTED_NAMESPACED=13
 # ... and it splits again by creation phase: the 3 controller Deployments are held
-# back until their egress allows and canary proof exist, so 27 objects go first.
+# back until their egress allows and canary proof exist, so 29 objects go first.
 EXPECTED_WORKLOADS=3
-EXPECTED_PREREQUISITES=27
+EXPECTED_PREREQUISITES=29
 # The egress overlay: 5 policies, of which 4 must be in force before any
 # controller Pod is created and 1 (public HTTPS) is deliberately deferred.
 EXPECTED_EGRESS_POLICIES=5
@@ -178,7 +178,8 @@ FLUX_CLUSTER_ROLE_BINDINGS=(
   crd-controller-source-flux-system
 )
 CONTROLLER_DEPLOYMENTS=(source-controller kustomize-controller helm-controller)
-# The least-privilege render labels every one of its 30 objects with both of these.
+TRUST_CONFIGMAPS=(flux-controller-ca-00f6a1aad627-a flux-controller-ca-00f6a1aad627-b)
+# The least-privilege render labels every one of its 32 objects with both of these.
 # They are this install's ownership marker: an object that already exists and
 # carries them is a previous run of THIS install; one that exists without them
 # belongs to something else and is never adopted, reconfigured, or deleted.
@@ -203,7 +204,7 @@ ATTEMPT_ANNOTATION='platform.snaraj.dev/install-attempt-id'
 _dry_suffix='( \((server )?dry run\))?'
 _apply_verb='(created|configured|unchanged)'
 _cluster_scoped_kind='(namespace/flux-system|customresourcedefinition\.apiextensions\.k8s\.io/[a-z0-9.-]+\.fluxcd\.io|clusterrole\.rbac\.authorization\.k8s\.io/[a-z0-9-]+|clusterrolebinding\.rbac\.authorization\.k8s\.io/[a-z0-9-]+)'
-_namespaced_kind='(networkpolicy\.networking\.k8s\.io/[a-z0-9-]+|resourcequota/[a-z0-9-]+|serviceaccount/[a-z0-9-]+|service/[a-z0-9-]+|deployment\.apps/[a-z0-9-]+)'
+_namespaced_kind='(configmap/flux-controller-ca-[a-f0-9]{12}-[ab]|networkpolicy\.networking\.k8s\.io/[a-z0-9-]+|resourcequota/[a-z0-9-]+|serviceaccount/[a-z0-9-]+|service/[a-z0-9-]+|deployment\.apps/[a-z0-9-]+)'
 # A fresh cluster's cluster-scoped objects must report exactly "created": a
 # "configured"/"unchanged" there means something already exists, which the
 # absence probe should already have refused.
@@ -211,7 +212,7 @@ CLUSTER_SCOPED_CREATED_LINE="^${_cluster_scoped_kind} created${_dry_suffix}\$"
 # Any reviewed object reporting any non-mutating verb: the shape of a clean
 # client validation and of an existing-cluster server dry run.
 INVENTORY_MUTATION_LINE="^(${_cluster_scoped_kind}|${_namespaced_kind}) ${_apply_verb}${_dry_suffix}\$"
-# The EXPECTED fresh-cluster error on each of the 11 namespaced children: the
+# The EXPECTED fresh-cluster error on each of the 13 namespaced children: the
 # server dry run does not persist the dry-run Namespace (k8s #83562), so it has
 # nowhere to place them. Bounded to flux-system -- any other namespace, or any
 # other error, is a genuine failure.
@@ -635,6 +636,7 @@ assert_inventory CustomResourceDefinition "${FLUX_CRDS[@]}"
 assert_inventory ClusterRole "${FLUX_CLUSTER_ROLES[@]}"
 assert_inventory ClusterRoleBinding "${FLUX_CLUSTER_ROLE_BINDINGS[@]}"
 assert_inventory Deployment "${CONTROLLER_DEPLOYMENTS[@]}"
+assert_inventory ConfigMap "${TRUST_CONFIGMAPS[@]}"
 
 # --- Ordered phases ----------------------------------------------------------
 #
@@ -698,14 +700,14 @@ prerequisite_count="$(count_objects "$prerequisites")"
 [[ "$(grep -cE "$DEPLOYMENT_ANY_PATTERN" "$workloads" || true)" -eq "$EXPECTED_WORKLOADS" ]] || \
   die 'the phase-3 bundle is not exactly the controller Deployments'
 
-# The 11 objects that live INSIDE flux-system. The ownership probe used to stop
+# The 13 objects that live INSIDE flux-system. The ownership probe used to stop
 # at the cluster-scoped ones, which made the script's own claim -- that an
 # object under foreign ownership stops the install before anything is applied --
 # false of every namespaced object it applies. Derived from the render rather than
 # hand-listed, and then counted, so an export that adds or renames one is a hard
 # failure instead of a silently narrower probe.
 FLUX_NAMESPACED_OBJECTS=()
-for kind in ResourceQuota ServiceAccount Service Deployment NetworkPolicy; do
+for kind in ConfigMap ResourceQuota ServiceAccount Service Deployment NetworkPolicy; do
   while IFS= read -r derived_name; do
     [[ -n "$derived_name" ]] || continue
     FLUX_NAMESPACED_OBJECTS+=("${kind,,}/${derived_name}")
@@ -1071,7 +1073,7 @@ fi
 
 # (1) The bytes are valid to apply at all, independent of any namespace.
 # Client-side strict validation rejects unknown/duplicated fields and needs no
-# flux-system to exist, so it validates all 30 objects even on a fresh cluster.
+# flux-system to exist, so it validates all 32 objects even on a fresh cluster.
 client_dry_run="${work}/dry-run-client.txt"
 if ! kube apply -f "$rendered" --dry-run=client --validate=strict \
     >"$client_dry_run" 2>&1; then
@@ -1458,6 +1460,7 @@ entry_api_path() {
     clusterrolebinding.rbac.authorization.k8s.io/*) printf '/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/%s' "$name" ;;
     networkpolicy.networking.k8s.io/*) printf '/apis/networking.k8s.io/v1/namespaces/%s/networkpolicies/%s' "$INSTALL_NAMESPACE" "$name" ;;
     deployment.apps/*) printf '/apis/apps/v1/namespaces/%s/deployments/%s' "$INSTALL_NAMESPACE" "$name" ;;
+    configmap/*) printf '/api/v1/namespaces/%s/configmaps/%s' "$INSTALL_NAMESPACE" "$name" ;;
     resourcequota/*) printf '/api/v1/namespaces/%s/resourcequotas/%s' "$INSTALL_NAMESPACE" "$name" ;;
     serviceaccount/*) printf '/api/v1/namespaces/%s/serviceaccounts/%s' "$INSTALL_NAMESPACE" "$name" ;;
     service/*) printf '/api/v1/namespaces/%s/services/%s' "$INSTALL_NAMESPACE" "$name" ;;

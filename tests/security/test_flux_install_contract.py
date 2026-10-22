@@ -131,6 +131,7 @@ CLUSTER_SCOPED_BINDINGS = (
     "crd-controller-source-flux-system",
 )
 CONTROLLER_DEPLOYMENTS = ("source-controller", "kustomize-controller", "helm-controller")
+TRUST_CONFIGMAPS = ('flux-controller-ca-00f6a1aad627-a', 'flux-controller-ca-00f6a1aad627-b')
 CANARY_NAME = "flux-api-reachability-canary"
 CANARY_IMAGE = (
     "registry.k8s.io/kubectl:v1.36.4@sha256:"
@@ -663,7 +664,7 @@ class InstallerGuardTests(unittest.TestCase):
         self.assertIn("does not enforce restricted Pod Security", self.text)
 
     def test_it_dry_runs_before_it_applies_and_bounds_the_inventory(self):
-        # The gate keeps a server-side dry run and the exact-30 bound, and now
+        # The gate keeps a server-side dry run and the exact-32 bound, and now
         # also carries the fresh-cluster classification (19 cluster-scoped +
         # 11 namespace-not-found children) and the namespace-independent
         # corroboration (client-side strict validation). The behaviour is
@@ -671,9 +672,9 @@ class InstallerGuardTests(unittest.TestCase):
         # corrected gate is reverted to the old "all must be created" shape.
         self.assertIn("--dry-run=server", self.text)
         self.assertIn("--dry-run=client --validate=strict", self.text)
-        self.assertIn("EXPECTED_OBJECTS=30", self.text)
+        self.assertIn("EXPECTED_OBJECTS=32", self.text)
         self.assertIn("EXPECTED_CLUSTER_SCOPED=19", self.text)
-        self.assertIn("EXPECTED_NAMESPACED=11", self.text)
+        self.assertIn("EXPECTED_NAMESPACED=13", self.text)
         self.assertIn('namespaces "flux-system" not found', self.text)
         plan_index = self.text.index('"$MODE" == \'--plan\'')
         apply_index = self.text.rindex("create_phase workloads")
@@ -687,10 +688,10 @@ class InstallerGuardTests(unittest.TestCase):
         self.assertNotIn("apply -k", self.text)
 
     def test_the_phase_constants_partition_the_reviewed_inventory(self):
-        # 27 + 3 = 30 and 4 + 1 = 5. Constants that stopped adding up would let
+        # 29 + 3 = 32 and 4 + 1 = 5. Constants that stopped adding up would let
         # a phase quietly drop an object; the installer re-checks the same sums
         # at run time against the actual split.
-        self.assertIn("EXPECTED_PREREQUISITES=27", self.text)
+        self.assertIn("EXPECTED_PREREQUISITES=29", self.text)
         self.assertIn("EXPECTED_WORKLOADS=3", self.text)
         self.assertIn("EXPECTED_EGRESS_POLICIES=5", self.text)
         self.assertIn("EXPECTED_STARTUP_POLICIES=4", self.text)
@@ -1108,11 +1109,11 @@ class FluxEgressDenyFixtureTests(unittest.TestCase):
 
 
 def _reviewed_render() -> str:
-    """A faithful 30-object skeleton of the reviewed controller render.
+    """A faithful 32-object skeleton of the reviewed controller render.
 
     The stubbed ``kustomize`` prints this, so the installer's own content gates
     (no Flux CR, no Secret, no blanket egress, restricted Pod Security enforced,
-    exactly 30 ``kind:`` lines) run against it, its inventory cross-check finds
+    exactly 32 ``kind:`` lines) run against it, its inventory cross-check finds
     the exact reviewed CRD/ClusterRole/ClusterRoleBinding/Deployment names in
     it, and its document splitter has the same ``---``-separated, two-space
     indented shape ``kustomize`` emits. Only structure matters here —
@@ -1147,6 +1148,9 @@ def _reviewed_render() -> str:
         "apiVersion: v1\nkind: ResourceQuota\nmetadata:\n"
         "  name: critical-pods-flux-system\n  namespace: flux-system\n"
     )
+    for name in TRUST_CONFIGMAPS:
+        docs.append("apiVersion: v1\nkind: ConfigMap\nmetadata:\n"
+                    "  name: {}\n  namespace: flux-system\n".format(name))
     for sa in CONTROLLER_DEPLOYMENTS:
         docs.append(
             "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n"
@@ -1168,8 +1172,8 @@ def _render_with_an_unrecognized_deployment() -> str:
     """The reviewed render with one document the splitter cannot see is a Deployment.
 
     The Service document is replaced by a fourth Deployment whose ``kind`` is
-    quoted. Every count the installer takes still adds up — 30 objects, the three
-    reviewed Deployment names still derive exactly, 27 + 3 still partitions — and
+    quoted. Every count the installer takes still adds up — 32 objects, the three
+    reviewed Deployment names still derive exactly, 29 + 3 still partitions — and
     the document splitter, which matches ``^kind: Deployment$``, leaves this one
     in phase 1. That is the whole hazard: a workload created into the namespace
     BEFORE its egress allows exist, which on an enforcing CNI is the deadlock
@@ -1475,12 +1479,12 @@ case "$verb" in
           printf 'namespace/kube-system created (server dry run)\n'
         fi
         if [[ "$scenario" == 'fresh-genuine-error' ]]; then
-          for index in 1 2 3 4 5 6 7 8 9 10; do
+          for index in 1 2 3 4 5 6 7 8 9 10 11 12; do
             printf 'Error from server (NotFound): error when creating "STDIN": namespaces "flux-system" not found\n'
           done
           printf 'Error from server (Forbidden): error when creating "STDIN": deployments.apps is forbidden\n'
         else
-          for index in 1 2 3 4 5 6 7 8 9 10 11; do
+          for index in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
             printf 'Error from server (NotFound): error when creating "STDIN": namespaces "flux-system" not found\n'
           done
         fi
@@ -1689,6 +1693,7 @@ case "$verb" in
         /api/v1/namespaces/flux-system) target='namespace/flux-system' ;;
         /api/v1/namespaces/flux-system/pods/*) target="pod/${name}" ;;
         /api/v1/namespaces/flux-system/resourcequotas/*) target="resourcequota/${name}" ;;
+        /api/v1/namespaces/flux-system/configmaps/*) target="configmap/${name}" ;;
         /api/v1/namespaces/flux-system/serviceaccounts/*) target="serviceaccount/${name}" ;;
         /api/v1/namespaces/flux-system/services/*) target="service/${name}" ;;
         /apis/apiextensions.k8s.io/v1/customresourcedefinitions/*) target="customresourcedefinition.apiextensions.k8s.io/${name}" ;;
@@ -2016,6 +2021,7 @@ class InstallerBehaviourTestCase(unittest.TestCase):
         ]
         entries.append("resourcequota/critical-pods-flux-system")
         entries += ["serviceaccount/" + name for name in CONTROLLER_DEPLOYMENTS]
+        entries += ["configmap/" + name for name in TRUST_CONFIGMAPS]
         entries.append("service/source-controller")
         entries += ["deployment.apps/" + name for name in CONTROLLER_DEPLOYMENTS]
         return entries
@@ -2190,10 +2196,22 @@ class FixtureFidelityTests(InstallerBehaviourTestCase):
 
     def test_the_render_skeleton_matches_the_reviewed_shape(self):
         render = _reviewed_render()
-        self.assertEqual(render.count("\nkind:") + render.startswith("kind:"), 30)
+        self.assertEqual(render.count("\nkind:") + render.startswith("kind:"), 32)
         self.assertIn("pod-security.kubernetes.io/enforce: restricted", render)
         self.assertNotIn("kind: Secret", render)
         self.assertEqual(_reviewed_egress_render().count("\nkind:"), 5)
+
+    def test_unreviewed_trust_configmap_identity_fails_before_cluster_contact(self):
+        assets = self.base / "assets-unreviewed-trust"
+        assets.mkdir(exist_ok=True)
+        for source in self.assets.iterdir():
+            (assets / source.name).write_bytes(source.read_bytes())
+        controllers = assets / "controllers.yaml"
+        controllers.write_text(read(controllers).replace(TRUST_CONFIGMAPS[0], "flux-controller-ca-000000000000-a"), encoding="utf-8")
+        completed = self._run("--render", assets=assets, omit_bindings=True)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("the rendered ConfigMap inventory is not the reviewed one", completed.stderr)
+        self.assertEqual(read(Path(completed.state) / "calls.log").strip(), "")
 
     def test_render_mode_needs_no_cluster_and_no_binding(self):
         completed = self._run("--render", omit_bindings=True)
@@ -2222,7 +2240,7 @@ class FreshClusterDryRunGateTests(InstallerBehaviourTestCase):
         completed = self._run(scenario="fresh-ok")
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
         self.assertIn(
-            "fresh-cluster dry run clean (19 created + 11 expected namespace-not-found)",
+            "fresh-cluster dry run clean (19 created + 13 expected namespace-not-found)",
             completed.stdout,
         )
         self.assertIn("PLAN only; no mutation attempted", completed.stdout)
@@ -2230,7 +2248,7 @@ class FreshClusterDryRunGateTests(InstallerBehaviourTestCase):
     def test_existing_cluster_shape_is_accepted(self):
         completed = self._run(scenario="existing-ok")
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
-        self.assertIn("existing-cluster dry run clean (30 objects)", completed.stdout)
+        self.assertIn("existing-cluster dry run clean (32 objects)", completed.stdout)
 
     def test_a_foreign_object_in_the_dry_run_fails_closed(self):
         completed = self._run(scenario="fresh-foreign")
@@ -2342,6 +2360,22 @@ class FreshClusterDryRunGateTests(InstallerBehaviourTestCase):
             "networkpolicy allow-egress already exists and is not owned by this install",
             completed.stderr,
         )
+
+
+    def test_foreign_trust_configmaps_are_refused_before_mutation(self):
+        for name in TRUST_CONFIGMAPS:
+            with self.subTest(name=name):
+                state = self._state("existing-ok")
+                registry = state / "registry"
+                registry.write_text("".join(
+                    'configmap/' + name + ' {"app.kubernetes.io/part-of":"foreign"}\n'
+                    if line.startswith("configmap/" + name + " ") else line + "\n"
+                    for line in read(registry).splitlines()
+                ), encoding="utf-8")
+                completed = self._run("--plan", scenario="existing-ok", state=state)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("configmap " + name + " already exists and is not owned by this install", completed.stderr)
+                self.assertEqual(read(state / "applied.log").strip(), "")
 
 
 class InstallOrderingTests(InstallerBehaviourTestCase):
@@ -2502,7 +2536,7 @@ class InstallOrderingTests(InstallerBehaviourTestCase):
         calls = read(Path(completed.state) / "calls.log")
         self.assertIn("phase-1-prerequisites.yaml", calls)
         self.assertIn(
-            "install-flux-controllers: phase prerequisites: creating 27 attempt-bound object(s)",
+            "install-flux-controllers: phase prerequisites: creating 29 attempt-bound object(s)",
             completed.stdout,
         )
         self.assertIn(
@@ -3041,6 +3075,10 @@ class ApplyTransactionTests(InstallerBehaviourTestCase):
             with self.subTest(object=name):
                 self.assertNotIn(name, registry)
         self.assertNotIn("namespace/flux-system", registry)
+        calls = read(Path(completed.state) / "calls.log")
+        for name in TRUST_CONFIGMAPS:
+            self.assertNotIn(name, registry)
+            self.assertIn("delete --raw /api/v1/namespaces/flux-system/configmaps/" + name, calls)
 
     def test_a_partial_first_phase_rolls_back_only_the_applied_prefix(self):
         completed = self._run(

@@ -15,7 +15,16 @@ resources:
   # applies only this root. Authority that replaces authority removed in the
   # same transaction has to be created by that transaction.
   - per-controller-rbac.yaml
+  - trust-a.yaml
+  - trust-b.yaml
 patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: (source|kustomize|helm)-controller
+      namespace: flux-system
+    path: patches/controller-trust.yaml
   - target:
       group: apps
       version: v1
