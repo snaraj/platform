@@ -887,7 +887,21 @@ valid_source_controller_storage if {
   ]) == 0
 
   volumes := object.get(input.spec.template.spec, "volumes", [])
-  count(volumes) == 2
+  count(volumes) == 3
+  # The only additional volume is the exact reviewed public CA projection;
+  # the writable /data and /tmp bounds below remain unchanged.
+  some trust in volumes
+  trust == {
+    "name": "controller-ca",
+    "projected": {"defaultMode": 292, "sources": [
+      {"configMap": {"name": "flux-controller-ca-00f6a1aad627-a", "items": [
+        {"key": "roots-a.pem", "path": "roots-a.pem"},
+      ]}},
+      {"configMap": {"name": "flux-controller-ca-00f6a1aad627-b", "items": [
+        {"key": "roots-b.pem", "path": "roots-b.pem"},
+      ]}},
+    ]},
+  }
   some data_volume in volumes
   data_volume == {"name": "data", "emptyDir": {"sizeLimit": "768Mi"}}
   some tmp in volumes

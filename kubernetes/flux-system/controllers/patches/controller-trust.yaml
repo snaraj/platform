@@ -1,0 +1,36 @@
+# Go reads both its certificate file and certificate directories. Replacing
+# only one leaves the image's old trust anchors reachable. The projected
+# directory contains exactly the two reviewed public PEM parts, read-only.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SSL_CERT_FILE
+    value: /etc/flux-trust/roots-a.pem
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SSL_CERT_DIR
+    value: /etc/flux-trust
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: controller-ca
+    mountPath: /etc/flux-trust
+    readOnly: true
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: controller-ca
+    projected:
+      defaultMode: 0444
+      sources:
+        - configMap:
+            name: flux-controller-ca-00f6a1aad627-a
+            items:
+              - key: roots-a.pem
+                path: roots-a.pem
+        - configMap:
+            name: flux-controller-ca-00f6a1aad627-b
+            items:
+              - key: roots-b.pem
+                path: roots-b.pem
