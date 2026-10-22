@@ -37,6 +37,28 @@ class CloudflaredHostBinaryInstallerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.installer = INSTALLER.read_text(encoding="utf-8")
 
+    def test_connector_release_floor_and_chart_pins_agree(self):
+        """Reject a pre-distrust release or a chart that misses the reviewed bump."""
+        pins = dict(
+            line.split("=", 1)
+            for line in (ROOT / "versions.env").read_text().splitlines()
+            if line and not line.startswith("#")
+        )
+        version = pins["CLOUDFLARED_HOST_VERSION"]
+        self.assertGreaterEqual(tuple(map(int, version.split("."))), (2026, 10, 3))
+        self.assertEqual(pins["CLOUDFLARED_TAG"], version)
+        chart = ROOT / "kubernetes/platform/cloudflare-public/chart"
+        self.assertIn(f'appVersion: "{version}"', (chart / "Chart.yaml").read_text())
+        values = (chart / "values.yaml").read_text()
+        self.assertIn(f'  tag: "{version}"', values)
+        self.assertIn(f'  digest: {pins["CLOUDFLARED_DIGEST"]}', values)
+        # Bind the security floor to the independently verified vendor artifacts;
+        # syntactically valid hashes alone could select a vulnerable old binary.
+        self.assertEqual(pins["CLOUDFLARED_HOST_ARM64_SHA256"],
+                         "89297ebfb9e8c99c0dc013a1140601453cf3798d8306c5591651f4a3f5210be8")
+        self.assertEqual(pins["CLOUDFLARED_DIGEST"],
+                         "sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39")
+
     def test_mutable_staging_path_is_never_executed(self):
         self.assertIn("PATH=/usr/sbin:/usr/bin:/sbin:/bin", self.installer)
         self.assertIn(

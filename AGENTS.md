@@ -125,6 +125,13 @@ detection; Dependabot proposes changes through the existing merge controls.
 Neither changes live state or supplies merge authority. Installed-version and
 health evidence, recovery and bounded operator upgrades remain separate.
 
+**Connector security maintenance (issue #409).** The owner's security-remediation
+commission permits the bounded platform/delivery crossing for cloudflared's
+host version/checksum and image tag/digest in `versions.env`, their matching
+connector chart metadata/values, and validation. It does not transfer other
+platform pins or waive the host installer's trusted reviewed-blob launcher stop.
+Binary compiler evidence, reviewed source and actual rollout remain separate.
+
 ## Delivery lane
 
 This repository must be operable cold by any major frontier model: AGENTS.md
