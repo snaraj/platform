@@ -29,7 +29,7 @@ The installer owns this order:
 
 | Phase | Exact mutation | Invariant |
 | --- | --- | --- |
-| 1 | the 27 non-Deployment objects from the controller render | no controller Pod exists |
+| 1 | the 29 non-Deployment objects from the controller render | no controller Pod exists |
 | 2 | `default-deny`, `flux-controllers-dns`, `flux-controllers-artifacts`, and `flux-controllers-kube-apiserver` | only reviewed startup flows exist |
 | 2b | one `flux-api-reachability-canary` Pod | the selected-CNI in-Pod Service/API path must succeed; the Pod is then deleted and proved absent |
 | 3 | the three controller Deployments | Pods start only after the executable API-path proof |
@@ -130,7 +130,7 @@ COMMON_ARGS=(
 ```
 
 This contacts no cluster. It validates the pinned tools, immutable images,
-exact 30-object controller inventory, 27 + 3 controller split, 4 + 1 policy
+exact 32-object controller inventory, 29 + 3 controller split, 4 + 1 policy
 split, restricted Pod Security labels, deleted blanket egress, absence of Flux
 custom resources and Secret objects, least-privilege effective RBAC inventory, and the
 one-Pod canary shape. It prints three render SHA-256 values and the source
@@ -154,10 +154,10 @@ Where no `flux-system` Namespace exists, server dry-run cannot persist the
 dry-run Namespace before validating its children
 ([kubernetes/kubernetes#83562](https://github.com/kubernetes/kubernetes/issues/83562)).
 The expected, healthy result is exactly 19 independently creatable objects
-(Namespace, eight CRDs, six ClusterRoles, four ClusterRoleBindings) and 11
+(Namespace, eight CRDs, six ClusterRoles, four ClusterRoleBindings) and 13
 namespaced children reporting `namespaces "flux-system" not found`. Any other
 error, object, namespace, status, or diagnostic fails closed. Client-side strict
-validation still covers all 30 objects and the policy/canary renders.
+validation still covers all 32 objects and the policy/canary renders.
 
 On an existing installation, `--plan` is read-only and `--apply` refuses.
 A fresh-install creation ledger cannot restore an existing installation.
@@ -299,3 +299,49 @@ The reviewed render contains no `cluster-reconciler-flux-system` binding, so the
 list above is complete **for the controller install root this repository
 renders**, including the six per-controller objects. `access.yaml` contributes
 only namespaced RBAC and leaves no extra cluster-scoped removal residue.
+
+## Public CA distrust containment
+
+The controller root includes two immutable ConfigMaps holding the reviewed
+public trust bundle. Both `SSL_CERT_FILE` and `SSL_CERT_DIR` select their single
+read-only projected directory. Unix Go loads certificates from both locations;
+setting only the file leaves its default certificate directories reachable.
+Each ConfigMap stays below the existing 128 KiB data-object limit. The volume
+projects only its named PEM key, with mode 0444; missing objects or keys prevent
+Pod startup. No CA comes from a host mount, Secret, or authenticated input.
+
+The public input is the CA bundle in the pinned source-controller v1.9.5 image
+`ghcr.io/fluxcd/source-controller@sha256:6f20d232d596a758c923d2861f23511718fc303b8a2e36a1434a7c736b9f4268`,
+arm64 child `sha256:604035ff6c777e5b977f9c1d192852609b8ab6cfd8c6d6accd0ee27ac473bb55`.
+Its `/etc/ssl/certs/ca-certificates.crt` SHA-256 is
+`b8d837841b88bfaa1a0fa827cbca8e2576418dd47c9fc4bb7f1f9d89c83111b9`.
+The pinned kustomize-controller and helm-controller images carry the same bundle.
+Extract from the public image artifact, never from a live host or Pod. Verify
+that hash before deriving replacement data.
+
+The derivation keeps PEM certificate blocks in their original order and removes
+exactly the certificate whose DER SHA-256 is
+`86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b`
+(emSign ECC Root CA - G3). The [public root inventory](https://emudhra.we-have-a-problem.com/roots.json)
+identifies the same fingerprint. Concatenate the remaining 118 blocks, each
+ending in one newline: the result SHA-256 is
+`00f6a1aad627fd3f6c1bb16065850c7721949e489b65a26a3042091720c7f02e`.
+The first 59 blocks are `roots-a.pem`, the remaining 59 `roots-b.pem`. Nothing
+else is added, reordered or removed. The object names bind that bundle digest;
+a later reviewed bundle needs new immutable names and matching references.
+
+This is interim containment, not a substitute for patched vendor Go builds.
+The [Go system-pool contract](https://pkg.go.dev/crypto/x509#SystemCertPool)
+explains the two overrides. Source `certSecretRef` is insufficient where an OCI
+client appends the system pool. The Kubernetes client still uses its explicit
+ServiceAccount cluster CA; this change grants no API or network authority.
+
+An existing installation still cannot use this create-only installer. Activation
+requires a separately reviewed, owner-authorized in-place procedure, binding the
+exact ConfigMap data and all three Deployment changes. Every controller process
+must restart to load its new system pool; a projected-file update alone does not
+prove activation. That procedure must verify current rollout health, anonymous
+Git and OCI reconciliation, signature verification, and actual forged-chain
+refusal. No source check or merged release proves those live outcomes. Keep the
+filtered store until patched images and fresh negative/positive evidence permit
+its reviewed retirement; do not roll back by restoring the affected root.
