@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 from .test_namespace_capacity_contract import committed_quota
@@ -71,7 +72,22 @@ class ObsyncProxyContract(unittest.TestCase):
         self.assertEqual(len(scans), 1)
         self.assertEqual(set(scans[0]), {"name", "run"})
         scan = scans[0]["run"]
-        self.assertEqual(hashlib.sha256(scan.encode()).hexdigest(), "2c324c9929a1dc90e019ef6e59bb85e195957f77fad8a5bc918fdee553b07e73")
+        self.assertEqual(hashlib.sha256(scan.encode()).hexdigest(), "929f4f28bf4bd26a3a2f27d57ab5d371a2eef9d56a1157f568acae143e673bb5")
+        # Exercise the workflow's actual admission prefix against the selected
+        # image; a stale namespace must fail locally before CI reaches Trivy.
+        admission, separator, _ = scan.partition('docker_config=')
+        self.assertTrue(separator)
+        pin = re.search(r"(?m)^OBSYNC_TLS_PROXY_IMAGE=(\S+)$", (ROOT / "versions.env").read_text()).group(1)
+        for candidate, accepted in (
+            (pin, True),
+            (pin.replace("docker.io/nginx/", "docker.io/nginxinc/"), False),
+            (pin.split("@", 1)[0], False),
+            (pin.replace("docker.io/nginx/", "docker.io/foreign/"), False),
+        ):
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / "versions.env").write_text("OBSYNC_TLS_PROXY_IMAGE=" + candidate + "\n")
+                result = subprocess.run(["bash", "-c", admission], cwd=directory, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode == 0, accepted)
         self.assertTrue(scan.startswith("set -euo pipefail\n"))
         self.assertIn("for platform in linux/amd64 linux/arm64; do\n", scan)
         self.assertIn('trivy image --image-src remote --platform "$platform"', scan)
