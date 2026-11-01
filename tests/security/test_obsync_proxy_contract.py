@@ -51,7 +51,7 @@ class ObsyncProxyContract(unittest.TestCase):
     def test_manifest_and_policy_share_versioned_pin(self):
         pins = re.findall(r"(?m)^OBSYNC_TLS_PROXY_IMAGE=(\S+)$", (ROOT / "versions.env").read_text())
         self.assertEqual(len(pins), 1)
-        self.assertRegex(pins[0], r"^docker\.io/nginxinc/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$")
+        self.assertRegex(pins[0], r"^docker\.io/nginx/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$")
         self.assertEqual(self.by_kind["Deployment"]["spec"]["template"]["spec"]["containers"][0]["image"], pins[0])
         self.assertIn('obsync_proxy_image := "' + pins[0] + '"', (ROOT / "policies/conftest/obsync_tls_proxy.rego").read_text())
 
