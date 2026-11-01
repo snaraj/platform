@@ -66,8 +66,8 @@ Two facts are recorded here, not decided:
   claim. The claim and its volume are created outside Git, and the site's
   Helm account has no claim verbs. A compromised site Pod can read that media
   and cannot write it.
-- **Large media through the edge.** The site serves one roughly 20 MB video
-  through the proxied edge, as naranjo.online already serves films. The open
-  provider-terms question recorded in
-  [ADR 0006](../adr/0006-cloudflare-zero-spend.md) and its 2026-11-01
-  amendment applies to both sites. The owner decides it.
+- **Large media through the edge.** The site's one roughly 20 MB video is not
+  delivered. Under [ADR 0006](../adr/0006-cloudflare-zero-spend.md) and its
+  2026-11-01 amendment, its public delivery stays a `NO-GO`. The site verifies
+  the file on its volume but answers 404 for it, and only an explicit owner
+  decision followed by reviewed changes can lift that.

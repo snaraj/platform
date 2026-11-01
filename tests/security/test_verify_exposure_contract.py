@@ -123,5 +123,58 @@ class VerifyExposureInventoryTests(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0, label)
 
 
+@unittest.skipUnless(BASH, "bash is unavailable")
+class UnexpectedHostnameDenialTests(unittest.TestCase):
+    """The edge's answer to an unapproved name must carry no tenant content.
+
+    This drives the real assert_unexpected_hostname_denied, not the approved
+    identity check above: the edge answers the unexpected name with a 4xx
+    body, and each site's markers must be refused in that body on their own.
+    """
+
+    def _deny(self, body, status="404"):
+        program = (
+            ". '{script}' --help >/dev/null\n"
+            "curl() {{ printf '%s\\n%s' \"$BODY\" \"$STATUS\"; }}\n"
+            "assert_unexpected_hostname_denied naranjo.online\n"
+        ).format(script=SCRIPT)
+        return subprocess.run(
+            [required_tool(BASH, "bash"), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+            env={
+                "PATH": "/usr/bin:/bin",
+                "BODY": body,
+                "STATUS": status,
+                "UNEXPECTED_PUBLIC_HOSTNAME": "probe.hospedajedonlolo.com",
+            },
+        )
+
+    def test_a_clean_denial_passes(self):
+        completed = self._deny("<html><body>not found</body></html>")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("PASS unexpected hostname denied", completed.stdout)
+
+    def test_a_served_page_is_not_a_denial(self):
+        completed = self._deny("<html></html>", status="200")
+        self.assertNotEqual(completed.returncode, 0)
+
+    def test_each_tenant_marker_in_the_denial_body_is_refused(self):
+        markers = {
+            "third-site delivered title": "<title>{}</title>".format(TITLES["hospedajedonlolo.com"]),
+            "third-site booking form": '<form id="booking">',
+            "third-site domain title": "<title>hospedajedonlolo.com</title>",
+            "naranjo title": "<title>naranjo.online</title>",
+            "lidersea title": "<title>lidersea.com</title>",
+            "Svelte fallback marker": "data-static-fallback",
+        }
+        for label, marker in markers.items():
+            with self.subTest(marker=label):
+                completed = self._deny("<html>{}</html>".format(marker))
+                self.assertNotEqual(completed.returncode, 0, label)
+                self.assertIn("received approved tenant content", completed.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
