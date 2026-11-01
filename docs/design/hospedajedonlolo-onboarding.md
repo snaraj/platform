@@ -44,7 +44,8 @@ merge alone:
 - `default-deny`;
 - the `OCIRepository` at the all-zero sentinel digest, with this site's
   publisher identity;
-- the `HelmRelease`, suspended, with values exactly `deploymentReady: true`;
+- the `HelmRelease`, suspended, with values exactly `deploymentReady: false`
+  until step 9 activates it;
 - the kustomization.
 
 That composition merges before step 7.
@@ -52,13 +53,13 @@ That composition merges before step 7.
 **`snaraj/hospedajedonlolo.com`** publishes the signed image and chart. Its
 first Release is what step 9 selects.
 
-Two facts about that chart decide what the edge probes later accept:
+The site serves the owner's delivered page byte for byte, so the edge probes
+hold it to that page's own markers, not the Svelte sites':
 - `scripts/edge-probe.sh` and `scripts/verify-exposure.sh` require the apex to
-  serve exactly `<title>hospedajedonlolo.com</title>`, with no other site's
-  title.
-- The cross-site distinctness item compares asset filenames of the form
-  `/assets/index-<hash>.js|css`. A page with none of them makes that item an
-  ERROR.
+  serve exactly `<title>Hospedaje Don Lolo · Granja Integral</title>`, with no
+  other site's title. The exposure gate also requires the booking form.
+- The cross-site distinctness item compares the page's `style.css` and
+  `app.js` references. A page with neither makes that item an ERROR.
 
 ## 2. One sequencing hazard: the connector release
 
