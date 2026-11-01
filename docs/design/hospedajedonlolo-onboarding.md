@@ -168,12 +168,11 @@ This step carries the same storage gates as naranjo's media claim:
 - the large-media terms question in the 2026-11-01 amendment to
   [ADR 0006](../adr/0006-cloudflare-zero-spend.md).
 
-The video is part of the content the owner delivered, and the owner's
-2026-11-01 commission directs the site's media to be "hosted just like the art
-in naranjo.online", with no change to any content. That direction is the
-owner's answer, for this site, to the terms question the ADR 0006 amendment
-records. It is not evidence that the delivery complies with the self-serve
-terms, and nothing here claims so.
+The video stays undelivered under the ADR 0006 `NO-GO`. The site verifies it
+at startup, so it must be staged like every other file, but answers 404 for
+it (`site.Withheld`); the page shows its poster image. Delivering it needs the
+owner's explicit decision on that boundary and then a reviewed change here and
+in the site repository. Neither a merge nor a journal entry is that decision.
 
 ### Step 4: Tunnel, route, DNS record and token Secret
 

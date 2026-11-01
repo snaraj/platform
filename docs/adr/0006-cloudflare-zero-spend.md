@@ -62,14 +62,11 @@ intact.
 - The zone was hardened before onboarding: DNSSEC active; a null MX, SPF
   `-all` and DMARC `p=reject` (the domain sends no mail); and CAA limited to
   the certificate authorities Universal SSL uses.
-- The site's delivered page includes one video of about 20 MB, loaded only
-  when a visitor presses play (`preload="none"`). The heavy-media terms
-  boundary recorded above applies to it: under the self-serve terms, video
-  served through the proxied edge needs a qualifying paid service, and no
-  zero-spend product meets that. The owner's 2026-11-01 commission directs
-  the site's media to be hosted like naranjo.online's, with no change to any
-  content. This amendment records that direction as the owner's decision for
-  this one file. It does not establish compliance with the terms. The terms
-  allow Cloudflare to limit or redirect such delivery, but never to charge for
-  it, so the zero-spend boundary above is unaffected. The residual risk is
-  that the video becomes unavailable, and only the owner can retire it.
+- The site's delivered page includes one video of about 20 MB. The
+  heavy-media terms boundary recorded above applies to it unchanged: under
+  the self-serve terms, video through the proxied edge needs a qualifying
+  paid service, and no zero-spend product meets that. Its public delivery
+  therefore stays a `NO-GO`. The site verifies the film on its volume but
+  does not serve it (`site.Withheld` in the site repository), and the page
+  shows its poster image. Only the owner can lift this boundary, through an
+  explicit decision followed by a reviewed change in both repositories.
