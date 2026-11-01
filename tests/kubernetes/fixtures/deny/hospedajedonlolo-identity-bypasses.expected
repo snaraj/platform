@@ -8,7 +8,7 @@ OCIRepository hospedajedonlolo-com/hospedajedonlolo-com-chart must select the ex
 OCIRepository hospedajedonlolo-com/hospedajedonlolo-com-chart must verify chart signatures against this site's exact keyless publisher identity
 OCIRepository hospedajedonlolo-com/hospedajedonlolo-com-chart must pull the canonical published chart repository
 HelmRelease hospedajedonlolo-com/hospedajedonlolo-com must stay suspended while its chart selection is pending
-HelmRelease hospedajedonlolo-com values must contain exactly deploymentReady: true
+HelmRelease hospedajedonlolo-com values must contain exactly deploymentReady: false
 HelmRelease hospedajedonlolo-com must use ServiceAccount helm-reconciler
 ResourceQuota hospedajedonlolo-com/namespace-budget must be either the exact zero-Pod gate or a hash-bound reviewed namespace budget
 NetworkPolicy hospedajedonlolo-com/hospedajedonlolo-com-egress must not grant site egress

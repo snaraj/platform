@@ -1,0 +1,10 @@
+# The exact denial each document in hospedajedonlolo-readiness-and-tables.yaml
+# must produce. Removing hospedajedonlolo-com from restricted_role_namespaces,
+# workload_release_names or site_chart_sources silences its line here, and the
+# readiness rule must hold in both directions.
+Role hospedajedonlolo-com/site-exec must not grant direct pods/exec workload control outside the exact Helm readiness read-back
+HelmRelease hospedajedonlolo-com/other-release must use canonical releaseName
+HelmRelease identity hospedajedonlolo-com/other-release must be canonical
+OCIRepository hospedajedonlolo-com/other-chart must use canonical identity hospedajedonlolo-com-chart
+HelmRelease hospedajedonlolo-com values must contain exactly deploymentReady: false
+HelmRelease naranjo-online values must contain exactly deploymentReady: true
