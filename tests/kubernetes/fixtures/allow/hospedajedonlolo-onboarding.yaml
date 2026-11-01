@@ -1,0 +1,238 @@
+# Positive control for the third website (issue #422). Without it every
+# hospedajedonlolo deny arm could be satisfied by a rule that refuses the shape
+# unconditionally, which is not a control at all.
+#
+# It proves the whole admitted tuple is ACCEPTED: the restricted namespace;
+# the budget bound to the shared site evidence; the connector-egress policy
+# pinned to its own instance and reaching only its own origin on TCP 8080; the
+# connector receiving only its own token; the composition shape
+# snaraj/platform-k8s-infra will carry — default-deny, the chart source at the
+# PENDING sentinel with this site's own publisher identity, and a SUSPENDED
+# release whose values are exactly the site readiness scalar; and the site Pod,
+# Service and ingress policy the site chart renders, with egress denied.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hospedajedonlolo-com
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: hospedajedonlolo-com
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    platform.snaraj.dev/capacity-evidence-sha256: 955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34
+spec:
+  hard:
+    pods: "6"
+    requests.cpu: 150m
+    requests.memory: 192Mi
+    limits.cpu: 1200m
+    limits.memory: 768Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-hospedajedonlolo-com
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: hospedajedonlolo-com-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hospedajedonlolo-com
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hospedajedonlolo-com
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hospedajedonlolo-connector-token-file
+  namespace: cloudflare-public
+  labels:
+    app.kubernetes.io/name: cloudflare-public
+    app.kubernetes.io/instance: hospedajedonlolo-com-tunnel
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: cloudflared
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: cloudflared
+      image: cloudflare/cloudflared:2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: 500m, memory: 256Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: [ALL]}
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: tunnel-token
+          mountPath: /etc/cloudflared/token
+          readOnly: true
+  volumes:
+    - name: tunnel-token
+      secret:
+        secretName: hospedajedonlolo-com-tunnel-token
+        defaultMode: 288
+        items:
+          - key: token
+            path: token
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: hospedajedonlolo-com
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.0"
+  name: hospedajedonlolo-com-chart
+  namespace: hospedajedonlolo-com
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/hospedajedonlolo-com
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/hospedajedonlolo\.com/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hospedajedonlolo-com
+  namespace: hospedajedonlolo-com
+  labels:
+    app.kubernetes.io/managed-by: fluxcd
+spec:
+  suspend: true
+  interval: 1m0s
+  maxHistory: 2
+  releaseName: hospedajedonlolo-com
+  serviceAccountName: helm-reconciler
+  driftDetection:
+    mode: enabled
+  chartRef:
+    kind: OCIRepository
+    name: hospedajedonlolo-com-chart
+  install:
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 0
+      strategy: rollback
+  values:
+    deploymentReady: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hospedajedonlolo-allowed
+  namespace: hospedajedonlolo-com
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: hospedajedonlolo-com
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: hospedajedonlolo-com
+      image: ghcr.io/snaraj/hospedajedonlolo-com@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospedajedonlolo-com
+  namespace: hospedajedonlolo-com
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hospedajedonlolo-com
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-to-hospedajedonlolo-com
+  namespace: hospedajedonlolo-com
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hospedajedonlolo-com
+      app.kubernetes.io/instance: hospedajedonlolo-com
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cloudflare-public
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflare-public
+              app.kubernetes.io/instance: hospedajedonlolo-com-tunnel
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress: []

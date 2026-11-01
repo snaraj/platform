@@ -180,7 +180,7 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
         # declares them — `mutate_occurrence` addresses them positionally, so a
         # namespace appended to the file must be appended here too or its rules
         # are never mutated and its subtests silently prove nothing.
-        tenants = ("naranjo-online", "lidersea-com", "obsidian")
+        tenants = ("naranjo-online", "lidersea-com", "obsidian", "hospedajedonlolo-com")
         for tenant_index, namespace in enumerate(tenants):
             for group, resource in (("", "pods"), ("apps", "replicasets")):
                 group_text = '""' if group == "" else group
@@ -307,19 +307,25 @@ class FluxRbacStructuralValidatorTests(unittest.TestCase):
 
         # The other direction: a namespace with no claims of its own may not
         # acquire claim lifecycle by having either shape pasted into its Role.
-        unentitled_role = (
-            "kind: Role\n"
-            "metadata:\n"
-            "  name: helm-reconciler\n"
-            "  namespace: lidersea-com\n"
-            "rules:\n"
-        )
-        for label, rule in (("shared shape", shared), ("named shape", mutation)):
-            with self.subTest(unentitled=label):
-                errors = self.mutate(relative, unentitled_role, unentitled_role + rule)
-                self.assertTrue(
-                    any("PVC lifecycle must be only" in error for error in errors), errors
-                )
+        # `hospedajedonlolo-com` mounts one operator-provisioned media claim and
+        # creates none (issue #422), so its Helm account is in this set too.
+        for namespace in ("lidersea-com", "hospedajedonlolo-com"):
+            unentitled_role = (
+                "kind: Role\n"
+                "metadata:\n"
+                "  name: helm-reconciler\n"
+                "  namespace: {}\n"
+                "rules:\n"
+            ).format(namespace)
+            for label, rule in (("shared shape", shared), ("named shape", mutation)):
+                with self.subTest(unentitled=namespace, shape=label):
+                    errors = self.mutate(
+                        relative, unentitled_role, unentitled_role + rule
+                    )
+                    self.assertTrue(
+                        any("PVC lifecycle must be only" in error for error in errors),
+                        errors,
+                    )
 
     def test_an_unrestricted_impersonate_grant_is_refused(self):
         errors = self.mutate(

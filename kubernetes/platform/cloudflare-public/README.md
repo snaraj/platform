@@ -10,8 +10,9 @@ application on TCP 8080. The application chart owns the reciprocal ingress
 rule. A connector cannot use these policies to reach another application.
 
 Each origin selector names the label the ORIGIN Pods actually carry, and the
-origin is not always the application. For the two sites it is: the connector
-reaches the site Pod on TCP 8080. For `obsync` it is deliberately not — that
+origin is not always the application. For the websites — `naranjo-online`,
+`lidersea-com` and `hospedajedonlolo-com` — it is: the connector reaches the
+site Pod on TCP 8080. For `obsync` it is deliberately not — that
 server speaks plain HTTP, so TLS terminates in-cluster in a dedicated proxy
 workload and the connector reaches the PROXY on its TLS port. The only
 admitted edges are connector to proxy and proxy to application; no policy here

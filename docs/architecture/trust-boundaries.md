@@ -7,6 +7,8 @@
 | `lidersea-com` Tunnel connector | DNS, its own Cloudflare Tunnel transport, `lidersea-com` TCP 8080 only | `naranjo-online` service, Pi host, admin route, Kubernetes API, arbitrary egress |
 | `naranjo-online` pod | Serve `naranjo.online` on TCP 8080 after connector ingress | All egress, API token, other namespaces, host |
 | `lidersea-com` pod | Serve `lidersea.com` on TCP 8080 after connector ingress | All egress, API token, other namespaces, host |
+| `hospedajedonlolo-com` Tunnel connector (onboarded, not deployed) | DNS, its own Cloudflare Tunnel transport, `hospedajedonlolo-com` TCP 8080 only | The other sites' services, Pi host, admin route, Kubernetes API, arbitrary egress |
+| `hospedajedonlolo-com` pod (onboarded, not deployed) | Serve `hospedajedonlolo.com` on TCP 8080 after connector ingress; read one operator-provisioned media claim read-only | All egress, API token, other namespaces, host, any write to the media claim |
 | `obsync` Tunnel connector (onboarded, not deployed) | DNS, its own private Cloudflare Tunnel transport, the `obsync-tls-proxy` endpoint in `obsidian` only | Site services, Pi host, admin route, Kubernetes API, arbitrary egress, any public hostname rule |
 | `obsync` pod in `obsidian` (onboarded, not deployed) | Serve TCP 8080 after in-cluster TLS-proxy ingress, reachable only from the owner's WARP-enrolled devices over a private Tunnel route — no public hostname and no public DNS record | All egress, API token, other namespaces, host, public Internet |
 | naranjo media reader | Read single-link regular delivery derivatives through one rooted, read-only, mount-verified boundary | Originals, staging, metadata, links, nested mounts, writes, directory listing, other host paths |
@@ -17,11 +19,12 @@
 | Admin laptop | TCP 22 after identity/device policy — SSH-only, PLAT-DEC-001; `kubectl` runs on the Pi | Kubernetes API 6443, etcd 2379/2380, kubelet 10250 (host-ingress guard), other Pi traffic, WARP-off remote access |
 | Git publishing identity | Reviewed workstation commit/push through protected `main` workflow | Pi/Flux/CI storage, Cloudflare or cluster deployment authority |
 
-Namespaces `cloudflare-public`, `naranjo-online`, `lidersea-com`, and
-`obsidian` are separate policy and quota boundaries. The two rows marked
-"onboarded, not deployed" describe reviewed desired state, not running objects:
-that workload's chart selection is the fail-closed placeholder digest and its
-release is suspended, so nothing is serving behind them yet. Kubernetes namespace is not the only control:
+Namespaces `cloudflare-public`, `naranjo-online`, `lidersea-com`,
+`hospedajedonlolo-com`, and `obsidian` are separate policy and quota
+boundaries. The rows marked "onboarded, not deployed" describe reviewed desired
+state, not running objects: those workloads' chart selections are the
+fail-closed placeholder digest and their releases are suspended, so nothing is
+serving behind them yet. Kubernetes namespace is not the only control:
 RBAC, NetworkPolicy, Pod Security, image policy, and separate credentials are
 all required. A future PersistentVolume is cluster-scoped and therefore needs
 separate admission/RBAC review; a PVC is not proof that its backing path or

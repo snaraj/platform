@@ -5,8 +5,14 @@ metadata:
   namespace: cloudflare-public
 spec:
   hard:
-    limits.cpu: "2"
-    limits.memory: 1Gi
+    # Four connectors at the chart's 500m/256Mi limit commit 2000m/1Gi. The
+    # ceiling keeps exactly one connector's worth of room above that, which
+    # tests/security/test_namespace_capacity_contract.py asserts, so a
+    # connector replacement or the next connector is a review, not a deadlock.
+    # Pods, requests and Secrets already afford four connectors plus Helm's
+    # two-revision history and are unchanged.
+    limits.cpu: 2500m
+    limits.memory: 1280Mi
     pods: "6"
     requests.cpu: 500m
     requests.memory: 512Mi
@@ -188,4 +194,43 @@ spec:
       defaultRequest:
         cpu: 100m
         memory: 64Mi
+      type: Container
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-budget
+  namespace: hospedajedonlolo-com
+  annotations:
+    platform.snaraj.dev/readiness: reviewed-pi-capacity
+    # The SAME evidence document and five-value map as the two sites, on
+    # purpose: this is the same workload class (a Go standard-library server on
+    # TCP 8080 serving static content, one read-only media mount) measured in
+    # docs/audits/2026-08-22-site-capacity-evidence.md. Reusing that document
+    # binds this budget to bytes that already describe it; a copy would be a
+    # second document stating the same measurement. Audit-byte drift fails the
+    # hash check for all three sites at once; quota drift fails the exact-map
+    # check in validate_repository.py and both Rego surfaces.
+    platform.snaraj.dev/capacity-evidence-sha256: 955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34
+spec:
+  hard:
+    pods: "6"
+    requests.cpu: 150m
+    requests.memory: 192Mi
+    limits.cpu: 1200m
+    limits.memory: 768Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: hospedajedonlolo-com
+spec:
+  limits:
+    - default:
+        cpu: 200m
+        memory: 128Mi
+      defaultRequest:
+        cpu: 25m
+        memory: 32Mi
       type: Container

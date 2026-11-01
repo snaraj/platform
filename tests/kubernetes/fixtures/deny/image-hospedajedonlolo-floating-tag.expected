@@ -1,0 +1,3 @@
+# ImageReferenceGrammarTests pins this exact Conftest denial set: a floating
+# tag plus digest violates this site's canonical grammar only.
+container image-hospedajedonlolo-floating-tag must use the canonical image repository for namespace hospedajedonlolo-com

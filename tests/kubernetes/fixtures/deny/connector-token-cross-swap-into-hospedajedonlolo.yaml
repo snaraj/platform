@@ -1,0 +1,41 @@
+# Cross-swap, the other direction (issue #422): an existing site's connector
+# mounting the NEW site's token. A fourth approved token name widens the set a
+# connector could pick from; only the own-instance derivation keeps it out.
+#
+# ONE document per file, deliberately (see the hospedajedonlolo direction).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lidersea-connector-with-hospedajedonlolo-token
+  namespace: cloudflare-public
+  labels:
+    app.kubernetes.io/name: cloudflare-public
+    app.kubernetes.io/instance: lidersea-com-tunnel
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: cloudflared
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: cloudflared
+      image: cloudflare/cloudflared:2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: 500m, memory: 256Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: [ALL]}
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: tunnel-token
+          mountPath: /etc/cloudflared/token
+          readOnly: true
+  volumes:
+    - name: tunnel-token
+      secret:
+        secretName: hospedajedonlolo-com-tunnel-token
+        defaultMode: 288
+        items:
+          - key: token
+            path: token

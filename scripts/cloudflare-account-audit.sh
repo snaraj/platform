@@ -40,20 +40,25 @@ readonly API_BASE='https://api.cloudflare.com/client/v4'
 readonly SCHEMA='cloudflare-account-audit/1'
 readonly REDACTION_DOMAIN='website-infrastructure/cloudflare-account-audit/v1'
 
-# The audited target state, per ADR 0015 (two per-site Tunnels) and the
-# 2026-08-12 edge attestation. Zone names are the site identities; Tunnel names
-# are the site identity tuples.
+# The audited target state, per ADR 0015 (per-site Tunnels; the third site
+# joined by its 2026-11-01 amendment) and the 2026-08-12 edge attestation. Zone
+# names are the site identities; Tunnel names are the site identity tuples.
 readonly ZONE_A='naranjo.online'
 readonly ZONE_B='lidersea.com'
+readonly ZONE_C='hospedajedonlolo.com'
 readonly TUNNEL_A='naranjo-online'
 readonly TUNNEL_B='lidersea-com'
+readonly TUNNEL_C='hospedajedonlolo-com'
 readonly ORIGIN_A='http://naranjo-online.naranjo-online.svc.cluster.local:8080'
 readonly ORIGIN_B='http://lidersea-com.lidersea-com.svc.cluster.local:8080'
+readonly ORIGIN_C='http://hospedajedonlolo-com.hospedajedonlolo-com.svc.cluster.local:8080'
 # naranjo.online is signed; lidersea.com stays unsigned until the owner's
 # signing ceremony, so "disabled" is its expected DNSSEC state today. If the
 # ceremony happens, this expectation moves in the same reviewed change.
 readonly DNSSEC_A='active'
 readonly DNSSEC_B='disabled'
+# hospedajedonlolo.com was signed when the zone was hardened, before onboarding.
+readonly DNSSEC_C='active'
 
 # grep is resolved absolutely and every pattern is passed with -e: an
 # interactive shell that shims grep to ugrep parses a dash-leading pattern as
@@ -108,7 +113,7 @@ What is audited (all read-only):
   * zone settings: always_use_https, min_tls_version, tls_1_3, 0rtt, ssl, and
     that Cloudflare-managed HSTS stays off because the application owns it
   * DNSSEC status against the per-zone expectation
-  * Tunnel inventory: exactly the two expected per-site Tunnels, one public
+  * Tunnel inventory: exactly the three expected per-site Tunnels, one public
     hostname rule plus a terminal 404 each, and no idle connector
   * no Zero Trust private-network surface: no private routes, no WARP profile
   * DNS inventory: exactly one proxied apex CNAME per zone targeting its own
@@ -438,10 +443,11 @@ audit_tunnels() {
   printf '%s\n' "${response}" >"${WORKDIR}/tunnels.json"
   count="$(jq -r '.result | length' <<<"${response}")"
   names="$(jq -r '[.result[].name] | sort | join(",")' <<<"${response}")"
-  if [[ "${count}" == 2 && "${names}" == "${TUNNEL_B},${TUNNEL_A}" ]]; then
-    ok "tunnel-inventory exactly the two expected per-site Tunnels exist (${names})"
+  # The sorted join is compared, so the order below is alphabetical, not A-B-C.
+  if [[ "${count}" == 3 && "${names}" == "${TUNNEL_C},${TUNNEL_B},${TUNNEL_A}" ]]; then
+    ok "tunnel-inventory exactly the three expected per-site Tunnels exist (${names})"
   else
-    finding "tunnel-inventory count=${count} names=${names} expected exactly ${TUNNEL_A} and ${TUNNEL_B}"
+    finding "tunnel-inventory count=${count} names=${names} expected exactly ${TUNNEL_A}, ${TUNNEL_B} and ${TUNNEL_C}"
   fi
 }
 
@@ -512,7 +518,7 @@ audit_no_private_network() {
   else
     count="$(jq -r '.result | length' <<<"${routes}")"
     if [[ "${count}" == 0 ]]; then
-      ok 'private-routes none exist; the two site Tunnels carry no private network surface'
+      ok 'private-routes none exist; the site Tunnels carry no private network surface'
     else
       finding "private-routes ${count} route(s) exist; ADR 0015 gives the site Tunnels no private or WARP routing"
     fi
@@ -630,7 +636,8 @@ self_test() {
 }
 
 run_audit() {
-  local identity_a identity_b zone_a_id zone_b_id account_id account_b
+  local identity_a identity_b identity_c zone_a_id zone_b_id zone_c_id
+  local account_id account_b account_c
   resolve_tools
   require_token
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/cloudflare-account-audit.XXXXXX")"
@@ -658,9 +665,10 @@ run_audit() {
   printf '\n## zones\n'
   identity_a="$(zone_identity "${ZONE_A}" || true)"
   identity_b="$(zone_identity "${ZONE_B}" || true)"
+  identity_c="$(zone_identity "${ZONE_C}" || true)"
   check
-  if [[ -z "${identity_a}" || -z "${identity_b}" ]]; then
-    finding 'zone-identity one or both zones did not resolve to exactly one zone; the remaining checks would be unsound'
+  if [[ -z "${identity_a}" || -z "${identity_b}" || -z "${identity_c}" ]]; then
+    finding 'zone-identity one or more zones did not resolve to exactly one zone; the remaining checks would be unsound'
     printf '\nRESULT schema=%s checks=%s findings=%s exit=1\n' "${SCHEMA}" "${CHECKS}" "${FINDINGS}"
     return 1
   fi
@@ -668,37 +676,44 @@ run_audit() {
   account_id="${identity_a##* }"
   zone_b_id="${identity_b%% *}"
   account_b="${identity_b##* }"
-  if [[ "${account_id}" == "${account_b}" ]]; then
-    ok "zone-identity account=$(redact "${account_id}") zones=$(redact "${zone_a_id}"),$(redact "${zone_b_id}")"
+  zone_c_id="${identity_c%% *}"
+  account_c="${identity_c##* }"
+  if [[ "${account_id}" == "${account_b}" && "${account_id}" == "${account_c}" ]]; then
+    ok "zone-identity account=$(redact "${account_id}") zones=$(redact "${zone_a_id}"),$(redact "${zone_b_id}"),$(redact "${zone_c_id}")"
   else
-    finding 'zone-identity the two zones live in different accounts; the account-level checks below cover only the first'
+    finding 'zone-identity the zones live in different accounts; the account-level checks below cover only the first'
   fi
 
   printf '\n## zero spend\n'
   audit_account_subscriptions "${account_id}"
   audit_zone_plan "${ZONE_A}" "${zone_a_id}"
   audit_zone_plan "${ZONE_B}" "${zone_b_id}"
+  audit_zone_plan "${ZONE_C}" "${zone_c_id}"
 
   printf '\n## zone settings\n'
   audit_zone_settings "${ZONE_A}" "${zone_a_id}"
   audit_zone_settings "${ZONE_B}" "${zone_b_id}"
+  audit_zone_settings "${ZONE_C}" "${zone_c_id}"
   audit_dnssec "${ZONE_A}" "${zone_a_id}" "${DNSSEC_A}"
   audit_dnssec "${ZONE_B}" "${zone_b_id}" "${DNSSEC_B}"
+  audit_dnssec "${ZONE_C}" "${zone_c_id}" "${DNSSEC_C}"
 
   printf '\n## tunnels\n'
   audit_tunnels "${account_id}" || true
   audit_tunnel_detail "${account_id}" "${TUNNEL_A}" "${ZONE_A}" "${ORIGIN_A}"
   audit_tunnel_detail "${account_id}" "${TUNNEL_B}" "${ZONE_B}" "${ORIGIN_B}"
+  audit_tunnel_detail "${account_id}" "${TUNNEL_C}" "${ZONE_C}" "${ORIGIN_C}"
   audit_no_private_network "${account_id}"
 
   printf '\n## dns\n'
   audit_dns_records "${ZONE_A}" "${zone_a_id}" "$(tunnel_id_for "${TUNNEL_A}")"
   audit_dns_records "${ZONE_B}" "${zone_b_id}" "$(tunnel_id_for "${TUNNEL_B}")"
+  audit_dns_records "${ZONE_C}" "${zone_c_id}" "$(tunnel_id_for "${TUNNEL_C}")"
 
   printf '\n## still needs the owner eyes (not machine-checkable here)\n'
   printf '%s\n' \
     '- the billing page: no trial, add-on, usage-based product, or paid certificate' \
-    '- the two Registrar renewals, identified separately from infrastructure' \
+    '- the three Registrar renewals, identified separately from infrastructure' \
     '- account members and their passkey/MFA posture' \
     '- the API token inventory: nothing long-lived, nothing broader than its purpose'
 

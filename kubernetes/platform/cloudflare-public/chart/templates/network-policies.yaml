@@ -1,5 +1,5 @@
 {{- /*
-The three per-connector origin egress policies are written explicitly, one per
+The per-connector origin egress policies are written explicitly, one per
 workload, looked up by their exact connector key and carrying their literal
 cloudflared-<workload> names, so each egress leg stays auditable in place and
 the reconciliation cannot silently drop one. Each is the egress half of the
@@ -9,6 +9,7 @@ double-pin; the workload chart pins the reciprocal ingress peer to the same
 {{- $naranjo := index .Values.connectors "naranjo-online" -}}
 {{- $lidersea := index .Values.connectors "lidersea-com" -}}
 {{- $obsync := index .Values.connectors "obsync" -}}
+{{- $hospedajedonlolo := index .Values.connectors "hospedajedonlolo-com" -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -149,4 +150,31 @@ spec:
               {{- toYaml $obsync.origin.podLabels | nindent 14 }}
       ports:
         - port: {{ $obsync.origin.port }}
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-hospedajedonlolo-com
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cloudflare-public.connectorLabels" (dict "root" $ "instance" $hospedajedonlolo.instance) | nindent 4 }}
+spec:
+  # Per-connector name+instance selector: only the hospedajedonlolo connector
+  # may reach the hospedajedonlolo origin.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "cloudflare-public.name" . }}
+      app.kubernetes.io/instance: {{ $hospedajedonlolo.instance }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $hospedajedonlolo.origin.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $hospedajedonlolo.origin.podLabels | nindent 14 }}
+      ports:
+        - port: {{ $hospedajedonlolo.origin.port }}
           protocol: TCP

@@ -29,7 +29,7 @@ umask 077
 # repositories gate on creation and update with no bypass actors, whereas tag
 # creation there is unrestricted (ADR 0016 amendment 2026-08-22). RELEASE_TAG
 # above still pins WHICH release is being verified.
-[[ "${WORKFLOW_IDENTITY}" =~ ^https://github\.com/snaraj/(naranjo\.online|lidersea\.com)/\.github/workflows/release-publisher\.yml@refs/heads/main$ ]] || {
+[[ "${WORKFLOW_IDENTITY}" =~ ^https://github\.com/snaraj/(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)/\.github/workflows/release-publisher\.yml@refs/heads/main$ ]] || {
   printf 'WORKFLOW_IDENTITY is outside the protected-main publisher trust boundary\n' >&2
   exit 2
 }

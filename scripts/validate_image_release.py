@@ -33,6 +33,10 @@ SITE_CONTRACTS = {
         "domain": "lidersea.com",
         "gate": "LIDERSEA_COM_PRODUCTION_GRADUATED",
     },
+    "hospedajedonlolo-com": {
+        "domain": "hospedajedonlolo.com",
+        "gate": "HOSPEDAJEDONLOLO_COM_PRODUCTION_GRADUATED",
+    },
 }
 
 
@@ -87,7 +91,7 @@ def repository_errors(root, site=None):
     policy = read_policy(root)
     if policy is None:
         return [
-            "release-policy.env must contain exactly the two reviewed yes/no "
+            "release-policy.env must contain exactly the three reviewed yes/no "
             "production-graduation gates"
         ]
     return []

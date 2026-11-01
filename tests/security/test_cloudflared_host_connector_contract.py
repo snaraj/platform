@@ -69,7 +69,8 @@ class CloudflaredHostBinaryInstallerTests(unittest.TestCase):
     def assert_rendered_chart_pins(self, rendered, version, digest):
         # Check Helm's interpretation, not text that may be an inert YAML comment.
         images = re.findall(r'^ +image: "([^"\n]+)"$', rendered, re.MULTILINE)
-        self.assertEqual(images, [f"cloudflare/cloudflared:{version}@{digest}"] * 3)
+        # One image per rendered connector Deployment; four since issue #422.
+        self.assertEqual(images, [f"cloudflare/cloudflared:{version}@{digest}"] * 4)
         versions = re.findall(r'^ +app\.kubernetes\.io/version: "([^"\n]+)"$',
                               rendered, re.MULTILINE)
         self.assertEqual(set(versions), {version})
