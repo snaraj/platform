@@ -8,6 +8,14 @@ readonly NARANJO_HOSTNAME='naranjo.online'
 readonly LIDERSEA_HOSTNAME='lidersea.com'
 readonly HOSPEDAJEDONLOLO_HOSTNAME='hospedajedonlolo.com'
 readonly APPROVED_HOSTNAMES="${NARANJO_HOSTNAME} ${LIDERSEA_HOSTNAME} ${HOSPEDAJEDONLOLO_HOSTNAME}"
+# hospedajedonlolo.com serves the owner's delivered page byte for byte: its
+# identity is that page's own title and its content marker is its booking form,
+# not the Svelte sites' built-application markers.
+readonly HOSPEDAJEDONLOLO_TITLE='Hospedaje Don Lolo · Granja Integral'
+
+site_title() {
+  if [[ "$1" == "$HOSPEDAJEDONLOLO_HOSTNAME" ]]; then printf '%s' "$HOSPEDAJEDONLOLO_TITLE"; else printf '%s' "$1"; fi
+}
 PYTHON_BIN=''
 
 die() {
@@ -93,12 +101,16 @@ assert_site_identity() {
   [[ "$status" == '200' ]] || die "${hostname} returned HTTP ${status}, expected 200"
   body="$(curl --fail --silent --show-error --max-time 15 "https://${hostname}/")" || \
     die "${hostname} body request failed"
-  grep -Fq 'data-static-fallback' <<<"$body" || die "${hostname} lacks the built application fallback"
-  grep -Fq 'Hello World!' <<<"$body" || die "${hostname} lacks the expected application content"
-  grep -Fq "<title>${hostname}</title>" <<<"$body" || die "${hostname} did not return its exact tenant identity"
+  if [[ "$hostname" == "$HOSPEDAJEDONLOLO_HOSTNAME" ]]; then
+    grep -Fq '<form id="booking">' <<<"$body" || die "${hostname} lacks the delivered booking form"
+  else
+    grep -Fq 'data-static-fallback' <<<"$body" || die "${hostname} lacks the built application fallback"
+    grep -Fq 'Hello World!' <<<"$body" || die "${hostname} lacks the expected application content"
+  fi
+  grep -Fq "<title>$(site_title "$hostname")</title>" <<<"$body" || die "${hostname} did not return its exact tenant identity"
   for other_hostname in $APPROVED_HOSTNAMES; do
     [[ "$other_hostname" != "$hostname" ]] || continue
-    if grep -Fq "<title>${other_hostname}</title>" <<<"$body"; then
+    if grep -Fq "<title>$(site_title "$other_hostname")</title>" <<<"$body"; then
       die "${hostname} returned the ${other_hostname} tenant's identity"
     fi
   done
@@ -146,7 +158,8 @@ assert_unexpected_hostname_denied() {
   status="${body##*$'\n'}"
   body="${body%$'\n'*}"
   [[ "$status" =~ ^4[0-9][0-9]$ ]] || die "unexpected hostname was not denied with a 4xx response (HTTP ${status})"
-  if grep -Eq '<title>(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)</title>|data-static-fallback|Hello World!' <<<"$body"; then
+  if grep -Eq '<title>(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)</title>|data-static-fallback|Hello World!|<form id="booking">' <<<"$body" || \
+    grep -Fq "<title>${HOSPEDAJEDONLOLO_TITLE}</title>" <<<"$body"; then
     die 'unexpected hostname received approved tenant content'
   fi
   printf 'PASS unexpected hostname denied at the edge without tenant content (HTTP %s)\n' "$status"
