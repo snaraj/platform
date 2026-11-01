@@ -632,19 +632,35 @@ class EdgeProbeEnforcementScopeTests(unittest.TestCase):
 
     def test_a_site_carrying_any_other_site_identity_is_a_gap(self):
         others = "naranjo.online lidersea.com"
-        own = self._identity(
+        # The third site serves the owner's delivered page, so its identity is
+        # that page's own title, not its domain.
+        delivered = "<title>Hospedaje Don Lolo \u00b7 Granja Integral</title>"
+        own = self._identity(delivered, "hospedajedonlolo.com", others)
+        self.assertEqual(own[3:5], ["assert", "PASS"])
+        # The domain-as-title shape the Svelte sites use is NOT this site's
+        # identity: accepting it would let another build pass as this one.
+        domain_titled = self._identity(
             "<title>hospedajedonlolo.com</title>", "hospedajedonlolo.com", others
         )
-        self.assertEqual(own[3:5], ["assert", "PASS"])
+        self.assertEqual(domain_titled[3:5], ["assert", "GAP"])
         # The SECOND name in the list, so a check that only looked at the
         # first other site would pass this response.
         leaked = self._identity(
-            "<title>hospedajedonlolo.com</title>\n<p><title>lidersea.com</title></p>\n",
+            delivered + "\n<p><title>lidersea.com</title></p>\n",
             "hospedajedonlolo.com",
             others,
         )
         self.assertEqual(leaked[3:5], ["assert", "GAP"])
         self.assertIn("lidersea.com", leaked[6])
+        # And the reverse direction: a Svelte site carrying the delivered page's
+        # title has picked up the third site's identity.
+        reverse = self._identity(
+            "<title>naranjo.online</title>\n" + delivered,
+            "naranjo.online",
+            "lidersea.com hospedajedonlolo.com",
+        )
+        self.assertEqual(reverse[3:5], ["assert", "GAP"])
+        self.assertIn("hospedajedonlolo.com", reverse[6])
 
     def test_two_verdicts_for_one_key_collapse_to_divergent(self):
         # The behaviour that silently mislabelled the two boundary tests above.

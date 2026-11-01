@@ -18,6 +18,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-exposure.sh"
 BASH = shutil.which("bash")
 SITES = ("naranjo.online", "lidersea.com", "hospedajedonlolo.com")
+# Each site's served <title>: the two Svelte sites title themselves with their
+# domain; the third serves the owner's delivered page and its own title.
+TITLES = {
+    "naranjo.online": "naranjo.online",
+    "lidersea.com": "lidersea.com",
+    "hospedajedonlolo.com": "Hospedaje Don Lolo \u00b7 Granja Integral",
+}
+
+
+def own_body(site):
+    """The root body a healthy site serves, as far as identity is concerned."""
+    if site == "hospedajedonlolo.com":
+        return '<title>{}</title> <form id="booking">'.format(TITLES[site])
+    return "<title>{}</title> data-static-fallback Hello World!".format(site)
 
 # A canned edge: every response a healthy site gives, with the root body taken
 # from $BODY so each test chooses what the apex serves.
@@ -71,25 +85,42 @@ class VerifyExposureInventoryTests(unittest.TestCase):
                 self.assertEqual(completed.returncode == 0, accepted, completed.stderr)
 
     def test_each_site_must_serve_only_its_own_identity(self):
-        own = "<title>{}</title> data-static-fallback Hello World!"
         for site in SITES:
             with self.subTest(site=site, leak=None):
                 completed = self._run(
                     "assert_site_identity '{}'".format(site),
-                    env="export BODY='{}'\n".format(own.format(site)),
+                    env="export BODY='{}'\n".format(own_body(site)),
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
             for other in SITES:
                 if other == site:
                     continue
                 with self.subTest(site=site, leak=other):
-                    leaked = own.format(site) + " <title>{}</title>".format(other)
+                    leaked = own_body(site) + " <title>{}</title>".format(TITLES[other])
                     completed = self._run(
                         "assert_site_identity '{}'".format(site),
                         env="export BODY='{}'\n".format(leaked),
                     )
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn(other, completed.stderr)
+
+    def test_the_delivered_page_is_held_to_its_own_markers(self):
+        # The third site serves the owner's delivered page byte for byte, so it
+        # is identified by that page's own title and booking form; neither the
+        # Svelte sites' domain title nor their build markers may stand in.
+        site = "hospedajedonlolo.com"
+        for label, body in (
+            ("domain title instead of the delivered one",
+             "<title>hospedajedonlolo.com</title> <form id=\"booking\">"),
+            ("Svelte markers instead of the booking form",
+             "<title>{}</title> data-static-fallback Hello World!".format(TITLES[site])),
+        ):
+            with self.subTest(case=label):
+                completed = self._run(
+                    "assert_site_identity '{}'".format(site),
+                    env="export BODY='{}'\n".format(body),
+                )
+                self.assertNotEqual(completed.returncode, 0, label)
 
 
 if __name__ == "__main__":
