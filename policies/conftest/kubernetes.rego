@@ -313,9 +313,11 @@ site_chart_releases := {
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   },
   # Pending for the same reason: snaraj/hospedajedonlolo.com has not published
-  # its first chart, so its selection is the same fail-closed sentinel.
+  # its first chart, so its selection is the same fail-closed sentinel. The
+  # audit tag names that first release, 0.1.1, exactly as the pending
+  # composition in snaraj/platform-k8s-infra does.
   "hospedajedonlolo-com": {
-    "tag": "0.1.0",
+    "tag": "0.1.1",
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   },
 }
@@ -1541,10 +1543,18 @@ deny contains msg if {
 # A site release is bound to its published chart artifact and to nothing else.
 # An inline chart block would reintroduce branch-head tracking beside the
 # digest-selected source and give the release two competing chart identities.
+# A pending site's release states exactly deploymentReady: false. Its chart
+# selection is the fail-closed sentinel, so a ready claim would be false; the
+# reviewed activation change that selects a real digest flips it to true in the
+# same edit. An active site states exactly true.
+site_release_ready(namespace) := false if {
+  namespace in pending_chart_namespaces
+} else := true
+
 valid_site_release_values if {
   spec := object.get(input, "spec", null)
   is_object(spec)
-  object.get(spec, "values", null) == {"deploymentReady": true}
+  object.get(spec, "values", null) == {"deploymentReady": site_release_ready(input.metadata.namespace)}
 }
 
 deny contains msg if {
@@ -1552,7 +1562,7 @@ deny contains msg if {
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
   input.metadata.namespace in site_namespaces
   not valid_site_release_values
-  msg := sprintf("HelmRelease %s values must contain exactly deploymentReady: true", [input.metadata.name])
+  msg := sprintf("HelmRelease %s values must contain exactly deploymentReady: %v", [input.metadata.name, site_release_ready(input.metadata.namespace)])
 }
 
 deny contains msg if {

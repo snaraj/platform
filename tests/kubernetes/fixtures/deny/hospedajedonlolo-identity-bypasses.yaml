@@ -10,7 +10,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   annotations:
-    platform.snaraj.dev/chart-release: "0.1.0"
+    platform.snaraj.dev/chart-release: "0.1.1"
   name: hospedajedonlolo-com-chart
   namespace: hospedajedonlolo-com
 spec:
@@ -34,7 +34,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   annotations:
-    platform.snaraj.dev/chart-release: "0.1.0"
+    platform.snaraj.dev/chart-release: "0.1.1"
   name: hospedajedonlolo-com-chart
   namespace: hospedajedonlolo-com
 spec:
@@ -57,7 +57,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   annotations:
-    platform.snaraj.dev/chart-release: "0.1.0"
+    platform.snaraj.dev/chart-release: "0.1.1"
   name: hospedajedonlolo-com-chart
   namespace: hospedajedonlolo-com
 spec:
@@ -105,7 +105,7 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: true
+    deploymentReady: false
 ---
 # A suspended release whose values smuggle an image override beside the
 # readiness scalar. The signed chart is the sole image-identity carrier.
@@ -136,7 +136,7 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: true
+    deploymentReady: false
     image:
       tag: latest
 ---
@@ -169,7 +169,7 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: true
+    deploymentReady: false
 ---
 # The budget wearing obsync's reviewed map and evidence hash. Both are
 # individually approved values; neither is this namespace's.

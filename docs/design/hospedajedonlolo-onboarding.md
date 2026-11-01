@@ -114,14 +114,17 @@ untouched. This patch changes nothing else.
     kubectl create --filename kubernetes/flux-system/access.yaml \
       --dry-run=server --output name
 
-The dry run must report exactly nine new objects:
-- `ServiceAccount` `default`, `helm-reconciler`, `Role` and `RoleBinding`
+The dry run must report exactly eight new objects:
+- `ServiceAccount` `helm-reconciler`, `Role` and `RoleBinding`
   `flux-controller-impersonation`, `flux-release-reconciler` and
   `helm-reconciler`, and `RoleBinding` `hospedajedonlolo-com-reconciler`, all
   in `hospedajedonlolo-com`;
 - `ServiceAccount` `hospedajedonlolo-com-reconciler` in `flux-system`.
 
-Then run it for real. The `flux-system` impersonation Role is an UPDATE.
+The ninth object in `access.yaml`, the namespace's `default` ServiceAccount,
+already exists: the namespace controller creates it in step 1. Patch it to
+`automountServiceAccountToken: false` after a test of its resourceVersion, as
+`access.yaml` declares. Then run the eight for real. The `flux-system` impersonation Role is an UPDATE.
 Journal it, and append exactly one name after a test of the complete current
 list:
 
@@ -165,7 +168,12 @@ This step carries the same storage gates as naranjo's media claim:
 - the large-media terms question in the 2026-11-01 amendment to
   [ADR 0006](../adr/0006-cloudflare-zero-spend.md).
 
-Record the owner's acceptance of each in the journal before the claim binds.
+The video is part of the content the owner delivered, and the owner's
+2026-11-01 commission directs the site's media to be "hosted just like the art
+in naranjo.online", with no change to any content. That direction is the
+owner's answer, for this site, to the terms question the ADR 0006 amendment
+records. It is not evidence that the delivery complies with the self-serve
+terms, and nothing here claims so.
 
 ### Step 4: Tunnel, route, DNS record and token Secret
 
@@ -272,7 +280,9 @@ The site publishes its first signed chart. Then one reviewed change in
 `platform-k8s-infra` and one in this repository move the namespace out of the
 pending set together:
 - the real `(tag, digest)` pair replaces the sentinel;
-- the HelmRelease is unsuspended;
+- the HelmRelease is unsuspended, and its values move from
+  `deploymentReady: false` to `deploymentReady: true`, which policy requires of
+  an active site and refuses for a pending one;
 - `pending_chart_namespaces` drops `hospedajedonlolo-com`.
 
 Policy refuses either half alone.
@@ -305,8 +315,21 @@ These steps undo the ceremony without deleting data:
   objects.
 - **Restore the source filters.** Apply the inverse of each step 6 patch, with
   the same tests.
-- **Close the edge.** Revoking the Tunnel token disconnects the edge at once.
-  The other sites keep serving.
+- **Close the edge.** Rotating a Tunnel token stops new connections with the
+  old token, but connectors that are already connected stay up. Closing the
+  edge is therefore a sequence, run with Cloudflare's CLI:
+  1. Delete the apex record with `cf dns records delete`, so the hostname no
+     longer routes to the Tunnel.
+  2. Scale `hospedajedonlolo-com-tunnel` to zero replicas.
+  3. For a suspected token compromise, rotate the Tunnel secret with
+     `cf tunnels edit` (captured as in step 4), then run
+     `cf tunnels connections cleanup` to drop every remaining connection,
+     including any connector outside this cluster.
+
+  Prove the closure: `cf tunnels connections list` for this Tunnel is empty,
+  the apex does not resolve, and a request to it fails. Prove the isolation:
+  the other three Tunnels' connection sets are unchanged, the other sites
+  still answer, and their token Secrets' `resourceVersion`s match the journal.
 - **Keep the media.** The PV is `Retain`, so the media survives any of the
   above. Never delete the media directory to recover a deployment.
 

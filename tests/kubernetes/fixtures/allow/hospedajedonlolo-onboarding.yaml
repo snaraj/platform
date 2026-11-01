@@ -115,7 +115,7 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   annotations:
-    platform.snaraj.dev/chart-release: "0.1.0"
+    platform.snaraj.dev/chart-release: "0.1.1"
   name: hospedajedonlolo-com-chart
   namespace: hospedajedonlolo-com
 spec:
@@ -160,7 +160,7 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: true
+    deploymentReady: false
 ---
 apiVersion: v1
 kind: Pod
