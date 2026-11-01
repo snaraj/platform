@@ -258,7 +258,8 @@ for raw in rendered_prerequisites.read_text(encoding="utf-8").splitlines():
 if current:
     documents.append(current)
 
-site_namespaces = {"naranjo-online", "lidersea-com"}
+# Every website namespace whose budget is bound to the shared site evidence.
+site_namespaces = {"naranjo-online", "lidersea-com", "hospedajedonlolo-com"}
 site_quotas = []
 for document in documents:
     kinds = [plain_scalar(line.split(":", 1)[1]) for line in document if line.startswith("kind:")]
@@ -270,8 +271,8 @@ for document in documents:
 
 expected_identities = {(namespace, "namespace-budget") for namespace in site_namespaces}
 actual_identities = {(metadata.get("namespace"), metadata.get("name")) for metadata, _ in site_quotas}
-if len(site_quotas) != 2 or actual_identities != expected_identities:
-    raise SystemExit("rendered prerequisites must contain exactly two promoted site namespace-budget quotas")
+if len(site_quotas) != len(site_namespaces) or actual_identities != expected_identities:
+    raise SystemExit("rendered prerequisites must contain exactly one promoted namespace-budget quota per site")
 for metadata, annotations in site_quotas:
     identity = f"{metadata['namespace']}/{metadata['name']}"
     if annotations.get("platform.snaraj.dev/readiness") != "reviewed-pi-capacity":
@@ -286,7 +287,7 @@ except ValueError as exc:
 age = dt.datetime.now(dt.timezone.utc) - reviewed
 if age.total_seconds() < -300 or age > dt.timedelta(days=7):
     raise SystemExit("capacity review is future-dated or older than seven days")
-print("release-gate: PASS local capacity contract is current, commit-bound, and matches both rendered site quotas")
+print("release-gate: PASS local capacity contract is current, commit-bound, and matches every rendered site quota")
 PY
   CAPACITY_EVIDENCE_SHA256="$(awk -F= '$1 == "DISCOVERY_REPORT_SHA256" {print $2}' "$CAPACITY_EVIDENCE_FILE")"
   [[ "$CAPACITY_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || die 'validated capacity evidence hash could not be reloaded'

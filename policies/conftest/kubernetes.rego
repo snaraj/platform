@@ -4,9 +4,9 @@ import rego.v1
 
 workload_kinds := {"Pod", "Deployment", "ReplicaSet", "DaemonSet", "StatefulSet", "Job", "CronJob"}
 
-tenant_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian"}
+tenant_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian", "hospedajedonlolo-com"}
 
-restricted_role_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian"}
+restricted_role_namespaces := {"cloudflare-public", "naranjo-online", "lidersea-com", "obsidian", "hospedajedonlolo-com"}
 
 # Every private, loopback, link-local, carrier-grade-NAT, multicast, and
 # reserved block that a "public destinations only" egress rule must exclude.
@@ -23,11 +23,14 @@ private_and_reserved_ranges := {
   "240.0.0.0/4",
 }
 
-site_namespaces := {"naranjo-online", "lidersea-com"}
+# The WEBSITES. `hospedajedonlolo-com` joined on 2026-11-01 (issue #422) with
+# the same chart shape as the first two, so every shape rule keyed on this set
+# binds it without a site-specific arm.
+site_namespaces := {"naranjo-online", "lidersea-com", "hospedajedonlolo-com"}
 
 # Every namespace that reconciles a published, cosign-verified OCI chart under
 # `kubernetes/websites/`. Wider than site_namespaces above, which stays exactly
-# the two WEBSITES: their charts render an identical Deployment, ingress policy
+# the WEBSITES: their charts render an identical Deployment, ingress policy
 # name, ServiceAccount name and tmp volume, and those shape rules would be
 # wrong — not merely wider — applied to a different application. What every
 # member of this set does share is the chart-SOURCE contract: canonical
@@ -44,7 +47,7 @@ chart_source_namespaces := site_namespaces | {"obsidian"}
 # therefore only appear in the same reviewed change that removes the namespace
 # from this set and records its (tag, digest) pair — the opposite of a gap a
 # selection could drift through.
-pending_chart_namespaces := {"obsidian"}
+pending_chart_namespaces := {"obsidian", "hospedajedonlolo-com"}
 
 sentinel_chart_digest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -69,6 +72,7 @@ workload_release_names := {
   "naranjo-online": "naranjo-online",
   "lidersea-com": "lidersea-com",
   "obsidian": "obsync",
+  "hospedajedonlolo-com": "hospedajedonlolo-com",
 }
 
 helm_reconciler_accounts := {
@@ -76,6 +80,7 @@ helm_reconciler_accounts := {
   "naranjo-online": "helm-reconciler",
   "lidersea-com": "helm-reconciler",
   "obsidian": "obsync-helm-reconciler",
+  "hospedajedonlolo-com": "helm-reconciler",
 }
 
 # The namespaces a reviewed hash-bound namespace budget is required for. The
@@ -226,18 +231,21 @@ approved_kustomization_accounts := {
   "naranjo-online-reconciler": "naranjo-online-reconciler",
   "lidersea-com-reconciler": "lidersea-com-reconciler",
   "obsync-reconciler": "obsync-reconciler",
+  "hospedajedonlolo-com-reconciler": "hospedajedonlolo-com-reconciler",
 }
 
 approved_kustomization_paths := {
   "naranjo-online-reconciler": "./kubernetes/websites/naranjo-online",
   "lidersea-com-reconciler": "./kubernetes/websites/lidersea-com",
   "obsync-reconciler": "./kubernetes/websites/obsync",
+  "hospedajedonlolo-com-reconciler": "./kubernetes/websites/hospedajedonlolo-com",
 }
 
 approved_kustomization_dependencies := {
   "naranjo-online-reconciler": set(),
   "lidersea-com-reconciler": set(),
   "obsync-reconciler": set(),
+  "hospedajedonlolo-com-reconciler": set(),
 }
 
 # The ServiceAccount each namespace's workload Pods may run as. Each chart
@@ -251,6 +259,7 @@ site_workload_accounts := {
   "naranjo-online": "naranjo-online",
   "lidersea-com": "lidersea-com",
   "obsidian": "obsync",
+  "hospedajedonlolo-com": "hospedajedonlolo-com",
 }
 
 # Only the connector release still resolves its chart from a Git source; both
@@ -275,12 +284,14 @@ site_chart_sources := {
   "naranjo-online": "naranjo-online-chart",
   "lidersea-com": "lidersea-com-chart",
   "obsidian": "obsync-chart",
+  "hospedajedonlolo-com": "hospedajedonlolo-com-chart",
 }
 
 site_chart_urls := {
   "naranjo-online": "oci://ghcr.io/snaraj/charts/naranjo-online",
   "lidersea-com": "oci://ghcr.io/snaraj/charts/lidersea-com",
   "obsidian": "oci://ghcr.io/snaraj/charts/obsync",
+  "hospedajedonlolo-com": "oci://ghcr.io/snaraj/charts/hospedajedonlolo-com",
 }
 
 # The audit tag is paired with the immutable manifest digest Flux consumes.
@@ -299,6 +310,14 @@ site_chart_releases := {
   # the digest rule below requires exactly it.
   "obsidian": {
     "tag": "0.1.0",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  },
+  # Pending for the same reason: snaraj/hospedajedonlolo.com has not published
+  # its first chart, so its selection is the same fail-closed sentinel. The
+  # audit tag names that first release, 0.1.1, exactly as the pending
+  # composition in snaraj/platform-k8s-infra does.
+  "hospedajedonlolo-com": {
+    "tag": "0.1.1",
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   },
 }
@@ -324,6 +343,10 @@ site_chart_identities := {
   "obsidian": {
     "issuer": `^https://token\.actions\.githubusercontent\.com$`,
     "subject": `^https://github\.com/snaraj/obsync/\.github/workflows/release-publisher\.yml@refs/heads/main$`,
+  },
+  "hospedajedonlolo-com": {
+    "issuer": `^https://token\.actions\.githubusercontent\.com$`,
+    "subject": `^https://github\.com/snaraj/hospedajedonlolo\.com/\.github/workflows/release-publisher\.yml@refs/heads/main$`,
   },
 }
 
@@ -446,6 +469,7 @@ origin_app_labels := {
   "naranjo-online": "naranjo-online",
   "lidersea-com": "lidersea-com",
   "obsidian": "obsync-tls-proxy",
+  "hospedajedonlolo-com": "hospedajedonlolo-com",
 }
 
 # The port each origin listens on, per namespace for the same reason the label
@@ -456,6 +480,7 @@ origin_ports := {
   "naranjo-online": 8080,
   "lidersea-com": 8080,
   "obsidian": 8443,
+  "hospedajedonlolo-com": 8080,
 }
 
 valid_public_site_rule(rule) if {
@@ -677,6 +702,17 @@ reviewed_namespace_capacity := {
       "limits.memory": "2560Mi",
     },
   },
+  # Same workload class as the first two sites, same evidence, same map.
+  "hospedajedonlolo-com": {
+    "evidence": "955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34",
+    "hard": {
+      "pods": "6",
+      "requests.cpu": "150m",
+      "requests.memory": "192Mi",
+      "limits.cpu": "1200m",
+      "limits.memory": "768Mi",
+    },
+  },
 }
 
 valid_reviewed_capacity_quota if {
@@ -735,6 +771,7 @@ connector_instances := {
   "naranjo-online": "naranjo-online-tunnel",
   "lidersea-com": "lidersea-com-tunnel",
   "obsidian": "obsync-tunnel",
+  "hospedajedonlolo-com": "hospedajedonlolo-com-tunnel",
 }
 
 # The reviewed connector Deployment inventory (ADR 0015 and its 2026-09-07
@@ -1506,10 +1543,18 @@ deny contains msg if {
 # A site release is bound to its published chart artifact and to nothing else.
 # An inline chart block would reintroduce branch-head tracking beside the
 # digest-selected source and give the release two competing chart identities.
+# A pending site's release states exactly deploymentReady: false. Its chart
+# selection is the fail-closed sentinel, so a ready claim would be false; the
+# reviewed activation change that selects a real digest flips it to true in the
+# same edit. An active site states exactly true.
+site_release_ready(namespace) := false if {
+  namespace in pending_chart_namespaces
+} else := true
+
 valid_site_release_values if {
   spec := object.get(input, "spec", null)
   is_object(spec)
-  object.get(spec, "values", null) == {"deploymentReady": true}
+  object.get(spec, "values", null) == {"deploymentReady": site_release_ready(input.metadata.namespace)}
 }
 
 deny contains msg if {
@@ -1517,7 +1562,7 @@ deny contains msg if {
   input.apiVersion == "helm.toolkit.fluxcd.io/v2"
   input.metadata.namespace in site_namespaces
   not valid_site_release_values
-  msg := sprintf("HelmRelease %s values must contain exactly deploymentReady: true", [input.metadata.name])
+  msg := sprintf("HelmRelease %s values must contain exactly deploymentReady: %v", [input.metadata.name, site_release_ready(input.metadata.namespace)])
 }
 
 deny contains msg if {
@@ -2218,6 +2263,7 @@ deny contains msg if {
     "naranjo-online": "ghcr[.]io/snaraj/naranjo-online(:v[0-9]+[.][0-9]+[.][0-9]+)?",
     "lidersea-com": "ghcr[.]io/snaraj/lidersea-com(:v[0-9]+[.][0-9]+[.][0-9]+)?",
     "obsidian": "ghcr[.]io/snaraj/obsync(:v[0-9]+[.][0-9]+[.][0-9]+)?",
+    "hospedajedonlolo-com": "ghcr[.]io/snaraj/hospedajedonlolo-com(:v[0-9]+[.][0-9]+[.][0-9]+)?",
     "cloudflare-public": "cloudflare/cloudflared:[A-Za-z0-9._-]+",
   }[namespace]
   some container in containers

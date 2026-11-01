@@ -25,6 +25,7 @@ controlled.
 | Legacy wallet, anonymity identity, or topology disclosure | no content in Git/chat/catalog, operator encryption and separate off-device restore proof, minimized indexed diagnostics | repository privacy tests and owner-reported restore result | isolate host, revoke/rotate affected network credentials or identities where possible, reassess archive trust |
 | Legacy archive overwrite or Kubernetes exposure | dedicated canonical private root, mount binding, no PV/hostPath/Flux/CI authority, excluded capacity | local contract validator, rendered-manifest and repository policy checks | stop workloads, preserve evidence, restore only to isolated storage after integrity review |
 | Compromised website | restricted pod, digest/signature, no token/egress, default deny | runtime/events/Tunnel logs | roll back digest, isolate namespace, rebuild |
+| Cross-site coupling as the site count grows (a connector, token, origin, chart, image or reconciler of one site serving another) | one identity tuple per site; per-instance token derivation; double-pinned connector egress and site ingress; per-namespace Rego tables keyed by every site | per-site allow/deny fixtures for every table, mutation runs, edge-probe pairwise distinctness | revoke the one affected Tunnel, roll back that site's digest; the other sites keep serving |
 | Media traversal, link, or mount-boundary escape | traversal-resistant rooted opens, regular-file/segment/link checks, read-only derivative-only mount, pending bind-mount acceptance | focused malformed-path/symlink/hard-link tests plus mount-boundary audit | suspend route, preserve volume read-only, roll back digest and inspect publication boundary |
 | Malicious or partial media publication | protected operator path, checksum verification, same-filesystem atomic rename, no public upload API | manifest/checksum comparison and unreachable staging tests | remove unpublished derivative, regenerate from verified original |
 | Media corruption or data-volume loss | originals separated from derivatives, encrypted off-device originals/metadata backup | scheduled checksum sampling, filesystem health, timed restore drill | restore originals/metadata and regenerate delivery derivatives; etcd is not a media backup |
@@ -45,3 +46,28 @@ volume remains disabled until ADR 0012's discovery and recovery evidence exists.
 A new public route, API, identity system, database, persistent volume, operator,
 cluster, or paid exception reopens this model. Residual single-node and ISP
 outage risk is accepted.
+
+## Third public website (2026-11-01)
+
+The owner's 2026-11-01 commission adds `hospedajedonlolo.com`, a static
+bilingual brochure site, as a new public route. As the acceptance clause
+above requires, the model is reopened for it. The conclusion is that it adds
+no new threat class. It is a third instance of the website row: a
+single-owner, trusted workload with the same chart shape, the same
+restricted Pod, digest and signature controls, no token, egress denied, and
+default deny. It has its own Tunnel, token, zone, namespace, budget,
+reconciler and publisher identity, so it shares no edge or reconciliation
+object with the other sites. The cross-site coupling row above is the control
+that grows with the site count.
+
+Two facts are recorded here, not decided:
+
+- **Read-only media.** The site mounts one operator-provisioned, read-only
+  claim. The claim and its volume are created outside Git, and the site's
+  Helm account has no claim verbs. A compromised site Pod can read that media
+  and cannot write it.
+- **Large media through the edge.** The site's one roughly 20 MB video is not
+  delivered. Under [ADR 0006](../adr/0006-cloudflare-zero-spend.md) and its
+  2026-11-01 amendment, its public delivery stays a `NO-GO`. The site verifies
+  the file on its volume but answers 404 for it, and only an explicit owner
+  decision followed by reviewed changes can lift that.

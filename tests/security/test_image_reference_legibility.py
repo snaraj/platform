@@ -43,6 +43,10 @@ DIGEST = "sha256:" + "11" * 32
 # asserted at file level hides the weakening of any single arm.
 CANONICAL = "container {name} must use the canonical image repository for namespace naranjo-online"
 CANONICAL_LIDERSEA = "container {name} must use the canonical image repository for namespace lidersea-com"
+CANONICAL_HOSPEDAJEDONLOLO = (
+    "container {name} must use the canonical image repository for namespace "
+    "hospedajedonlolo-com"
+)
 APPROVED = "container {name} image must use an approved registry and full digest"
 
 ROWS = (
@@ -86,6 +90,19 @@ ROWS = (
         "deny/image-lidersea-sibling-repository.yaml",
         "image-lidersea-sibling-repository",
         (CANONICAL_LIDERSEA,),
+    ),
+    # The third site's half (issue #422), for the same reason: its rule is a
+    # row in an inline map, and only a fixture in its own namespace reaches it.
+    ("allow/hospedajedonlolo-tagged-release-reference.yaml", "hospedajedonlolo-tagged", ()),
+    (
+        "deny/image-hospedajedonlolo-floating-tag.yaml",
+        "image-hospedajedonlolo-floating-tag",
+        (CANONICAL_HOSPEDAJEDONLOLO,),
+    ),
+    (
+        "deny/image-hospedajedonlolo-sibling-repository.yaml",
+        "image-hospedajedonlolo-sibling-repository",
+        (CANONICAL_HOSPEDAJEDONLOLO,),
     ),
 )
 

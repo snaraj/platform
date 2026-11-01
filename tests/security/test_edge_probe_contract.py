@@ -535,6 +535,172 @@ class EdgeProbeEnforcementScopeTests(unittest.TestCase):
         self.assertEqual(fields[4], "GAP")
         self.assertEqual(fields[5], "assets-identical")
 
+    def _three_zone_distinctness(self, naranjo_assets, lidersea_assets, third_assets):
+        """Run the real cross-zone check over every site the default run probes."""
+
+        workdir = private_scratch(self, "edge-probe-three-zone.") / "work"
+        program = (
+            ". '{script}'\n"
+            "WORKDIR='{workdir}'\n"
+            "rm -rf \"$WORKDIR\"; mkdir -p \"$WORKDIR\"\n"
+            "RECORDS=\"$WORKDIR/records.tsv\"\n"
+            ": >\"$RECORDS\"\n"
+            "ZONES=\"$ALL_ZONES\"\n"
+            "record 1 naranjo.online assets record RECORD '{a}' ''\n"
+            "record 1 lidersea.com assets record RECORD '{b}' ''\n"
+            "{third}"
+            "probe_cross_zone_distinctness 1\n"
+            "awk -F'\\t' '$3==\"sites-distinct\"' \"$RECORDS\"\n"
+            "rm -rf \"$WORKDIR\"\n"
+        ).format(
+            script=SCRIPT,
+            workdir=workdir,
+            a=naranjo_assets,
+            b=lidersea_assets,
+            third=(
+                "record 1 hospedajedonlolo.com assets record RECORD '{}' ''\n".format(
+                    third_assets
+                )
+                if third_assets
+                else ""
+            ),
+        )
+        completed = subprocess.run(
+            [required_tool(BASH, BASH_REQUIRED), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.strip().split("\t")
+
+    def test_three_zone_distinctness_compares_every_pair(self):
+        # Issue #422. The default run now holds three sites, and the defect
+        # the item exists for is any two of them serving one build — including
+        # the first and the third, which an adjacent-pair comparison misses.
+        disjoint = self._three_zone_distinctness(
+            "/assets/index-AAAA.js", "/assets/index-BBBB.js", "/assets/index-CCCC.js"
+        )
+        self.assertEqual(disjoint[3:6], ["assert", "PASS", "assets-disjoint"])
+        first_and_third = self._three_zone_distinctness(
+            "/assets/index-SAME.js", "/assets/index-BBBB.js", "/assets/index-SAME.js"
+        )
+        self.assertEqual(first_and_third[3:6], ["assert", "GAP", "assets-identical"])
+        self.assertIn("naranjo.online and hospedajedonlolo.com", first_and_third[6])
+        missing_third = self._three_zone_distinctness(
+            "/assets/index-AAAA.js", "/assets/index-BBBB.js", ""
+        )
+        self.assertEqual(missing_third[3:6], ["assert", "ERROR", "assets-unavailable"])
+        self.assertIn("hospedajedonlolo.com", missing_third[6])
+
+    def _identity(self, body, zone, others):
+        """Drive the real identity probe against a canned body, offline."""
+
+        scratch = private_scratch(self, "edge-probe-identity.")
+        fake = scratch / "fake-curl"
+        page = scratch / "page.html"
+        page.write_text(body, encoding="utf-8")
+        # Stands in for curl: copy the canned page to the --output argument.
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            "while (( $# )); do\n"
+            "  if [[ $1 == --output ]]; then cp '{}' \"$2\"; shift; fi\n"
+            "  shift\n"
+            "done\n".format(page),
+            encoding="utf-8",
+        )
+        fake.chmod(0o700)
+        program = (
+            ". '{script}'\n"
+            "WORKDIR='{scratch}/work'\n"
+            "mkdir -p \"$WORKDIR\"\n"
+            "RECORDS=\"$WORKDIR/records.tsv\"\n"
+            ": >\"$RECORDS\"\n"
+            "CURL='{fake}'\n"
+            "TIMEOUT=5\n"
+            "probe_identity 1 '{zone}' '{others}'\n"
+            "awk -F'\\t' '$3==\"site-identity\"' \"$RECORDS\"\n"
+        ).format(script=SCRIPT, scratch=scratch, fake=fake, zone=zone, others=others)
+        completed = subprocess.run(
+            [required_tool(BASH, BASH_REQUIRED), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.strip().split("\t")
+
+    def test_a_site_carrying_any_other_site_identity_is_a_gap(self):
+        others = "naranjo.online lidersea.com"
+        # The third site serves the owner's delivered page, so its identity is
+        # that page's own title, not its domain.
+        delivered = "<title>Hospedaje Don Lolo \u00b7 Granja Integral</title>"
+        own = self._identity(delivered, "hospedajedonlolo.com", others)
+        self.assertEqual(own[3:5], ["assert", "PASS"])
+        # The domain-as-title shape the Svelte sites use is NOT this site's
+        # identity: accepting it would let another build pass as this one.
+        domain_titled = self._identity(
+            "<title>hospedajedonlolo.com</title>", "hospedajedonlolo.com", others
+        )
+        self.assertEqual(domain_titled[3:5], ["assert", "GAP"])
+        # The SECOND name in the list, so a check that only looked at the
+        # first other site would pass this response.
+        leaked = self._identity(
+            delivered + "\n<p><title>lidersea.com</title></p>\n",
+            "hospedajedonlolo.com",
+            others,
+        )
+        self.assertEqual(leaked[3:5], ["assert", "GAP"])
+        self.assertIn("lidersea.com", leaked[6])
+        # And the reverse direction: a Svelte site carrying the delivered page's
+        # title has picked up the third site's identity.
+        reverse = self._identity(
+            "<title>naranjo.online</title>\n" + delivered,
+            "naranjo.online",
+            "lidersea.com hospedajedonlolo.com",
+        )
+        self.assertEqual(reverse[3:5], ["assert", "GAP"])
+        self.assertIn("hospedajedonlolo.com", reverse[6])
+
+    def _assets(self, zone, body):
+        """Extract what the real probe records as a zone's asset markers."""
+
+        page = private_scratch(self, "edge-probe-assets.") / "page.html"
+        page.write_text(body, encoding="utf-8")
+        program = (
+            ". '{script}'\n"
+            "\"${{GREP}}\" -o -E -e \"$(site_asset_pattern '{zone}')\" '{page}' | sort -u || true\n"
+        ).format(script=SCRIPT, zone=zone, page=page)
+        completed = subprocess.run(
+            [required_tool(BASH, BASH_REQUIRED), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.split()
+
+    def test_each_site_records_only_its_own_asset_markers(self):
+        # Issue #422. The delivered page links plain style.css and app.js, so
+        # those references are the third site's distinctness markers. With the
+        # Svelte sites' hashed bundle pattern it would record nothing, and the
+        # cross-site item would stop comparing it.
+        delivered = '<link rel="stylesheet" href="style.css">\n<script src="app.js"></script>\n'
+        svelte = (
+            '<script type="module" src="/assets/index-AAAA.js"></script>\n'
+            '<link rel="stylesheet" href="/assets/index-AAAA.css">\n'
+        )
+        self.assertEqual(
+            self._assets("hospedajedonlolo.com", delivered),
+            ['href="style.css"', 'src="app.js"'],
+        )
+        self.assertEqual(self._assets("hospedajedonlolo.com", svelte), [])
+        self.assertEqual(
+            self._assets("naranjo.online", svelte),
+            ["/assets/index-AAAA.css", "/assets/index-AAAA.js"],
+        )
+        self.assertEqual(self._assets("naranjo.online", delivered), [])
+
     def test_two_verdicts_for_one_key_collapse_to_divergent(self):
         # The behaviour that silently mislabelled the two boundary tests above.
         # Pinned explicitly so the next person to add a boundary record sees
@@ -726,10 +892,23 @@ class EdgeProbeCommandLineTests(unittest.TestCase):
         completed = self._run("--probe-everything")
         self.assertEqual(completed.returncode, 2)
 
-    def test_only_the_two_site_hostnames_are_accepted(self):
+    def test_only_the_reviewed_site_hostnames_are_accepted(self):
         self.assertEqual(self._run("--zone", "example.com").returncode, 2)
+        self.assertEqual(self._run("--zone", "www.hospedajedonlolo.com").returncode, 2)
         self.assertEqual(self._run("--rounds", "9").returncode, 2)
         self.assertEqual(self._run("--timeout", "1").returncode, 2)
+        # Every site hostname is accepted; --help then exits before any probe.
+        for zone in ("naranjo.online", "lidersea.com", "hospedajedonlolo.com"):
+            with self.subTest(zone=zone):
+                self.assertEqual(self._run("--zone", zone, "--help").returncode, 0)
+
+    def test_the_third_zone_is_probed_against_its_signed_expectation(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("readonly ZONE_C='hospedajedonlolo.com'", source)
+        self.assertIn("readonly ZONE_C_DNSSEC='signed'", source)
+        self.assertIn('"${ZONE_C}") expectation="${ZONE_C_DNSSEC}" ;;', source)
+        self.assertIn('readonly ALL_ZONES="${ZONE_A} ${ZONE_B} ${ZONE_C}"', source)
+        self.assertIn('ZONES="${ALL_ZONES}"', source)
 
 
 class EdgeProbeSourceContractTests(unittest.TestCase):

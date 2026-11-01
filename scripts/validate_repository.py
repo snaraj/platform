@@ -144,6 +144,7 @@ DIGEST_IMAGE = re.compile(r"^[^\s]+@sha256:[0-9a-f]{64}$")
 SITE_RELEASE_CONTRACTS = (
     ("naranjo.online", "naranjo-online", "release-publisher.yml"),
     ("lidersea.com", "lidersea-com", "release-publisher.yml"),
+    ("hospedajedonlolo.com", "hospedajedonlolo-com", "release-publisher.yml"),
 )
 
 # Every namespace this repository gives a Flux reconciliation identity to: a
@@ -152,7 +153,8 @@ SITE_RELEASE_CONTRACTS = (
 # `obsync` workload the owner admitted on 2026-09-07 (issue #348). It drives
 # the RBAC topology and the connector egress inventory — the reconciliation
 # graph, which a workload joins the moment its authority exists here, before
-# any manifest of its own is reconciled.
+# any manifest of its own is reconciled. `hospedajedonlolo-com` is the third
+# website (issue #422) and takes the sites' shape exactly.
 #
 # It is deliberately WIDER than SITE_RELEASE_CONTRACTS above, which drives the
 # RELEASE-ACTIVATION checks (`deploymentReady: true`, no suspension, published
@@ -179,6 +181,7 @@ WORKLOAD_APPLICATIONS = {
     "naranjo-online": "naranjo-online",
     "lidersea-com": "lidersea-com",
     "obsidian": "obsync",
+    "hospedajedonlolo-com": "hospedajedonlolo-com",
 }
 DIRECT_WORKLOAD_NAMESPACES = tuple(WORKLOAD_APPLICATIONS)
 
@@ -192,6 +195,7 @@ WORKLOAD_HELM_ACCOUNTS = {
     "naranjo-online": "helm-reconciler",
     "lidersea-com": "helm-reconciler",
     "obsidian": "obsync-helm-reconciler",
+    "hospedajedonlolo-com": "helm-reconciler",
 }
 
 # The namespaces whose Helm chart creates its own PersistentVolumeClaims, and
@@ -247,13 +251,25 @@ REVIEWED_NAMESPACE_CAPACITY = {
             "limits.memory": "2560Mi",
         },
     ),
+    # The third website runs the same measured workload class as the two
+    # above, so it is bound to the same document and the same map (#422).
+    "hospedajedonlolo-com": (
+        Path("docs/audits/2026-08-22-site-capacity-evidence.md"),
+        {
+            "pods": "6",
+            "requests.cpu": "150m",
+            "requests.memory": "192Mi",
+            "limits.cpu": "1200m",
+            "limits.memory": "768Mi",
+        },
+    ),
 }
 
 # This literal digest couples Trivy's path-scoped AVD-KSV-0056 acceptance to
 # every ServiceAccount, Role, RoleBinding, rule, and subject in access.yaml.
 # Update it only after reviewing that complete authorization file.
 FLUX_ACCESS_CONTRACT_SHA256 = (
-    "d152f203a7415261e37a29431d3e1f536b598e13437d7a51ba259a3a6ce1f6c6"
+    "fb524ecd43be15a1cbc44d6be76068597a1fbccd2cb59a351726926c76e34022"
 )
 
 # The same coupling for the six cluster-scoped per-controller objects, which
@@ -2607,6 +2623,38 @@ REVIEWED_SOURCE_PATCH = (
      "value": list(REVIEWED_SOURCE_PATHS) + ["kubernetes/websites/obsync"]},
 )
 
+# The third website's admission (issue #422) is the same closed shape one path
+# later: it tests the three-path list the obsync patch produced and appends
+# exactly one directory. The design document that instructs the operator is
+# what makes it enforceable, exactly as the obsync runbook is for its patch.
+HOSPEDAJEDONLOLO_SOURCE_PATCH_DOCUMENT = "docs/design/hospedajedonlolo-onboarding.md"
+HOSPEDAJEDONLOLO_SOURCE_PATCH_PATH = (
+    "docs/runbooks/artifacts/hospedajedonlolo-com-source-path.patch.json"
+)
+HOSPEDAJEDONLOLO_PRIOR_SOURCE_PATHS = REVIEWED_SOURCE_PATHS + (
+    "kubernetes/websites/obsync",
+)
+HOSPEDAJEDONLOLO_SOURCE_PATCH = (
+    {"op": "test", "path": "/metadata/uid",
+     "value": "REPLACE-WITH-THE-JOURNALLED-UID"},
+    {"op": "test", "path": "/metadata/resourceVersion",
+     "value": "REPLACE-WITH-THE-CURRENT-RESOURCEVERSION"},
+    {"op": "test", "path": "/spec/ref/branch", "value": "main"},
+    {"op": "test", "path": "/spec/sparseCheckout",
+     "value": list(HOSPEDAJEDONLOLO_PRIOR_SOURCE_PATHS)},
+    {"op": "replace", "path": "/spec/sparseCheckout",
+     "value": list(HOSPEDAJEDONLOLO_PRIOR_SOURCE_PATHS)
+     + ["kubernetes/websites/hospedajedonlolo-com"]},
+)
+
+# Every (instructing document, artifact, reviewed operation list) the gate
+# binds. One row per admitted application directory.
+REVIEWED_SOURCE_PATCHES = (
+    (REVIEWED_SOURCE_PATCH_RUNBOOK, REVIEWED_SOURCE_PATCH_PATH, REVIEWED_SOURCE_PATCH),
+    (HOSPEDAJEDONLOLO_SOURCE_PATCH_DOCUMENT, HOSPEDAJEDONLOLO_SOURCE_PATCH_PATH,
+     HOSPEDAJEDONLOLO_SOURCE_PATCH),
+)
+
 
 def _unique_json_object(pairs):
     """A repeated key would silently keep the last one; refuse instead."""
@@ -2628,22 +2676,26 @@ def reviewed_source_patch_errors(root):
     document this repository vouched for.
     """
 
-    if not (root / REVIEWED_SOURCE_PATCH_RUNBOOK).is_file():
-        # Nothing instructs an operator to apply it, so there is no admission
-        # boundary to enforce. Synthetic trees in the test suite are this case;
-        # the real tree carries both, and the runbook-reference battery already
-        # requires every path a runbook cites in backticks to exist.
-        return []
-    try:
-        document = json.loads(
-            read(root / REVIEWED_SOURCE_PATCH_PATH),
-            object_pairs_hook=_unique_json_object,
-        )
-    except (OSError, ValueError, UnicodeError, UnsafePublicPathError):
-        return ["reviewed source-path patch is unreadable"]
-    if document != [dict(operation) for operation in REVIEWED_SOURCE_PATCH]:
-        return ["reviewed source-path patch is not the reviewed operation list"]
-    return []
+    errors = []
+    for instructions, artifact, reviewed in REVIEWED_SOURCE_PATCHES:
+        if not (root / instructions).is_file():
+            # Nothing instructs an operator to apply it, so there is no
+            # admission boundary to enforce. Synthetic trees in the test suite
+            # are this case; the real tree carries both, and the
+            # runbook-reference battery already requires every path a runbook
+            # cites in backticks to exist.
+            continue
+        try:
+            document = json.loads(
+                read(root / artifact),
+                object_pairs_hook=_unique_json_object,
+            )
+        except (OSError, ValueError, UnicodeError, UnsafePublicPathError):
+            errors.append("reviewed source-path patch is unreadable")
+            continue
+        if document != [dict(operation) for operation in reviewed]:
+            errors.append("reviewed source-path patch is not the reviewed operation list")
+    return errors
 
 
 def reviewed_capacity_errors(root, evidence_only=False):

@@ -48,3 +48,25 @@ Official evidence:
 - <https://developers.cloudflare.com/fundamentals/reference/policies-compliances/delivering-videos-with-cloudflare/>
 - <https://developers.cloudflare.com/cache/concepts/default-cache-behavior/>
 - <https://developers.cloudflare.com/tunnel/routing/>
+
+## Amendment (2026-11-01)
+
+The owner authorized a third Free zone, `hospedajedonlolo.com`, on 2026-11-01.
+The account boundary in the decision above is therefore three active domain
+zones, each on the Free website plan. Prior lines are left byte for byte
+intact.
+
+- Its Registrar renewal is the only charge this zone authorizes, classified
+  separately from infrastructure like the other two. No product, plan, add-on
+  or certificate is added.
+- The zone was hardened before onboarding: DNSSEC active; a null MX, SPF
+  `-all` and DMARC `p=reject` (the domain sends no mail); and CAA limited to
+  the certificate authorities Universal SSL uses.
+- The site's delivered page includes one video of about 20 MB. The
+  heavy-media terms boundary recorded above applies to it unchanged: under
+  the self-serve terms, video through the proxied edge needs a qualifying
+  paid service, and no zero-spend product meets that. Its public delivery
+  therefore stays a `NO-GO`. The site verifies the film on its volume but
+  does not serve it (`site.Withheld` in the site repository), and the page
+  shows its poster image. Only the owner can lift this boundary, through an
+  explicit decision followed by a reviewed change in both repositories.

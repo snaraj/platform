@@ -285,7 +285,10 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
 
         Reconciled to a read-only capture on 2026-08-12: for the three
         dimensions this model bounds, the committed quota and the live one
-        agree, so the budget measured here is a budget that is enforced.
+        agreed, so the budget measured here was a budget that was enforced.
+        Issue #422 raises the two limits by exactly one connector for the
+        fourth Tunnel; the live quota agrees again only once the onboarding
+        ceremony in docs/design/hospedajedonlolo-onboarding.md re-applies it.
 
         WHAT THIS DELIBERATELY DOES NOT CLAIM. The committed ResourceQuota and
         the live one are NOT identical — live additionally caps `configmaps`
@@ -298,7 +301,7 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
         committed = committed_quota(CONNECTOR_NAMESPACE)
         self.assertEqual(
             {key: committed.get(key) for key in self.MODELLED_DIMENSIONS},
-            {"pods": "6", "limits.cpu": "2", "limits.memory": "1Gi"},
+            {"pods": "6", "limits.cpu": "2500m", "limits.memory": "1280Mi"},
         )
 
     @unittest.skipUnless(HELM, "helm is required")
@@ -316,8 +319,8 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
         """
 
         workloads = rendered_connector_workloads(render())
-        self.assertEqual([workload.replicas for workload in workloads], [1, 1, 1])
-        self.assertEqual([workload.surge for workload in workloads], [0, 0, 0])
+        self.assertEqual([workload.replicas for workload in workloads], [1, 1, 1, 1])
+        self.assertEqual([workload.surge for workload in workloads], [0, 0, 0, 0])
 
     @unittest.skipUnless(HELM, "helm is required")
     def test_raising_the_replica_count_is_governed_by_capacity_not_by_a_constant(self):
@@ -335,11 +338,13 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
         ceiling, so it no longer fits even surge-free. That is the honest
         answer and it is asserted rather than glossed — the arithmetic moved
         because the inventory did, which is exactly what a capacity rule is
-        for.
+        for. Issue #422's fourth connector would have taken the one-replica
+        inventory to exactly 2000m of 2000m, so the ceiling rose by exactly one
+        connector (2500m/1280Mi) and the room assertion below is unchanged.
         """
 
         workloads = rendered_connector_workloads(render("replicaCount=2"))
-        self.assertEqual([workload.replicas for workload in workloads], [2, 2, 2])
+        self.assertEqual([workload.replicas for workload in workloads], [2, 2, 2, 2])
         quota = Quota(CONNECTOR_NAMESPACE, committed_quota(CONNECTOR_NAMESPACE))
 
         # Steady state alone is now over budget, before any rollout headroom.
@@ -359,6 +364,12 @@ class TheCommittedConnectorReleaseFits(unittest.TestCase):
         self.assertEqual(
             quota.cpu - sum(w.replicas * w.cpu for w in committed),
             next(w.cpu for w in committed),
+        )
+        # The same room on memory, which became binding with the fourth
+        # connector: four at 256Mi exactly fill 1Gi.
+        self.assertEqual(
+            quota.memory - sum(w.replicas * w.memory for w in committed),
+            next(w.memory for w in committed),
         )
 
     @unittest.skipUnless(HELM, "helm is required")

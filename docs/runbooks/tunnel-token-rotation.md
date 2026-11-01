@@ -38,12 +38,15 @@ clear it immediately afterward.
 
 Each site is one identity tuple, and no member's name is ever derived from
 another's suffix: Cloudflare Tunnel `naranjo-online`, Deployment
-`naranjo-online-tunnel`, Secret `naranjo-online-tunnel-token`; and Cloudflare
+`naranjo-online-tunnel`, Secret `naranjo-online-tunnel-token`; Cloudflare
 Tunnel `lidersea-com`, Deployment `lidersea-com-tunnel`, Secret
-`lidersea-com-tunnel-token`. `<site>` is one of those two Tunnel names and that
-connector's `values.yaml` key; the other is the PEER. `pi-websites` is denied.
+`lidersea-com-tunnel-token`; and Cloudflare Tunnel `hospedajedonlolo-com`,
+Deployment `hospedajedonlolo-com-tunnel`, Secret
+`hospedajedonlolo-com-tunnel-token`. `<site>` is one of those three Tunnel names
+and that connector's `values.yaml` key; each other site is a PEER. `pi-websites`
+is denied.
 
-1. Keep `pi-admin` and physical/LAN recovery working and record the peer
+1. Keep `pi-admin` and physical/LAN recovery working and record every peer
    Secret's `resourceVersion` and `creationTimestamp`. In a reviewed window,
    have the owner rotate the Cloudflare Tunnel named `<site>` and capture its
    new token into a protected mode-0600 file without printing it; replicas may
@@ -55,8 +58,8 @@ connector's `values.yaml` key; the other is the PEER. `pi-websites` is denied.
 3. Render, policy-check, and secret-scan the exact diff. After merge, watch the
    `<site>-tunnel` Deployment's surge-free rollout (`maxSurge: 0`, one replica,
    so it drains and replaces) and run public, terminal-404, origin-denial tests.
-4. Prove the peer untouched: its Secret's `resourceVersion` and
-   `creationTimestamp` still equal step 1's, its Deployment still healthy.
+4. Prove every peer untouched: each Secret's `resourceVersion` and
+   `creationTimestamp` still equal step 1's, each Deployment still healthy.
 5. Confirm the Cloudflare Tunnel `<site>` shows no old-token connector, then
    delete the protected old-token file. Never restore it: preserve admin
    recovery, stop that site's rollout, and rotate again for a different token.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Token-free, read-only acceptance probe for the two public site edges.
+# Token-free, read-only acceptance probe for the public site edges.
 #
 # WHAT THIS IS. A credential-free external observer. It reads only what any
-# internet client can read from the two public hostnames plus two public DNS
+# internet client can read from the public site hostnames plus two public DNS
 # resolvers, compares each observation against the encoded target state, and
 # prints PASS / GAP / SKIP / RECORD per item. It contacts nothing else: no
 # Cloudflare API, no cluster, no SSH, no third-party scanner or rating
@@ -49,7 +49,7 @@
 #   6. Distinctness is asserted on <title> and asset filenames, NEVER on a
 #      whole-body hash (Cloudflare injects a per-request ray ID into every HTML
 #      response, so the hash differs between two identical rounds) and NEVER on
-#      <h1> (identical on both sites — a vacuous assertion). §7.1, §12 rule 5.
+#      <h1> (identical across the sites — a vacuous assertion). §7.1, §12 rule 5.
 #   7. "Name does not exist" accepts NXDOMAIN or NOERROR/ANSWER:0 (§8, §12
 #      rule 7). A DNSSEC-signed Cloudflare zone never returns NXDOMAIN; it
 #      answers NOERROR/NODATA with a synthesized NSEC ("black lies"). Treating
@@ -66,16 +66,38 @@ set -Eeuo pipefail
 set +x
 
 readonly SCHEMA='edge-probe/1'
-# The two public site identities. Fixed on purpose: this probe accepts no
+# The public site identities. Fixed on purpose: this probe accepts no
 # alternate hostname, so it can never be pointed at a third party.
 readonly ZONE_A='naranjo.online'
 readonly ZONE_B='lidersea.com'
+readonly ZONE_C='hospedajedonlolo.com'
+readonly ALL_ZONES="${ZONE_A} ${ZONE_B} ${ZONE_C}"
+
+# Each site's own identity marker. The two Svelte sites title their page with
+# their domain and ship content-hashed /assets/index-<hash>.(js|css) bundles.
+# hospedajedonlolo.com serves the owner's delivered page byte for byte, so its
+# identity is that page's own <title> and its two unhashed files; the probe
+# adapts to the content, never the other way round.
+site_title() {
+  case "$1" in
+    "${ZONE_C}") printf '%s' 'Hospedaje Don Lolo · Granja Integral' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+site_asset_pattern() {
+  case "$1" in
+    "${ZONE_C}") printf '%s' '(href|src)="(style\.css|app\.js)"' ;;
+    *) printf '%s' '/assets/index-[A-Za-z0-9_-]+\.(js|css)' ;;
+  esac
+}
 # Encoded per-zone DNSSEC expectation. naranjo.online is signed and validating;
 # lidersea.com is unsigned pending the owner's signing ceremony, so "unsigned"
 # is that zone's expected state today and is reported as PASS with the pending
 # ceremony recorded separately as dnssec-parity.
 readonly ZONE_A_DNSSEC='signed'
 readonly ZONE_B_DNSSEC='unsigned'
+# hospedajedonlolo.com was signed when the zone was hardened (issue #422).
+readonly ZONE_C_DNSSEC='signed'
 # Two independent validating resolvers, addressed by name (see header).
 readonly RESOLVER_ONE='one.one.one.one'
 readonly RESOLVER_TWO='dns.google'
@@ -126,7 +148,7 @@ Usage:
   scripts/edge-probe.sh --self-test
   scripts/edge-probe.sh --help
 
-Read-only, credential-free acceptance probe for the two public site edges.
+Read-only, credential-free acceptance probe for the public site edges.
 It contacts only the site hostnames and two public DNS resolvers.
 
 Options:
@@ -139,7 +161,8 @@ Options:
                       the same as unproven. Without --enforce the probe is
                       report-only and exits 0 whatever it finds, so it is
                       useful before the target state is reached.
-  --zone HOSTNAME     Probe one site only (naranjo.online or lidersea.com).
+  --zone HOSTNAME     Probe one site only (naranjo.online, lidersea.com or
+                      hospedajedonlolo.com).
                       Cross-zone distinctness is then INAPPLICABLE, so a
                       single-zone --enforce run still exits 0 when that zone
                       meets the target state.
@@ -157,8 +180,9 @@ Target state asserted (attestation 2026-08-12, ADR 0015):
   minimum TLS         1.2 (TLS 1.0 and 1.1 refused, 1.2 and 1.3 accepted)
   0-RTT               off (Max Early Data: 0 on every session ticket)
   HSTS                exactly max-age=31536000 (no includeSubDomains/preload)
-  DNSSEC              naranjo.online signed and validating; lidersea.com
-                      unsigned until the owner's signing ceremony
+  DNSSEC              naranjo.online and hospedajedonlolo.com signed and
+                      validating; lidersea.com unsigned until the owner's
+                      signing ceremony
   /readyz             200
   www.<apex>          absent (NXDOMAIN, or NOERROR/NODATA on the signed zone)
   identity            each apex serves its own <title> and its own assets
@@ -709,8 +733,8 @@ probe_readyz() {
 }
 
 probe_identity() {
-  local round="$1" zone="$2" other="$3"
-  local out title assets bytes
+  local round="$1" zone="$2" others="$3"
+  local out title assets bytes other
   out="${WORKDIR}/${zone}-body-${round}.html"
   if ! "${CURL}" --silent --show-error --max-time "${TIMEOUT}" \
     --output "${out}" "https://${zone}/" 2>/dev/null; then
@@ -723,18 +747,27 @@ probe_identity() {
   # Assets are the distinctness marker together with the title. The whole-body
   # hash is deliberately never used: Cloudflare injects a per-request ray ID
   # into every HTML response, so it differs between two identical rounds. The
-  # <h1> is deliberately never used either: it is identical on both sites.
-  assets="$("${GREP}" -o -E -e '/assets/index-[A-Za-z0-9_-]+\.(js|css)' "${out}" \
+  # <h1> is deliberately never used either: it can be identical across sites.
+  assets="$("${GREP}" -o -E -e "$(site_asset_pattern "${zone}")" "${out}" \
     | sort -u | tr '\n' ',' || true)"
   bytes="$(wc -c <"${out}" | tr -d ' ')"
-  if [[ "${title}" != "${zone}" ]]; then
+  if [[ "${title}" != "$(site_title "${zone}")" ]]; then
     record "${round}" "${zone}" site-identity assert GAP "title=${title:-<none>}" \
       'the apex does not serve its own identity'
-  elif [[ -n "${other}" ]] && "${GREP}" -q -F -e "<title>${other}</title>" "${out}"; then
-    record "${round}" "${zone}" site-identity assert GAP "title=${title}" \
-      'the response also carries the other site identity'
+    other=''
   else
-    record "${round}" "${zone}" site-identity assert PASS "title=${title}" ''
+    for other in ${others}; do
+      if "${GREP}" -q -F -e "<title>$(site_title "${other}")</title>" "${out}"; then
+        break
+      fi
+      other=''
+    done
+    if [[ -n "${other}" ]]; then
+      record "${round}" "${zone}" site-identity assert GAP "title=${title}" \
+        "the response also carries the ${other} site identity"
+    else
+      record "${round}" "${zone}" site-identity assert PASS "title=${title}" ''
+    fi
   fi
   record "${round}" "${zone}" assets record RECORD "${assets%,}" \
     'asset filenames are the distinctness marker; the body hash never is'
@@ -843,7 +876,7 @@ probe_www_absent() {
 }
 
 probe_zone() {
-  local round="$1" zone="$2" other="$3" dnssec_expectation="$4"
+  local round="$1" zone="$2" others="$3" dnssec_expectation="$4"
   probe_http_redirect "${round}" "${zone}" http-redirect-root '/'
   probe_http_redirect "${round}" "${zone}" http-redirect-path-query '/readyz?probe=1&x=2'
   probe_cleartext_hsts "${round}" "${zone}"
@@ -854,7 +887,7 @@ probe_zone() {
   probe_zero_rtt "${round}" "${zone}"
   probe_https_headers "${round}" "${zone}"
   probe_readyz "${round}" "${zone}"
-  probe_identity "${round}" "${zone}" "${other}"
+  probe_identity "${round}" "${zone}" "${others}"
   probe_certificate "${round}" "${zone}"
   probe_tls_details "${round}" "${zone}"
   probe_dnssec "${round}" "${zone}" "${dnssec_expectation}"
@@ -863,8 +896,12 @@ probe_zone() {
 
 probe_cross_zone_distinctness() {
   local round="$1"
-  local a b
-  if [[ "${ZONES}" != "${ZONE_A} ${ZONE_B}" ]]; then
+  local zone assets first second
+  local -a selected=() values=()
+  for zone in ${ZONES}; do
+    selected+=("${zone}")
+  done
+  if (( ${#selected[@]} < 2 )); then
     # INAPPLICABLE, not SKIP, and the distinction is load-bearing. A SKIP means
     # "this target could not be proven", which --enforce must treat as unmet. A
     # single-zone run has no second site to compare against, so the item does
@@ -873,21 +910,31 @@ probe_cross_zone_distinctness() {
     # exit 1 no matter how healthy the zone was, which trains an operator to
     # wave a nonzero exit through in the middle of a half-completed toggle
     # ceremony. Inapplicable is not the same as unproven.
-    record "${round}" both sites-distinct record INAPPLICABLE 'single-zone-run' \
-      'cross-zone distinctness needs both sites in the same run; this item does not apply to the selected scope and is not an unproven target'
+    record "${round}" all sites-distinct record INAPPLICABLE 'single-zone-run' \
+      'cross-zone distinctness needs at least two sites in the same run; this item does not apply to the selected scope and is not an unproven target'
     return 0
   fi
-  a="$(awk -F'\t' -v r="${round}" -v z="${ZONE_A}" '$1==r && $2==z && $3=="assets" {print $6}' "${RECORDS}")"
-  b="$(awk -F'\t' -v r="${round}" -v z="${ZONE_B}" '$1==r && $2==z && $3=="assets" {print $6}' "${RECORDS}")"
-  if [[ -z "${a}" || -z "${b}" ]]; then
-    record "${round}" both sites-distinct assert ERROR 'assets-unavailable' \
-      'asset filenames could not be read from one of the sites'
-  elif [[ "${a}" == "${b}" ]]; then
-    record "${round}" both sites-distinct assert GAP 'assets-identical' \
-      'both sites served the same asset filenames'
-  else
-    record "${round}" both sites-distinct assert PASS 'assets-disjoint' ''
-  fi
+  for zone in "${selected[@]}"; do
+    assets="$(awk -F'\t' -v r="${round}" -v z="${zone}" '$1==r && $2==z && $3=="assets" {print $6}' "${RECORDS}")"
+    if [[ -z "${assets}" ]]; then
+      record "${round}" all sites-distinct assert ERROR 'assets-unavailable' \
+        "asset filenames could not be read from ${zone}"
+      return 0
+    fi
+    values+=("${assets}")
+  done
+  # Every PAIR, not only adjacent ones: a third site serving the first site's
+  # build is the same defect as the second one doing it.
+  for (( first = 0; first < ${#values[@]}; first++ )); do
+    for (( second = first + 1; second < ${#values[@]}; second++ )); do
+      if [[ "${values[first]}" == "${values[second]}" ]]; then
+        record "${round}" all sites-distinct assert GAP 'assets-identical' \
+          "${selected[first]} and ${selected[second]} served the same asset filenames"
+        return 0
+      fi
+    done
+  done
+  record "${round}" all sites-distinct assert PASS 'assets-disjoint' ''
 }
 
 # --------------------------------------------------------------------------
@@ -1015,7 +1062,7 @@ self_test() {
 }
 
 run_probe() {
-  local round zone other expectation
+  local round zone others expectation candidate
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/edge-probe.XXXXXX")"
   trap cleanup EXIT
   RECORDS="${WORKDIR}/records.tsv"
@@ -1040,15 +1087,18 @@ run_probe() {
       sleep "${ROUND_GAP}"
     fi
     for zone in ${ZONES}; do
-      if [[ "${zone}" == "${ZONE_A}" ]]; then
-        expectation="${ZONE_A_DNSSEC}"
-        other="${ZONE_B}"
-      else
-        expectation="${ZONE_B_DNSSEC}"
-        other="${ZONE_A}"
-      fi
-      [[ "${ZONES}" == "${ZONE_A} ${ZONE_B}" ]] || other=''
-      probe_zone "${round}" "${zone}" "${other}" "${expectation}"
+      case "${zone}" in
+        "${ZONE_A}") expectation="${ZONE_A_DNSSEC}" ;;
+        "${ZONE_B}") expectation="${ZONE_B_DNSSEC}" ;;
+        "${ZONE_C}") expectation="${ZONE_C_DNSSEC}" ;;
+        *) die "unreviewed zone in scope: ${zone}" ;;
+      esac
+      # The other sites IN THIS RUN; a single-zone run has none to compare.
+      others=''
+      for candidate in ${ZONES}; do
+        [[ "${candidate}" == "${zone}" ]] || others="${others:+${others} }${candidate}"
+      done
+      probe_zone "${round}" "${zone}" "${others}" "${expectation}"
     done
     probe_cross_zone_distinctness "${round}"
   done
@@ -1060,7 +1110,7 @@ main() {
   local mode status
   mode=probe
   status=0
-  ZONES="${ZONE_A} ${ZONE_B}"
+  ZONES="${ALL_ZONES}"
   while (( $# > 0 )); do
     case "$1" in
       --enforce) ENFORCE=yes ;;
@@ -1070,7 +1120,8 @@ main() {
         case "${1:-}" in
           "${ZONE_A}") ZONES="${ZONE_A}" ;;
           "${ZONE_B}") ZONES="${ZONE_B}" ;;
-          *) die "--zone accepts only ${ZONE_A} or ${ZONE_B}" ;;
+          "${ZONE_C}") ZONES="${ZONE_C}" ;;
+          *) die "--zone accepts only ${ZONE_A}, ${ZONE_B} or ${ZONE_C}" ;;
         esac
         ;;
       --rounds)

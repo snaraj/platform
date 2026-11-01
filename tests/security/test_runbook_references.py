@@ -221,5 +221,75 @@ class OperatorArtifactTests(unittest.TestCase):
             )
 
 
+class ThirdWebsiteOperatorArtifactTests(unittest.TestCase):
+    """The same two bindings for the third website's ceremony (issue #422).
+
+    The reconciler artifact is proven under policy by a byte-identical allow
+    fixture, and the source-path patch is the reviewed operation list whole:
+    it tests the three-path list the obsync admission produced and appends
+    exactly one directory.
+    """
+
+    ARTIFACT = REPO_ROOT / "docs/runbooks/artifacts/hospedajedonlolo-com-reconciler.yaml"
+    FIXTURE = (
+        REPO_ROOT
+        / "tests/kubernetes/fixtures/allow/hospedajedonlolo-com-reconciler-artifact.yaml"
+    )
+
+    def test_the_reviewed_artifact_and_its_policy_fixture_are_identical(self):
+        self.assertTrue(self.ARTIFACT.is_file(), self.ARTIFACT)
+        self.assertEqual(self.ARTIFACT.read_bytes(), self.FIXTURE.read_bytes())
+
+    def test_the_artifact_is_created_suspended_under_its_own_identity(self):
+        text = self.ARTIFACT.read_text(encoding="utf-8")
+        for line in (
+            "  name: hospedajedonlolo-com-reconciler\n",
+            "  suspend: true\n",
+            "  path: ./kubernetes/websites/hospedajedonlolo-com\n",
+            "  serviceAccountName: hospedajedonlolo-com-reconciler\n",
+            "  targetNamespace: hospedajedonlolo-com\n",
+        ):
+            with self.subTest(line=line.strip()):
+                self.assertIn(line, text)
+
+    def test_the_shipped_patch_is_the_reviewed_operation_list(self):
+        shipped = json.loads(
+            (REPO_ROOT / VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH_PATH).read_text(
+                encoding="utf-8"
+            )
+        )
+        reviewed = [dict(op) for op in VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH]
+        self.assertEqual(shipped, reviewed)
+        self.assertTrue(
+            (REPO_ROOT / VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH_DOCUMENT).is_file(),
+            "the instructing document is what makes the closure enforceable",
+        )
+        self.assertEqual(VALIDATOR.reviewed_source_patch_errors(REPO_ROOT), [])
+        old_paths, new_paths = reviewed[3]["value"], reviewed[-1]["value"]
+        self.assertEqual(old_paths, list(VALIDATOR.REVIEWED_SOURCE_PATCH[-1]["value"]))
+        self.assertEqual(new_paths, old_paths + ["kubernetes/websites/hospedajedonlolo-com"])
+
+    def test_a_widened_third_site_patch_is_refused(self):
+        reviewed = [dict(op) for op in VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH]
+        widened = [dict(op) for op in reviewed]
+        widened[-1] = dict(
+            widened[-1], value=widened[-1]["value"] + ["kubernetes/websites/fifth"]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            artifact = root / VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH_PATH
+            artifact.parent.mkdir(parents=True)
+            instructions = root / VALIDATOR.HOSPEDAJEDONLOLO_SOURCE_PATCH_DOCUMENT
+            instructions.parent.mkdir(parents=True)
+            instructions.write_text("# fixture\n", encoding="utf-8")
+            artifact.write_text(json.dumps(widened) + "\n", encoding="utf-8")
+            self.assertEqual(
+                VALIDATOR.reviewed_source_patch_errors(root),
+                ["reviewed source-path patch is not the reviewed operation list"],
+            )
+            artifact.write_text(json.dumps(reviewed) + "\n", encoding="utf-8")
+            self.assertEqual(VALIDATOR.reviewed_source_patch_errors(root), [])
+
+
 if __name__ == "__main__":
     unittest.main()

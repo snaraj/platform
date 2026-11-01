@@ -121,3 +121,28 @@ established from reviewed desired state and current convergence evidence, not
 this amendment's historical suspension status. The authenticated Cloudflare
 apply ceremony's separate vocabulary reconciliation remains tracked in issue
 #82.
+
+## Amendment (2026-11-01)
+
+The owner's 2026-11-01 commission adds a third website,
+`hospedajedonlolo.com`. It takes exactly the per-site shape decided above.
+This amendment adds a third public Tunnel. It changes nothing about the
+first two Tunnels. Prior lines are left byte for byte intact.
+
+- Cloudflare Tunnel `hospedajedonlolo-com` has exactly one public hostname
+  rule. It routes the apex `hospedajedonlolo.com` to
+  `http://hospedajedonlolo-com.hospedajedonlolo-com.svc.cluster.local:8080`.
+  It also has the terminal `http_status:404` rule, and no private or WARP
+  routing, wildcard, SSH or API hostname.
+- The apex has exactly one proxied CNAME with automatic TTL, targeting this
+  Tunnel's `cfargotunnel.com` name.
+- Connector `hospedajedonlolo-com-tunnel` runs in `cloudflare-public`. It reads
+  its own token Secret, `hospedajedonlolo-com-tunnel-token`, which is created on
+  the cluster by an owner ceremony and never enters Git. Its egress is pinned to
+  its own origin and the site's ingress is pinned to its own instance. It is
+  rotated independently, like the other two.
+
+The connector namespace's limit budget rises by exactly one connector
+(`limits.cpu` 2 to 2500m, `limits.memory` 1Gi to 1280Mi). The fourth connector
+then fits with the same one-connector margin the capacity contract already
+asserted. HSTS ownership and the `www` decision apply to this apex unchanged.

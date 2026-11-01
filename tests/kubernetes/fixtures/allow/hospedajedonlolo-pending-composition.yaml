@@ -1,0 +1,169 @@
+# The pending composition exactly as snaraj/platform-k8s-infra serves it:
+# kubernetes/websites/hospedajedonlolo-com/{default-deny,source,release}.yaml at
+# 2f00a62652a9b0a79a6b9b4b31c1f1509de42c19, the merge of that repository's PR #84,
+# byte for byte below this header. This policy must admit what the other
+# repository actually reconciles. A readiness or audit-tag rule that disagrees
+# with the real composition fails here rather than at activation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: hospedajedonlolo-com
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# hospedajedonlolo.com's Helm chart is published as a signed OCI artifact by
+# that site's own release publisher. The immutable manifest digest below is the
+# only selector source-controller consumes; once active, the release
+# annotation is the reviewed human label whose tag-to-digest mapping was
+# independently resolved.
+#
+# PENDING SELECTION — THIS OBJECT CANNOT DEPLOY ANYTHING.
+# `ref.digest` is the all-zero fail-closed sentinel: a syntactically valid
+# digest no registry resolves. snaraj/hospedajedonlolo.com has not published a
+# release, so no real digest exists to select, and inventing one would be
+# worse than stating none. source-controller refuses to produce an artifact
+# for it, so the HelmRelease beside this file installs nothing while the
+# sentinel stands. The annotation names the first release the publisher is
+# expected to cut; it is a label, not a resolved mapping, until activation
+# resolves it.
+#
+# The sentinel is not a relaxation: `scripts/validate.py` lists this slug in
+# PENDING_APPLICATIONS and requires EXACTLY this digest for a pending
+# application, so committing a REAL digest here is a gate failure. The active
+# applications carry the opposite rule — the sentinel is refused for them. A
+# real digest can therefore appear only in the reviewed change that moves this
+# slug to APPLICATIONS and adds its acquisition receipt record.
+#
+# The chart VERSION and the SIGNING REF are two different things. The version
+# is audit metadata; the signature is minted by a
+# workflow_dispatch run of the publisher selected from that repository's
+# protected `main` branch, which its own reviewed release contract enforces, so
+# the certificate identity ends in @refs/heads/main. That ref is the stronger
+# anchor: a run at a ref executes the workflow definition AT that ref. Tag
+# creation is not a protected operation, so a tag-ref identity would be
+# mintable by any holder of `contents: write` (ADR 0016 amendment 2026-08-22).
+# That `refs/heads/main` is gated by a ruleset with no bypass actors in the
+# source repository is a precondition of activation, verified then; it is not
+# asserted here for a repository that has published nothing.
+#
+# Fail-closed properties this object carries, none of which may be relaxed
+# without a reviewed decision:
+#
+#   * spec.verify is MANDATORY. source-controller refuses to produce an
+#     artifact for a chart that carries no cosign signature, or one signed by
+#     any identity other than THIS site's release-publisher workflow running on
+#     protected `main`. The subject pattern is anchored end to end so the
+#     sibling sites' publishers, another workflow in the same repository, a run
+#     at any other ref — a tag ref included — and any look-alike host are all
+#     rejected: the site identity tuples must never couple (AGENTS.md safety
+#     invariant 14).
+#   * spec.ref contains exactly one sha256 digest and no tag or semver range.
+#     Moving, deleting, or replacing a registry tag cannot change the bytes
+#     Flux selects. A site release reaches the cluster only through a reviewed
+#     change that resolves the human tag and verifies the digest and signer.
+#   * No secretRef, serviceAccountName, certSecretRef, or proxySecretRef: the
+#     registry is read anonymously and the cluster holds no registry
+#     credential, exactly as it holds no Git credential (ADR 0003, safety
+#     invariant 5).
+#   * The layer selector pins the Helm chart media type, so a non-chart layer
+#     smuggled into the artifact is not what gets reconciled.
+#   * spec.interval is the ceiling on how long a merged selection waits before
+#     source-controller re-reads this object. It is a poll of one already
+#     signature-verified OCI reference, so shortening it adds no credential, no
+#     inbound path and no new object — a Flux Receiver would have added all
+#     three (issue #309). One minute keeps the merge-to-live loop bounded by
+#     the release ceremony rather than by a timer.
+#
+# The chart is also the sole workload image-identity carrier; platform
+# HelmRelease values contain no repository, tag, or digest override (ADR 0016).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  annotations:
+    platform.snaraj.dev/chart-release: "0.1.1"
+  name: hospedajedonlolo-com-chart
+  namespace: hospedajedonlolo-com
+spec:
+  interval: 1m0s
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  timeout: 60s
+  url: oci://ghcr.io/snaraj/charts/hospedajedonlolo-com
+  verify:
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/snaraj/hospedajedonlolo\.com/\.github/workflows/release-publisher\.yml@refs/heads/main$
+    provider: cosign
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hospedajedonlolo-com
+  namespace: hospedajedonlolo-com
+  labels:
+    app.kubernetes.io/managed-by: fluxcd
+  annotations:
+    platform.snaraj.dev/readiness: suspended-until-hospedajedonlolo-com-chart-release
+spec:
+  # Suspended, and `scripts/validate.py` requires exactly that for a pending
+  # application. The OCIRepository beside this file carries the all-zero
+  # sentinel digest, so there is nothing for helm-controller to install and an
+  # unsuspended release would only produce a permanent reconciliation error.
+  # Resuming it is part of the same reviewed change that replaces the sentinel.
+  suspend: true
+  # One minute is the ceiling on how long a merged chart selection waits for
+  # helm-controller to act on it. Like the OCIRepository beside this file it is
+  # a poll of already-verified state, so the shorter interval buys deploy
+  # latency with no webhook receiver, no inbound path and no new object
+  # (issue #309).
+  interval: 1m0s
+  # Helm keeps every release revision as a Secret in this namespace, and
+  # helm-controller retains five when this field is unset. `storage.Create`
+  # prunes history to maxHistory-1 BEFORE writing the new revision, so any
+  # retention default at or above the namespace secret budget wedges the
+  # release permanently: the prune frees nothing, the create is denied by
+  # quota, and no retry can recover it. A sibling site was measured one
+  # upgrade away from exactly that (issue #198). Two keeps steady-state history
+  # strictly inside that budget while still preserving one rollback target for
+  # the `strategy: rollback` remediation below.
+  maxHistory: 2
+  releaseName: hospedajedonlolo-com
+  # The per-site account the two sibling sites also name. It is created, with
+  # its Role and RoleBinding, by `snaraj/platform`, which owns namespaces, RBAC
+  # and reconciliation definitions; until that companion change lands the name
+  # resolves to nothing, which is one more reason this release is suspended.
+  serviceAccountName: helm-reconciler
+  driftDetection:
+    mode: enabled
+  # The chart artifact comes from the signature-verified OCIRepository beside
+  # this file, whose immutable digest is a reviewed platform value — no branch
+  # head, mutable tag, or raw commit can decide what runs. While that object
+  # carries the sentinel digest, source-controller produces no artifact and
+  # this release installs nothing. chartRef carries no namespace, so
+  # helm-controller (started with --no-cross-namespace-refs=true) can only ever
+  # resolve it inside this site's own namespace.
+  chartRef:
+    kind: OCIRepository
+    name: hospedajedonlolo-com-chart
+  install:
+    remediation:
+      retries: 0
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 0
+      strategy: rollback
+  # The exact-site Cosign-verified chart is the sole carrier of image
+  # repository, tag, and digest. A platform image override would decouple the
+  # selected chart release from the workload it deploys. This one explicit
+  # value remains the chart's reviewed activation gate, and `scripts/validate.py`
+  # requires it to stay false while this application is pending.
+  values:
+    deploymentReady: false

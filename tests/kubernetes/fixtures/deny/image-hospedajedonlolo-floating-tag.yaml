@@ -1,0 +1,30 @@
+# A floating alias on the new site's publisher, in its own namespace (issue
+# #422). Each site's canonical-repository rule matches only its own
+# namespace, so the other sites' twins of this fixture cannot exercise it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-hospedajedonlolo-floating-tag
+  namespace: hospedajedonlolo-com
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: hospedajedonlolo-com
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: image-hospedajedonlolo-floating-tag
+      image: ghcr.io/snaraj/hospedajedonlolo-com:latest@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
