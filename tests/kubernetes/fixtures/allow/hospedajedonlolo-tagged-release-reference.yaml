@@ -1,0 +1,32 @@
+# The third site's half of the legible reference (issue #422). Each site's
+# canonical rule is its own (safety invariant 14), so proving the other sites'
+# proves nothing here: a fixture set that never names this namespace leaves its
+# rule unexercised, and a mutation matrix confined to the others reports a
+# survivor that is really a coverage hole.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hospedajedonlolo-tagged
+  namespace: hospedajedonlolo-com
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: hospedajedonlolo-com
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: hospedajedonlolo-tagged
+      image: ghcr.io/snaraj/hospedajedonlolo-com:v0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi

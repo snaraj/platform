@@ -1,0 +1,27 @@
+# The new site must admit ONLY its own connector (issue #422). Pinning another
+# site's connector instance (lidersea-com-tunnel) on its ingress peer is
+# denied: the ingress half of the cross-site-reachability guard.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-to-hospedajedonlolo-com
+  namespace: hospedajedonlolo-com
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hospedajedonlolo-com
+      app.kubernetes.io/instance: hospedajedonlolo-com
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cloudflare-public
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflare-public
+              app.kubernetes.io/instance: lidersea-com-tunnel
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress: []

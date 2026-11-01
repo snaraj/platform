@@ -215,7 +215,7 @@ off, and clear it immediately afterwards.
    host-level and physical/LAN recovery still work; they are the fallback if
    the rotated site loses its connector.
 2. **Baseline.** Run `scripts/edge-probe.sh --rounds 1` and keep the output.
-   Both sites must be serving before a rotation starts, otherwise a failure
+   Every site must be serving before a rotation starts, otherwise a failure
    afterwards cannot be attributed.
 3. **Rotate exactly one token.** The owner rotates that Tunnel's token in the
    dashboard and captures the new value directly into a protected mode-0600
@@ -244,8 +244,8 @@ off, and clear it immediately afterwards.
    the pre-rotation capture: every line for the other site — Tunnel pseudonym,
    status, ingress, DNS — must be byte-identical. That is exactly what the
    stable pseudonyms are for.
-8. **Prove both sites still serve.** `scripts/edge-probe.sh --rounds 2` with
-   `site-identity` and `sites-distinct` at PASS, and `readyz` 200 on both.
+8. **Prove every site still serves.** `scripts/edge-probe.sh --rounds 2` with
+   `site-identity` and `sites-distinct` at PASS, and `readyz` 200 on each.
 9. **Destroy the old material.** Delete the protected old-token file. If the
    rollout failed, do **not** restore it: stop the rollout, keep recovery
    access, and issue a *different* new token through another forward rotation.
@@ -329,6 +329,11 @@ zone plans Free; the six zone settings at their target values on both zones;
 per-site Tunnels, each with one hostname rule plus the terminal 404 and no idle
 connector; no private route and no WARP profile; exactly one proxied apex CNAME
 per zone targeting that site's own Tunnel, and no other record.
+
+Since the third website's onboarding (issue #422) every per-zone and per-Tunnel
+expectation above covers three sites: `hospedajedonlolo.com` is the third Free
+zone, with DNSSEC `active`, and `hospedajedonlolo-com` is the third per-site
+Tunnel, with the same single hostname rule and terminal 404.
 
 `--raw` prints the real identifiers. Use it only when a pseudonym is genuinely
 not enough — for example when the DNS check reports a mismatch and the exact

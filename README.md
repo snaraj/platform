@@ -112,6 +112,7 @@ require current operational evidence.
 | [naranjo.online](https://naranjo.online) | [snaraj/naranjo.online](https://github.com/snaraj/naranjo.online) | reconciled from a signed chart digest |
 | [lidersea.com](https://lidersea.com) | [snaraj/lidersea.com](https://github.com/snaraj/lidersea.com) | reconciled from a signed chart digest |
 | obsync (obsync) | [snaraj/obsync](https://github.com/snaraj/obsync) | onboarded, not deployed |
+| hospedajedonlolo.com | [snaraj/hospedajedonlolo.com](https://github.com/snaraj/hospedajedonlolo.com) | onboarded, not deployed |
 
 Selected chart digests and their acquisition evidence live in the application
 composition. Application repositories own each workload's image, chart and
@@ -125,6 +126,14 @@ until snaraj/obsync publishes v0.1.0, its release is suspended, and its Tunnel,
 Secrets and volumes are owner ceremonies that have not run.
 [docs/design/obsync-onboarding.md](docs/design/obsync-onboarding.md) is the
 reviewable proposal for the parts this repository does not carry.
+
+The fourth row is likewise not a link and not "deployed": this repository
+carries that site's namespace, budget, reconciler authority and Tunnel
+connector, its chart selection is the same fail-closed placeholder until the
+site publishes its first signed chart, and its Tunnel, DNS record, token Secret
+and media volume are owner ceremonies that have not run.
+[docs/design/hospedajedonlolo-onboarding.md](docs/design/hospedajedonlolo-onboarding.md)
+lists them in order.
 
 ## Repository layout
 

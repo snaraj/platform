@@ -2,17 +2,17 @@ package main
 
 import rego.v1
 
-# The two WEBSITES, whose charts render an identical shape. Kept separate from
+# The WEBSITES, whose charts render an identical shape. Kept separate from
 # the wider workload set below because the rules guarded by it — one readiness
 # scalar as the whole values block, the `deployment-ready` annotation — are
 # statements about that shape, not about every reconciled workload.
-site_namespaces := {"naranjo-online", "lidersea-com"}
+site_namespaces := {"naranjo-online", "lidersea-com", "hospedajedonlolo-com"}
 
-# Every namespace reconciling a published, cosign-verified OCI chart. The two
+# Every namespace reconciling a published, cosign-verified OCI chart. The
 # sites plus the obsync workload (issue #348).
 chart_source_namespaces := site_namespaces | {"obsidian"}
 
-release_kustomizations := {"platform-services", "naranjo-online", "lidersea-com", "obsync"}
+release_kustomizations := {"platform-services", "naranjo-online", "lidersea-com", "obsync", "hospedajedonlolo-com"}
 
 # One reviewed budget per namespace, each bound to its OWN evidence document's
 # exact bytes and its own exact five-value map. The sites share a map because
@@ -49,6 +49,16 @@ reviewed_namespace_capacity := {
       "requests.memory": "384Mi",
       "limits.cpu": "5000m",
       "limits.memory": "2560Mi",
+    },
+  },
+  "hospedajedonlolo-com": {
+    "evidence": "955a59cbf5ba0bd36f5e62349ed070a2b1eba6fb3ef072951435010edcceaf34",
+    "hard": {
+      "pods": "6",
+      "requests.cpu": "150m",
+      "requests.memory": "192Mi",
+      "limits.cpu": "1200m",
+      "limits.memory": "768Mi",
     },
   },
 }
@@ -182,7 +192,7 @@ deny contains msg if {
 
 deny contains msg if {
   input.kind == "Deployment"
-  input.metadata.namespace in {"naranjo-online", "lidersea-com"}
+  input.metadata.namespace in site_namespaces
   object.get(object.get(input.metadata, "annotations", {}), "platform.snaraj.dev/deployment-ready", "") != "true"
   msg := sprintf("Deployment %s is not marked ready", [input.metadata.name])
 }
@@ -208,6 +218,7 @@ connector_instances := {
   "naranjo-online": "naranjo-online-tunnel",
   "lidersea-com": "lidersea-com-tunnel",
   "obsidian": "obsync-tunnel",
+  "hospedajedonlolo-com": "hospedajedonlolo-com-tunnel",
 }
 
 cloudflared_connector_deployments := {instance |

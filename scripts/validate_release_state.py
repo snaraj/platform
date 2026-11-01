@@ -32,7 +32,7 @@ TOKEN_REVISION_RE = re.compile(
 # origin it reaches is composed in `snaraj/platform-k8s-infra`. Adding a row
 # here creates the connector, its Secret name and its egress leg, and nothing
 # about the workload behind it.
-PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com", "obsync")
+PUBLIC_CONNECTOR_SITES = ("naranjo-online", "lidersea-com", "obsync", "hospedajedonlolo-com")
 MAX_RELEASE_YAML_BYTES = 65536
 
 RELEASE_CONTRACTS = {

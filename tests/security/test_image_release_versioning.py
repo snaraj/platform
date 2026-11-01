@@ -14,12 +14,13 @@ MODULE = load_script("validate_image_release.py")
 
 
 def write_release_contract(root, gates=None):
-    """Create the closed two-gate graduation policy used by validator fixtures."""
+    """Create the closed three-gate graduation policy used by validator fixtures."""
 
-    gates = gates or ("no", "no")
+    gates = gates or ("no", "no", "no")
     root.joinpath("release-policy.env").write_text(
         "NARANJO_ONLINE_PRODUCTION_GRADUATED={}\n"
-        "LIDERSEA_COM_PRODUCTION_GRADUATED={}\n".format(*gates),
+        "LIDERSEA_COM_PRODUCTION_GRADUATED={}\n"
+        "HOSPEDAJEDONLOLO_COM_PRODUCTION_GRADUATED={}\n".format(*gates),
         encoding="utf-8",
     )
 
@@ -44,20 +45,34 @@ class ImageReleaseVersionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             self.assertTrue(any(
-                "two reviewed yes/no" in error
+                "three reviewed yes/no" in error
                 for error in MODULE.repository_errors(root)
             ))
 
             root.joinpath("release-policy.env").write_text(
                 "NARANJO_ONLINE_PRODUCTION_GRADUATED=maybe\n"
-                "LIDERSEA_COM_PRODUCTION_GRADUATED=no\n",
+                "LIDERSEA_COM_PRODUCTION_GRADUATED=no\n"
+                "HOSPEDAJEDONLOLO_COM_PRODUCTION_GRADUATED=no\n",
                 encoding="utf-8",
             )
             self.assertTrue(MODULE.repository_errors(root))
 
+            # The two-gate file this policy used to be: a third website with
+            # no recorded graduation decision must fail, not default to "no".
+            root.joinpath("release-policy.env").write_text(
+                "NARANJO_ONLINE_PRODUCTION_GRADUATED=no\n"
+                "LIDERSEA_COM_PRODUCTION_GRADUATED=no\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                MODULE.repository_errors(root),
+                "a missing third-site gate must fail closed",
+            )
+
             root.joinpath("release-policy.env").write_text(
                 "LIDERSEA_COM_PRODUCTION_GRADUATED=no\n"
-                "NARANJO_ONLINE_PRODUCTION_GRADUATED=no\n",
+                "NARANJO_ONLINE_PRODUCTION_GRADUATED=no\n"
+                "HOSPEDAJEDONLOLO_COM_PRODUCTION_GRADUATED=no\n",
                 encoding="utf-8",
             )
             self.assertTrue(
@@ -104,13 +119,27 @@ class ImageReleaseVersionTests(unittest.TestCase):
                         for error in MODULE.tag_errors(root, site, "v1.0.0")
                     ))
 
-            write_release_contract(root, gates=("yes", "no"))
+            write_release_contract(root, gates=("yes", "no", "no"))
             self.assertEqual(MODULE.tag_errors(root, "naranjo-online", "v1.0.0"), [])
-            self.assertTrue(any(
-                "before tracked production graduation" in error
-                for error in MODULE.tag_errors(root, "lidersea-com", "v1.0.0")
-            ))
-            self.assertEqual(MODULE.tag_errors(root, "lidersea-com", "v0.9.9"), [])
+            for site in ("lidersea-com", "hospedajedonlolo-com"):
+                with self.subTest(ungraduated=site):
+                    self.assertTrue(any(
+                        "before tracked production graduation" in error
+                        for error in MODULE.tag_errors(root, site, "v1.0.0")
+                    ))
+                    self.assertEqual(MODULE.tag_errors(root, site, "v0.9.9"), [])
+
+            # Graduating the third site alone must not graduate the others.
+            write_release_contract(root, gates=("no", "no", "yes"))
+            self.assertEqual(
+                MODULE.tag_errors(root, "hospedajedonlolo-com", "v1.0.0"), []
+            )
+            for site in ("naranjo-online", "lidersea-com"):
+                with self.subTest(still_gated=site):
+                    self.assertTrue(any(
+                        "before tracked production graduation" in error
+                        for error in MODULE.tag_errors(root, site, "v1.0.0")
+                    ))
 
     def test_promotion_tags_are_exact_stable_semver_and_gate_v1(self):
         with tempfile.TemporaryDirectory() as directory:

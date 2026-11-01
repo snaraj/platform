@@ -234,10 +234,22 @@ class CloudflareAccountAuditSourceTests(unittest.TestCase):
         self.assertIn("RAW MODE", self.source)
         self.assertIn("Never commit it", self.source)
 
-    def test_expectations_match_the_two_tunnel_target_state(self):
+    def test_expectations_match_the_three_tunnel_target_state(self):
         for expected in (
             "readonly TUNNEL_A='naranjo-online'",
             "readonly TUNNEL_B='lidersea-com'",
+            # The third site (issue #422): its zone, Tunnel, origin and signed
+            # DNSSEC expectation, and every per-zone check actually run for it.
+            "readonly ZONE_C='hospedajedonlolo.com'",
+            "readonly TUNNEL_C='hospedajedonlolo-com'",
+            "readonly ORIGIN_C='http://hospedajedonlolo-com.hospedajedonlolo-com.svc.cluster.local:8080'",
+            "readonly DNSSEC_C='active'",
+            'audit_zone_plan "${ZONE_C}" "${zone_c_id}"',
+            'audit_zone_settings "${ZONE_C}" "${zone_c_id}"',
+            'audit_dnssec "${ZONE_C}" "${zone_c_id}" "${DNSSEC_C}"',
+            'audit_tunnel_detail "${account_id}" "${TUNNEL_C}" "${ZONE_C}" "${ORIGIN_C}"',
+            'audit_dns_records "${ZONE_C}" "${zone_c_id}" "$(tunnel_id_for "${TUNNEL_C}")"',
+            '[[ "${count}" == 3 && "${names}" == "${TUNNEL_C},${TUNNEL_B},${TUNNEL_A}" ]]',
             "http_status:404",
             "always_use_https on",
             "min_tls_version 1.2",

@@ -1,0 +1,25 @@
+# Cross-site reachability, the other direction (issue #422): an existing
+# site's connector (lidersea-com-tunnel) aimed at the NEW site's origin. The
+# new origin namespace is a valid target only for its own connector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-lidersea-com
+  namespace: cloudflare-public
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-public
+      app.kubernetes.io/instance: lidersea-com-tunnel
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hospedajedonlolo-com
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hospedajedonlolo-com
+      ports:
+        - port: 8080
+          protocol: TCP

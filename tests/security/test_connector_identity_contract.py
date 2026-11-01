@@ -26,6 +26,9 @@ CONNECTORS = {
     "naranjo-online": ("naranjo-online-tunnel", "naranjo-online-tunnel-token"),
     "lidersea-com": ("lidersea-com-tunnel", "lidersea-com-tunnel-token"),
     "obsync": ("obsync-tunnel", "obsync-tunnel-token"),
+    "hospedajedonlolo-com": (
+        "hospedajedonlolo-com-tunnel", "hospedajedonlolo-com-tunnel-token"
+    ),
 }
 CONNECTOR_INSTANCES = tuple(instance for instance, _ in CONNECTORS.values())
 ROTATED_REVISION = "rev-rotation-isolation-probe"
@@ -328,7 +331,11 @@ class ConnectorIdentityContractTests(unittest.TestCase):
         )
 
     def test_reviewed_connectors_are_accepted(self):
-        for name in ("live-connector-env-token.yaml", "two-connector-networking.yaml"):
+        for name in (
+            "live-connector-env-token.yaml",
+            "two-connector-networking.yaml",
+            "hospedajedonlolo-onboarding.yaml",
+        ):
             with self.subTest(name=name):
                 completed = self.run_fixture("allow", name)
                 self.assertEqual(
@@ -343,6 +350,11 @@ class ConnectorIdentityContractTests(unittest.TestCase):
             "env-token-envfrom-cross-site.yaml",
             "env-token-ephemeral-container-cross-site.yaml",
             "connector-identity-degenerate-labels.yaml",
+            # The fourth connector, both directions of each swap (issue #422).
+            "connector-token-cross-swap-hospedajedonlolo.yaml",
+            "connector-token-cross-swap-into-hospedajedonlolo.yaml",
+            "connector-egress-cross-site-hospedajedonlolo.yaml",
+            "connector-egress-into-hospedajedonlolo.yaml",
         )
         for name in fixtures:
             with self.subTest(name=name):
@@ -401,6 +413,10 @@ class SiteIngressAndTokenCorpusTests(unittest.TestCase):
         ),
         "env-token-cross-swap-lidersea.yaml": (
             "    app.kubernetes.io/instance: lidersea-com-tunnel",
+            "              name: naranjo-online-tunnel-token",
+        ),
+        "env-token-cross-swap-hospedajedonlolo.yaml": (
+            "    app.kubernetes.io/instance: hospedajedonlolo-com-tunnel",
             "              name: naranjo-online-tunnel-token",
         ),
         "env-token-superseded-shared.yaml": (
@@ -503,6 +519,24 @@ class SiteIngressAndTokenCorpusTests(unittest.TestCase):
             ).format(resource.group(1))
             with self.subTest(fixture=name):
                 self.assertEqual(conftest_denials(path), [expected])
+
+    @unittest.skipUnless(CONFTEST, "conftest is required")
+    def test_the_third_site_admits_only_its_own_connector(self):
+        """The ingress half of the double-pin, in the namespace added by #422.
+
+        The naranjo fixtures above cannot reach this namespace's arm: the
+        ingress rule derives its expected peer from the policy's own namespace,
+        so only a policy in `hospedajedonlolo-com` exercises that derivation.
+        """
+
+        path = self.FIXTURES / "deny" / "ingress-peer-wrong-instance-hospedajedonlolo.yaml"
+        self.assertEqual(
+            conftest_denials(path),
+            [
+                "NetworkPolicy hospedajedonlolo-com/ingress-to-hospedajedonlolo-com "
+                "widens the exact cloudflare-public TCP 8080 ingress contract"
+            ],
+        )
 
 
 if __name__ == "__main__":

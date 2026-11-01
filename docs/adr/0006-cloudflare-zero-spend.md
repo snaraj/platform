@@ -48,3 +48,23 @@ Official evidence:
 - <https://developers.cloudflare.com/fundamentals/reference/policies-compliances/delivering-videos-with-cloudflare/>
 - <https://developers.cloudflare.com/cache/concepts/default-cache-behavior/>
 - <https://developers.cloudflare.com/tunnel/routing/>
+
+## Amendment (2026-11-01)
+
+The owner authorized a third Free zone, `hospedajedonlolo.com`, on 2026-11-01.
+The account boundary in the decision above is therefore three active domain
+zones, each on the Free website plan. Prior lines are left byte for byte
+intact.
+
+- Its Registrar renewal is the only charge this zone authorizes, classified
+  separately from infrastructure like the other two. No product, plan, add-on
+  or certificate is added.
+- The zone was hardened before onboarding: DNSSEC active; a null MX, SPF
+  `-all` and DMARC `p=reject` (the domain sends no mail); and CAA limited to
+  the certificate authorities Universal SSL uses.
+- The site serves one video of about 20 MB through the proxied edge, as
+  naranjo.online already serves films. The heavy-media terms boundary
+  recorded above therefore applies to both sites. Whether a single file of
+  this size is a "video and other large-file pattern" under the self-serve
+  terms is not resolved here. It is the owner's decision, and it covers both
+  sites equally.
