@@ -1,0 +1,9 @@
+# Flux 2.10 adds a port-443 alias to the same cleartext artifact listener.
+# Existing consumers use port 80; preserve that exact internal service shape.
+- op: replace
+  path: /spec/ports
+  value:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: http

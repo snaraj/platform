@@ -46,16 +46,16 @@ class CloudflaredHostBinaryInstallerTests(unittest.TestCase):
             if line and not line.startswith("#")
         )
         version = pins["CLOUDFLARED_HOST_VERSION"]
-        self.assertGreaterEqual(tuple(map(int, version.split("."))), (2026, 10, 3))
+        self.assertGreaterEqual(tuple(map(int, version.split("."))), (2026, 10, 7))
         self.assertEqual(pins["CLOUDFLARED_TAG"], version)
         chart = ROOT / "kubernetes/platform/cloudflare-public/chart"
         self.assert_rendered_chart_pins(self.render_chart(chart), version, pins["CLOUDFLARED_DIGEST"])
         # Bind the security floor to the independently verified vendor artifacts;
         # syntactically valid hashes alone could select a vulnerable old binary.
         self.assertEqual(pins["CLOUDFLARED_HOST_ARM64_SHA256"],
-                         "89297ebfb9e8c99c0dc013a1140601453cf3798d8306c5591651f4a3f5210be8")
+                         "3df43aedc9ff291d1735b5cb576cb97e0b157488796db2e32b28aecabb445775")
         self.assertEqual(pins["CLOUDFLARED_DIGEST"],
-                         "sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39")
+                         "sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba")
 
     def render_chart(self, chart):
         result = subprocess.run(
@@ -76,8 +76,8 @@ class CloudflaredHostBinaryInstallerTests(unittest.TestCase):
 
     def test_chart_pin_comments_cannot_hide_active_regressions(self):
         chart = ROOT / "kubernetes/platform/cloudflare-public/chart"
-        version = "2026.10.3"
-        digest = "sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39"
+        version = "2026.10.7"
+        digest = "sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba"
         mutations = (
             ("Chart.yaml", f'appVersion: "{version}"', 'appVersion: "2026.8.3"'),
             ("values.yaml", f'  tag: "{version}"', '  tag: "2026.8.3"'),

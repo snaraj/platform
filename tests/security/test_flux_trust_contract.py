@@ -31,6 +31,24 @@ class FluxTrustContractTests(unittest.TestCase):
         result = subprocess.run([tool, "build", str(CONTROLLERS)], capture_output=True, text=True, check=True)
         cls.documents = re.split(r"(?m)^---\s*$", result.stdout)
 
+    def test_source_artifact_service_retains_only_the_existing_port(self):
+        services = [document for document in self.documents
+                    if re.search(r"(?m)^kind: Service$", document)]
+        self.assertEqual(len(services), 1)
+        service = services[0]
+        self.assertRegex(service, r"(?m)^  name: source-controller$")
+        # The upstream HTTPS-numbered alias still targets cleartext HTTP.
+        # It is unused here and must not silently expand the service contract.
+        self.assertEqual(service[service.index("spec:\n"):].strip(), """spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app: source-controller
+  type: ClusterIP""")
+
     def test_exact_public_bundle_and_immutable_objects(self):
         parts = {}
         for document in self.documents:
