@@ -225,7 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           proxy_image="$(sed -n 's/^OBSYNC_TLS_PROXY_IMAGE=//p' versions.env)"
-          [[ "$proxy_image" =~ ^docker\.io/nginxinc/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$ ]]
+          [[ "$proxy_image" =~ ^docker\.io/nginx/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$ ]]
           docker_config="$(mktemp -d "${RUNNER_TEMP}/proxy-scan-config.XXXXXX")"
           for platform in linux/amd64 linux/arm64; do
             DOCKER_CONFIG="$docker_config" trivy image --image-src remote --platform "$platform" \

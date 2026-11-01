@@ -10,7 +10,7 @@ obsync_proxy_labels := {
   "app.kubernetes.io/instance": "obsync-tls-proxy",
 }
 
-obsync_proxy_image := "docker.io/nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03"
+obsync_proxy_image := "docker.io/nginx/nginx-unprivileged:1.30.6-alpine-slim@sha256:984a21e29bb10d4c0e122374b97b89a2101823a9331e0f3c6c04bc285ccf447f"
 
 obsync_proxy_deployment if {
   input.kind == "Deployment"
