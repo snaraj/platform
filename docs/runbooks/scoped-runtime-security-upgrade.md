@@ -30,14 +30,27 @@ stop. Keep target bindings, before/after objects and journals outside Git.
 4. For an existing Flux installation, record the exact controller and relevant
    CRD before-state. Compare the reviewed old and new renders; authorization,
    trust mounts, security settings, selectors and egress must remain unchanged.
-   Check CRD schema compatibility with the existing stored versions. Apply only
-   required compatible schema additions and exact controller image changes,
-   with UID/resource-version/spec preconditions. Never run the create-only
-   installer over an existing installation or delete a CRD. Retain compatible
-   additive schemas during image rollback; do not erase newly represented
-   fields by blindly restoring an older schema. Unsupported schema changes are
-   a stop. Verify actual running config digests and all scoped reconciliations.
-5. For cluster connectors, identify the existing owner/reconciler before
+   The scoped patch preserves the artifact Service's existing port 80, removing
+   the unused upstream port-443 alias to the same cleartext listener. The new
+   source-controller readiness route is `/readyz` on `healthz`, replacing `/`
+   on `http`; apply that reviewed probe change with the image and version label.
+   The other two controllers change only image and version label.
+5. Use the complete authenticated vendor CRD schemas, not a synthesized subset.
+   This update includes status additions, OCI/chart fields, moved defaults and
+   equivalent or conditional CEL admission rules; it is not additive-only.
+   Before live use, test an exact old-to-new upgrade with representative existing
+   Git/OCI/Kustomization/Helm objects, missing-required-field and invalid-reference
+   denials, and actual application behavior. Also prove the old controllers and
+   old probe work with the retained new schemas as the rollback path. Bind live
+   stored versions and selected object shapes to that compatibility evidence.
+   Patch only the reviewed CRD specs and controller fields, using exact
+   UID/resource-version/spec preconditions. Never run the create-only installer
+   over an existing installation or delete a CRD. On failure restore only the
+   recorded controller image, probe and version label; retain the compatible new
+   schemas rather than erase newly represented fields. Unknown schema/default
+   semantics or missing rollback proof are a stop. Verify actual running config
+   digests and all scoped reconciliations after the transaction.
+6. For cluster connectors, identify the existing owner/reconciler before
    changing an image. A reconciled object changes through its governing GitOps
    selection; an operator-owned object uses an exact-state image-only patch.
    Preserve arguments, credentials, origin binding, replica strategy, policy
