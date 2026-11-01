@@ -1,0 +1,46 @@
+# The exact operator artifact for docs/design/hospedajedonlolo-onboarding.md
+# §4. Applied by an operator, never reconciled from this repository: no
+# reviewed root applies an application reconciler, and
+# docs/runbooks/flux-install.md forbids applying the parent flux-system root.
+# It lives under docs/ for that reason — scripts/validate_repository.py walks
+# kubernetes/ for live desired state, so a file here is a reviewed artifact and
+# not a manifest something quietly applies.
+#
+# tests/kubernetes/fixtures/allow/hospedajedonlolo-com-reconciler-artifact.yaml
+# is these exact bytes under the platform's own Conftest policy, so this
+# artifact cannot drift out of the contract it is supposed to satisfy.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hospedajedonlolo-com-reconciler
+  namespace: flux-system
+spec:
+  # Created SUSPENDED. The chart selection is the all-zero pending sentinel
+  # until snaraj/hospedajedonlolo.com publishes its first signed chart, and the
+  # operator-provisioned media claim must be bound before the first Pod starts.
+  # Lifting this is the design document's last step, not part of creation.
+  suspend: true
+  interval: 1m0s
+  retryInterval: 2m0s
+  timeout: 3m0s
+  # Exactly one application directory. The reviewed policy pins this string per
+  # reconciler name, so a path that reached a sibling application would be
+  # refused before it was ever applied.
+  path: ./kubernetes/websites/hospedajedonlolo-com
+  # `prune: false` and `deletionPolicy: Orphan` are why removing this object
+  # later cannot delete a tenant's live resources. Both are required by policy
+  # rather than chosen here.
+  prune: false
+  force: false
+  deletionPolicy: Orphan
+  # Required by policy for every approved reconciler: the apply is not reported
+  # successful until what it applied is actually ready.
+  wait: true
+  # The whole surface through which anything is applied. Without it the apply
+  # would run as kustomize-controller itself, which is the escalation path the
+  # impersonation model exists to close.
+  serviceAccountName: hospedajedonlolo-com-reconciler
+  targetNamespace: hospedajedonlolo-com
+  sourceRef:
+    kind: GitRepository
+    name: flux-system

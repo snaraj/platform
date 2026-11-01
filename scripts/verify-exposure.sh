@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Live, external proof that exactly the two approved hostnames reach their own
+# Live, external proof that exactly the approved site hostnames reach their own
 # applications while an unconfigured hostname and the residential origin do not.
 set -euo pipefail
 
 readonly LIVE_ACK='I_ACKNOWLEDGE_THIS_WILL_PROBE_PUBLIC_DNS_CLOUDFLARE_AND_MY_HOME_IP'
 readonly NARANJO_HOSTNAME='naranjo.online'
 readonly LIDERSEA_HOSTNAME='lidersea.com'
+readonly HOSPEDAJEDONLOLO_HOSTNAME='hospedajedonlolo.com'
+readonly APPROVED_HOSTNAMES="${NARANJO_HOSTNAME} ${LIDERSEA_HOSTNAME} ${HOSPEDAJEDONLOLO_HOSTNAME}"
 PYTHON_BIN=''
 
 die() {
@@ -21,13 +23,13 @@ Usage:
 
 Required shell-only inputs for --live:
   HOME_PUBLIC_IP             residential IPv4 or IPv6 address (never printed)
-  UNEXPECTED_PUBLIC_HOSTNAME an unconfigured subdomain of naranjo.online or lidersea.com
+  UNEXPECTED_PUBLIC_HOSTNAME an unconfigured subdomain of an approved zone
 
 Optional:
   HOME_PUBLIC_IPV6           second residential address to check (never printed)
 
-The fixed approved identities are naranjo.online and lidersea.com. This command
-does not accept alternate expected hostnames.
+The fixed approved identities are naranjo.online, lidersea.com and
+hospedajedonlolo.com. This command does not accept alternate expected hostnames.
 EOF
 }
 
@@ -57,10 +59,13 @@ validate_inputs() {
     "$PYTHON_BIN" -c 'import ipaddress,sys; value=ipaddress.ip_address(sys.argv[1]); assert value.version == 6' "$HOME_PUBLIC_IPV6" >/dev/null 2>&1 || \
       die 'HOME_PUBLIC_IPV6 must be one valid IPv6 address'
   fi
-  [[ "$UNEXPECTED_PUBLIC_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?\.(naranjo\.online|lidersea\.com)$ ]] || \
+  [[ "$UNEXPECTED_PUBLIC_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?\.(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)$ ]] || \
     die 'UNEXPECTED_PUBLIC_HOSTNAME must be a single unconfigured subdomain of an approved zone'
-  [[ "$UNEXPECTED_PUBLIC_HOSTNAME" != "$NARANJO_HOSTNAME" && "$UNEXPECTED_PUBLIC_HOSTNAME" != "$LIDERSEA_HOSTNAME" ]] || \
-    die 'the unexpected hostname must differ from both approved hostnames'
+  local approved
+  for approved in $APPROVED_HOSTNAMES; do
+    [[ "$UNEXPECTED_PUBLIC_HOSTNAME" != "$approved" ]] || \
+      die 'the unexpected hostname must differ from every approved hostname'
+  done
 }
 
 resolved_contains_address() {
@@ -81,8 +86,7 @@ raise SystemExit(1)
 
 assert_site_identity() {
   local hostname="$1"
-  local other_hostname="$2"
-  local body headers ready_body status
+  local body headers ready_body status other_hostname
 
   status="$(curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' "https://${hostname}/")" || \
     die "${hostname} root request failed"
@@ -92,9 +96,12 @@ assert_site_identity() {
   grep -Fq 'data-static-fallback' <<<"$body" || die "${hostname} lacks the built application fallback"
   grep -Fq 'Hello World!' <<<"$body" || die "${hostname} lacks the expected application content"
   grep -Fq "<title>${hostname}</title>" <<<"$body" || die "${hostname} did not return its exact tenant identity"
-  if grep -Fq "<title>${other_hostname}</title>" <<<"$body"; then
-    die "${hostname} returned the other tenant's identity"
-  fi
+  for other_hostname in $APPROVED_HOSTNAMES; do
+    [[ "$other_hostname" != "$hostname" ]] || continue
+    if grep -Fq "<title>${other_hostname}</title>" <<<"$body"; then
+      die "${hostname} returned the ${other_hostname} tenant's identity"
+    fi
+  done
 
   ready_body="$(curl --fail --silent --show-error --max-time 15 "https://${hostname}/readyz")" || \
     die "${hostname} public readiness endpoint failed"
@@ -139,7 +146,7 @@ assert_unexpected_hostname_denied() {
   status="${body##*$'\n'}"
   body="${body%$'\n'*}"
   [[ "$status" =~ ^4[0-9][0-9]$ ]] || die "unexpected hostname was not denied with a 4xx response (HTTP ${status})"
-  if grep -Eq '<title>(naranjo\.online|lidersea\.com)</title>|data-static-fallback|Hello World!' <<<"$body"; then
+  if grep -Eq '<title>(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)</title>|data-static-fallback|Hello World!' <<<"$body"; then
     die 'unexpected hostname received approved tenant content'
   fi
   printf 'PASS unexpected hostname denied at the edge without tenant content (HTTP %s)\n' "$status"
@@ -158,16 +165,19 @@ assert_origin_ports_closed() {
 }
 
 run_live_probes() {
-  assert_site_identity "$NARANJO_HOSTNAME" "$LIDERSEA_HOSTNAME"
-  assert_site_identity "$LIDERSEA_HOSTNAME" "$NARANJO_HOSTNAME"
-  assert_dns_hides_origin "$NARANJO_HOSTNAME"
-  assert_dns_hides_origin "$LIDERSEA_HOSTNAME"
+  local hostname
+  for hostname in $APPROVED_HOSTNAMES; do
+    assert_site_identity "$hostname"
+  done
+  for hostname in $APPROVED_HOSTNAMES; do
+    assert_dns_hides_origin "$hostname"
+  done
   assert_unexpected_hostname_denied "$NARANJO_HOSTNAME"
   assert_origin_ports_closed "$HOME_PUBLIC_IP" HOME_PUBLIC_IP
   if [[ -n "${HOME_PUBLIC_IPV6:-}" ]]; then
     assert_origin_ports_closed "$HOME_PUBLIC_IPV6" HOME_PUBLIC_IPV6
   fi
-  printf 'PASS live exposure gate: two exact tenants, unexpected-host denial, origin hiding, and tested TCP closure\n'
+  printf 'PASS live exposure gate: three exact tenants, unexpected-host denial, origin hiding, and tested TCP closure\n'
   printf 'NOTE this remains one point-in-time external observation; the pending successor live gate must also prove runtime convergence and readiness\n'
 }
 

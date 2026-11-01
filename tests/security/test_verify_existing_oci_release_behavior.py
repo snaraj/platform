@@ -140,6 +140,36 @@ printf '%s\n' "$*" > "${FAKE_COSIGN_LOG}"
         self.assertIn("malformed digest", result.stderr)
         self.assertEqual(cosign_call, "")
 
+    def test_the_third_site_publisher_is_trusted_and_nothing_near_it(self):
+        # Issue #422 adds snaraj/hospedajedonlolo.com to the alternation. The
+        # accepted row proves the new member works; the refused rows prove the
+        # alternation did not loosen into an unescaped or unanchored match.
+        result, _ = self.run_fixture(
+            workflow_identity=(
+                "https://github.com/snaraj/hospedajedonlolo.com/.github/"
+                "workflows/release-publisher.yml@refs/heads/main"
+            )
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for label, identity in {
+            "unescaped dot": (
+                "https://github.com/snaraj/hospedajedonloloXcom/.github/"
+                "workflows/release-publisher.yml@refs/heads/main"
+            ),
+            "repository suffix": (
+                "https://github.com/snaraj/hospedajedonlolo.com-fork/.github/"
+                "workflows/release-publisher.yml@refs/heads/main"
+            ),
+            "tag ref": (
+                "https://github.com/snaraj/hospedajedonlolo.com/.github/"
+                "workflows/release-publisher.yml@refs/tags/v0.1.0"
+            ),
+        }.items():
+            with self.subTest(identity=label):
+                result, cosign_call = self.run_fixture(workflow_identity=identity)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(cosign_call, "")
+
     def test_identities_outside_the_trust_boundary_fail_closed(self):
         # The trust-boundary regex had no negative coverage before the
         # 2026-08-22 identity re-point, so re-pointing it could have widened

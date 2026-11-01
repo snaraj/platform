@@ -1,0 +1,29 @@
+# A sibling site's image, correctly tagged, in the new site's namespace (issue
+# #422). The identity tuple does not soften because a tag is permitted.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-hospedajedonlolo-sibling-repository
+  namespace: hospedajedonlolo-com
+spec:
+  automountServiceAccountToken: false
+  serviceAccountName: hospedajedonlolo-com
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: image-hospedajedonlolo-sibling-repository
+      image: ghcr.io/snaraj/lidersea-com:v0.1.9@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi

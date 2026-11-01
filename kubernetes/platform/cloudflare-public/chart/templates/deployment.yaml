@@ -13,7 +13,7 @@ connectors passed by looking at two. `test_connector_identity_contract.py`
 pins this list against the schema's required set so the two cannot diverge
 again.
 */ -}}
-{{- range $site := list "naranjo-online" "lidersea-com" "obsync" }}
+{{- range $site := list "naranjo-online" "lidersea-com" "obsync" "hospedajedonlolo-com" }}
 {{- $connector := index $.Values.connectors $site }}
 ---
 apiVersion: apps/v1

@@ -23,9 +23,11 @@ INVENTORY = {
     ("apps/v1", "Deployment", "naranjo-online-tunnel"),
     ("apps/v1", "Deployment", "lidersea-com-tunnel"),
     ("apps/v1", "Deployment", "obsync-tunnel"),
+    ("apps/v1", "Deployment", "hospedajedonlolo-com-tunnel"),
     *(('networking.k8s.io/v1', 'NetworkPolicy', name) for name in (
         "cloudflared-dns", "cloudflared-edge", "cloudflared-naranjo-online",
         "cloudflared-lidersea-com", "cloudflared-obsidian",
+        "cloudflared-hospedajedonlolo-com",
     )),
 }
 # Policy first, Deployment last. Neither a shared prerequisite nor a peer is

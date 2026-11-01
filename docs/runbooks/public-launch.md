@@ -49,10 +49,10 @@ the exact release inventory and `ClusterIP`-only with no `externalIPs`,
 `nodePort`, or load-balancer field. Generated ReplicaSets and Pods must retain
 the exact controller UID chain and stable replica counts.
 
-The public Tunnel must contain exactly the ordered `naranjo.online` and
-`lidersea.com` Service routes followed by the final 404, with one matching
-proxied automatic-TTL CNAME in each audited Free zone. One site's readiness does
-not authorize the other. Unsuspended desired-state bytes do not establish
+Each per-site public Tunnel must contain exactly its own site's Service route
+(`naranjo.online`, `lidersea.com` or `hospedajedonlolo.com`) followed by the
+final 404, with one matching proxied automatic-TTL CNAME in each audited Free
+zone. One site's readiness does not authorize another. Unsuspended desired-state bytes do not establish
 runtime readiness or activation; the Tunnel and platform-services remain
 separately blocked.
 

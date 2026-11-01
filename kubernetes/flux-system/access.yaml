@@ -35,6 +35,13 @@ metadata:
   namespace: obsidian
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: hospedajedonlolo-com
+automountServiceAccountToken: false
+---
 # Controller identity: what the three installed controllers may do AS
 # THEMSELVES. Every object a reconciliation applies is applied by one of the
 # impersonated reconciler accounts further down this file, never by a
@@ -126,6 +133,7 @@ rules:
       - naranjo-online-reconciler
       - lidersea-com-reconciler
       - obsync-reconciler
+      - hospedajedonlolo-com-reconciler
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -221,6 +229,31 @@ subjects:
     name: helm-controller
     namespace: flux-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-controller-impersonation
+  namespace: hospedajedonlolo-com
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [impersonate]
+    resourceNames: [helm-reconciler]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-controller-impersonation
+  namespace: hospedajedonlolo-com
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-controller-impersonation
+subjects:
+  - kind: ServiceAccount
+    name: helm-controller
+    namespace: flux-system
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -239,6 +272,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: obsync-reconciler
+  namespace: flux-system
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hospedajedonlolo-com-reconciler
   namespace: flux-system
 automountServiceAccountToken: false
 ---
@@ -405,6 +445,58 @@ subjects:
     name: obsync-reconciler
     namespace: flux-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-release-reconciler
+  namespace: hospedajedonlolo-com
+rules:
+  # Derived independently from this site's three-object Kustomize root.
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    verbs: [list]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    verbs: [create]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    resourceNames: [hospedajedonlolo-com-chart]
+    verbs: [get, update, patch]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [list]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [create]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    resourceNames: [hospedajedonlolo-com]
+    verbs: [get, update, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [create]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [default-deny]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hospedajedonlolo-com-reconciler
+  namespace: hospedajedonlolo-com
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-release-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: hospedajedonlolo-com-reconciler
+    namespace: flux-system
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -424,6 +516,13 @@ kind: ServiceAccount
 metadata:
   name: obsync-helm-reconciler
   namespace: obsidian
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helm-reconciler
+  namespace: hospedajedonlolo-com
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -586,3 +685,44 @@ subjects:
   - kind: ServiceAccount
     name: obsync-helm-reconciler
     namespace: obsidian
+---
+# The generic site shape, identical to lidersea-com's. No claim verbs: this
+# site mounts one operator-provisioned, read-only media claim and its chart
+# creates none, so its Helm account has nothing to create, update or delete
+# there (validate_repository.py PVC_LIFECYCLE_NAMESPACES and the Rego
+# claim_lifecycle_namespaces both exclude it).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: helm-reconciler
+  namespace: hospedajedonlolo-com
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, secrets, services, serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: helm-reconciler
+  namespace: hospedajedonlolo-com
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: helm-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: helm-reconciler
+    namespace: hospedajedonlolo-com
