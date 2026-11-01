@@ -72,6 +72,24 @@ readonly ZONE_A='naranjo.online'
 readonly ZONE_B='lidersea.com'
 readonly ZONE_C='hospedajedonlolo.com'
 readonly ALL_ZONES="${ZONE_A} ${ZONE_B} ${ZONE_C}"
+
+# Each site's own identity marker. The two Svelte sites title their page with
+# their domain and ship content-hashed /assets/index-<hash>.(js|css) bundles.
+# hospedajedonlolo.com serves the owner's delivered page byte for byte, so its
+# identity is that page's own <title> and its two unhashed files; the probe
+# adapts to the content, never the other way round.
+site_title() {
+  case "$1" in
+    "${ZONE_C}") printf '%s' 'Hospedaje Don Lolo · Granja Integral' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+site_asset_pattern() {
+  case "$1" in
+    "${ZONE_C}") printf '%s' '(href|src)="(style\.css|app\.js)"' ;;
+    *) printf '%s' '/assets/index-[A-Za-z0-9_-]+\.(js|css)' ;;
+  esac
+}
 # Encoded per-zone DNSSEC expectation. naranjo.online is signed and validating;
 # lidersea.com is unsigned pending the owner's signing ceremony, so "unsigned"
 # is that zone's expected state today and is reported as PASS with the pending
@@ -730,16 +748,16 @@ probe_identity() {
   # hash is deliberately never used: Cloudflare injects a per-request ray ID
   # into every HTML response, so it differs between two identical rounds. The
   # <h1> is deliberately never used either: it can be identical across sites.
-  assets="$("${GREP}" -o -E -e '/assets/index-[A-Za-z0-9_-]+\.(js|css)' "${out}" \
+  assets="$("${GREP}" -o -E -e "$(site_asset_pattern "${zone}")" "${out}" \
     | sort -u | tr '\n' ',' || true)"
   bytes="$(wc -c <"${out}" | tr -d ' ')"
-  if [[ "${title}" != "${zone}" ]]; then
+  if [[ "${title}" != "$(site_title "${zone}")" ]]; then
     record "${round}" "${zone}" site-identity assert GAP "title=${title:-<none>}" \
       'the apex does not serve its own identity'
     other=''
   else
     for other in ${others}; do
-      if "${GREP}" -q -F -e "<title>${other}</title>" "${out}"; then
+      if "${GREP}" -q -F -e "<title>$(site_title "${other}")</title>" "${out}"; then
         break
       fi
       other=''
