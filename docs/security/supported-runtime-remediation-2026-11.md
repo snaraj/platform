@@ -6,7 +6,7 @@ Assessment date: 2026-11-01. This records public artifact evidence for issues
 | Component | Selected supported repair | Remaining conditions |
 | --- | --- | --- |
 | Flux | Coherent 2.10.0: source/kustomize 1.10.1, helm 1.7.1; actual ARM64 binaries use Go 1.27.3 | Artifact-specific package dispositions below; Azure credential-helper and indirect JOSE call limits remain explicit |
-| cloudflared | 2026.10.7 image and separately checksummed host binary use Go 1.27.3 | Access JWT middleware can reach JSON JOSE parsing; active mode determines exposure. The host installer still requires its trusted reviewed-blob launcher |
+| cloudflared | 2026.10.7 image and separately checksummed host binary use Go 1.27.3 | The inspected OIDC path rejects multiple signatures before verification; other JOSE conditions remain bounded below. The host installer still requires its trusted reviewed-blob launcher |
 | containerd | 2.3.7, the supported 2.3 patch containing the assessed core advisory repairs | Its binary still uses Go 1.26.9, below the separate x509 advisory floor 1.26.10; this is a partial repair |
 
 The authoritative product releases are [Flux 2.10.0](https://github.com/fluxcd/flux2/releases/tag/v2.10.0),
@@ -45,10 +45,20 @@ The Go database snapshot predates the October 30
 [go-jose advisories](https://github.com/go-jose/go-jose/security/advisories),
 so those original advisories are assessed separately. The selected products
 still contain go-jose 4.1.6; the advisory patch floor is 4.1.7. Flux lacks the
-affected JWE and JSON multi-signature parser functions. Cloudflared's Access
-JWT middleware reaches the JSON-capable parser through `go-oidc` before it
-rejects multiple signatures. This condition remains unresolved wherever that
-middleware accepts attacker-controlled assertions.
+affected JWE and JSON multi-signature parser functions.
+
+For [GHSA-c67m-wr4h-2ccg](https://github.com/go-jose/go-jose/security/advisories/GHSA-c67m-wr4h-2ccg),
+the affected operations are `VerifyMulti`, `DetachedVerifyMulti`,
+`ParseEncrypted` and `DecryptMulti`. Cloudflared's Access JWT middleware reaches
+the JSON-capable `ParseSigned` through go-oidc 3.17.0, but that parser admission
+alone does not establish the advisory's quadratic processing. The
+[OIDC verifier](https://github.com/coreos/go-oidc/blob/v3.17.0/oidc/verify.go)
+rejects multiple signatures before invoking its key set. Its
+[key sets](https://github.com/coreos/go-oidc/blob/v3.17.0/oidc/jwks.go) use
+single-signature `Verify`, which calls `DetachedVerify`, not the affected
+multi-signature loop. JWE decryption is not part of this path. This inspected
+Access/OIDC path is not affected by that mechanism; this is not a product-wide
+disposition for other callers, other advisories or future dependency changes.
 
 Linked JOSE `Thumbprint` methods alone do not establish a call. Direct ARM64
 call-edge inspection found only internal helper/self edges, and the inspected
