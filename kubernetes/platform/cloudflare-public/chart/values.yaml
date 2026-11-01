@@ -26,8 +26,8 @@ replicaCount: 1
 
 image:
   repository: cloudflare/cloudflared
-  tag: "2026.10.3"
-  digest: sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
+  tag: "2026.10.7"
+  digest: sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
   pullPolicy: IfNotPresent
 
 tunnel:
