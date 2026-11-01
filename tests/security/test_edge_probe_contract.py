@@ -662,6 +662,45 @@ class EdgeProbeEnforcementScopeTests(unittest.TestCase):
         self.assertEqual(reverse[3:5], ["assert", "GAP"])
         self.assertIn("hospedajedonlolo.com", reverse[6])
 
+    def _assets(self, zone, body):
+        """Extract what the real probe records as a zone's asset markers."""
+
+        page = private_scratch(self, "edge-probe-assets.") / "page.html"
+        page.write_text(body, encoding="utf-8")
+        program = (
+            ". '{script}'\n"
+            "\"${{GREP}}\" -o -E -e \"$(site_asset_pattern '{zone}')\" '{page}' | sort -u || true\n"
+        ).format(script=SCRIPT, zone=zone, page=page)
+        completed = subprocess.run(
+            [required_tool(BASH, BASH_REQUIRED), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.split()
+
+    def test_each_site_records_only_its_own_asset_markers(self):
+        # Issue #422. The delivered page links plain style.css and app.js, so
+        # those references are the third site's distinctness markers. With the
+        # Svelte sites' hashed bundle pattern it would record nothing, and the
+        # cross-site item would stop comparing it.
+        delivered = '<link rel="stylesheet" href="style.css">\n<script src="app.js"></script>\n'
+        svelte = (
+            '<script type="module" src="/assets/index-AAAA.js"></script>\n'
+            '<link rel="stylesheet" href="/assets/index-AAAA.css">\n'
+        )
+        self.assertEqual(
+            self._assets("hospedajedonlolo.com", delivered),
+            ['href="style.css"', 'src="app.js"'],
+        )
+        self.assertEqual(self._assets("hospedajedonlolo.com", svelte), [])
+        self.assertEqual(
+            self._assets("naranjo.online", svelte),
+            ["/assets/index-AAAA.css", "/assets/index-AAAA.js"],
+        )
+        self.assertEqual(self._assets("naranjo.online", delivered), [])
+
     def test_two_verdicts_for_one_key_collapse_to_divergent(self):
         # The behaviour that silently mislabelled the two boundary tests above.
         # Pinned explicitly so the next person to add a boundary record sees
