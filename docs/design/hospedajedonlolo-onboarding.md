@@ -191,14 +191,18 @@ shape in the 2026-11-01 amendment to
 
 6. Delete the protected file once the connector is proven in step 8.
 
-### Step 5: The token revision, a reviewed change
+### Step 5: The token revision
 
-Open a pull request in this repository. It moves only
-`connectors.hospedajedonlolo-com.tokenRevision` in
-`kubernetes/platform/cloudflare-public/release/release.yaml` from
-`not-configured` to a fresh `rev-…` value, exactly as
-[the rotation runbook](../runbooks/tunnel-token-rotation.md) moves any one
-site's revision. The other three revisions stay byte-identical.
+The `cloudflare-public` release is suspended in Git and absent from the
+cluster. The existing connectors are operator-applied Deployments labelled
+`app.kubernetes.io/managed-by: website-infrastructure-manual`, each with a
+`manual-<date>-<site>-v<n>` revision annotation, and all four committed
+`tokenRevision` values read `not-configured`. While that holds, this
+connector follows its siblings: its revision is recorded only on the live
+Deployment, as `manual-20261101-hospedajedonlolo-v1`. When the release is
+activated, one reviewed change moves all four committed revisions, as
+[the rotation runbook](../runbooks/tunnel-token-rotation.md) describes for
+any one site.
 
 ### Step 6: Source-path admission
 
@@ -248,8 +252,13 @@ object.
 
 ### Step 8: Prove the connector
 
-The connector starts only after step 5 merges and the `cloudflare-public`
-release reconciles it.
+Render the chart at the merged commit and keep only this connector's two
+objects, `cloudflared-hospedajedonlolo-com` and
+`hospedajedonlolo-com-tunnel`. Relabel them `website-infrastructure-manual`,
+set the step 5 revision annotation, and create them with `kubectl create`,
+never `apply`. The rendered connector mounts its token as a file; the
+operator-applied siblings still read theirs from the environment, which this
+connector does not copy.
 - `hospedajedonlolo-com-tunnel` is Ready with one replica.
 - Its token is mounted as a file. It is not an environment variable.
 - The other three connector Deployments and Secrets are unchanged from the
