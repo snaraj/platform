@@ -303,8 +303,9 @@ resourceVersion.
 - `scripts/edge-probe.sh --enforce` passes over all three sites.
 - `scripts/verify-exposure.sh --live` passes with the residential inputs
   supplied in the shell only.
-- The owner's account audit shows three Free zones, zero spend, and DNSSEC
-  `active` on this zone.
+- The owner's account audit (`scripts/cloudflare-account-audit.sh`) passes:
+  every zone Free at zero spend, none outside ADR 0006's allowed set, and
+  DNSSEC `active` on this zone.
 - One full visual pass of the site on desktop and phone.
 
 ## 4. Recovery
