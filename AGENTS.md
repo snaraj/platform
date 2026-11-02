@@ -57,7 +57,8 @@ the owner. In order:
     Secrets, and etcd. Before Pi discovery, reject every
     hostPath/PV/PVC/storage-profile activation; current zero-spend Cloudflare
     terms keep deliberate public large-media delivery disabled independently
-    from application-code readiness.
+    from application-code readiness. The one owner-approved exception is the
+    hospedajedonlolo.com film recorded in ADR 0006 (amendment of 2026-11-02).
 14. Keep each website's domain, source/module/package, image, chart, namespace,
     Flux release, workflow signature, promotion, DNS zone variable, and Tunnel
     origin as one exact identity tuple. Shared tooling must not couple digests,
