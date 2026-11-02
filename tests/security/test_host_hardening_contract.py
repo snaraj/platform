@@ -180,7 +180,11 @@ class EgressAllowlist(unittest.TestCase):
         self.assertIn("kubelet.service", d["After"][0])
         apply = read("apply-hardening.sh")
         self.assertIn("systemctl enable platform-sysctl-reapply.service", apply)
-        self.assertIn("platform-sysctl-reapply.service", read("verify-hardening.sh"))
+        verify = read("verify-hardening.sh")
+        self.assertIn("systemctl is-enabled --quiet platform-sysctl-reapply.service", verify)
+        self.assertIn('systemctl show -p Result --value platform-sysctl-reapply.service)" == success', verify, "an enabled unit that fails every boot must not pass")
+        self.assertEqual(d.get("Type"), ["oneshot"])
+        self.assertEqual(d.get("Wants"), ["network-online.target"])
 
     def test_every_service_rule_is_uid_and_port_bound(self) -> None:
         for line in read(self.TEMPLATE).splitlines():

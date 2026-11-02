@@ -21,6 +21,7 @@ check_sysctl() {
     [[ "$(sysctl -n "$k" 2>/dev/null | tr -s '\t ' ' ')" == "$v" ]] || { say "sysctl ${k} != ${v}"; ok=0; }
   done < "${hardening_root}/sysctl/99-zz-platform-kernel-hardening.conf"
   systemctl is-enabled --quiet platform-sysctl-reapply.service || { say "sysctl re-apply unit not enabled"; ok=0; }
+  [[ "$(systemctl show -p Result --value platform-sysctl-reapply.service)" == success ]] || { say "sysctl re-apply unit last result not success"; ok=0; }
   judge SYSCTL "$ok"
 }
 check_units() {

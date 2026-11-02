@@ -1,7 +1,8 @@
 [Unit]
 Description=Re-apply sysctl policy after the network is up (bootstrap/pi/hardening)
-# systemd-sysctl runs early; the network stack and the CNI later rewrite some
-# net.ipv4.conf.all.* keys (log_martians was found reset to 0 after boot), so
+# systemd-sysctl runs early; the firewall framework's own sysctl file, applied
+# by its init after that, rewrites some net.ipv4.conf.all.* keys (log_martians
+# was found reset to 0 after boot), so
 # this policy file alone is applied once more when everything that writes
 # them has started. Only this file: the distribution's own files set keys
 # (ptrace scope, mmap floor, AppArmor namespaces) that fail under a reduced
