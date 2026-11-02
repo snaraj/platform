@@ -150,7 +150,7 @@ class EgressAllowlist(unittest.TestCase):
             s = line.strip()
             if s.endswith("accept") and not s.startswith("#"):
                 self.assertTrue(
-                    s.startswith(("oif lo", "ct state", "udp sport 68", "meta l4proto", "meta skuid", "@VPN_TRANSPORT@", "@CLUSTER_CIDRS@")),
+                    s.startswith(("oif lo", "fib daddr type local", "ct state", "udp sport 68", "meta l4proto", "meta skuid", "@VPN_TRANSPORT@", "@CLUSTER_CIDRS@")),
                     f"unqualified accept: {s}",
                 )
 
@@ -158,6 +158,11 @@ class EgressAllowlist(unittest.TestCase):
         for s in self.code(read(self.TEMPLATE)):
             self.assertNotRegex(s, r"^meta l4proto (tcp|udp) accept", s)
             self.assertNotRegex(s, r"^ct state [a-z,]*new", s)
+
+    def test_local_delivery_is_always_allowed(self) -> None:
+        body = self.code(read(self.TEMPLATE))
+        self.assertIn("fib daddr type local accept", body, "API-server and etcd hairpins leave the output hook on the uplink; without this the CNI cannot create sandboxes")
+        self.assertLess(body.index("fib daddr type local accept"), body.index("ct state established,related accept"))
 
     def test_time_rules_cover_root_owned_sockets(self) -> None:
         body = self.code(read(self.TEMPLATE))
