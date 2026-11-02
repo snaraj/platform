@@ -176,9 +176,11 @@ in the site repository. Neither a merge nor a journal entry is that decision.
 
 ### Step 4: Tunnel, route, DNS record and token Secret
 
-Status on 2026-11-01: the coordinator has created the Tunnel with the shape
-below and the token Secret in `cloudflare-public`. The apex CNAME and the
-step 8 proof remain.
+Status on 2026-11-02: the coordinator has created the Tunnel with the shape
+below and the token Secret in `cloudflare-public`, and steps 1 to 8 have run.
+The apex CNAME is created after step 9, once the site serves: the zone has no
+address record, so nothing answers for the name until then, and creating the
+record earlier would only publish an error page.
 
 All of this uses Cloudflare's own CLI and runs read-only first. Follow the
 shape in the 2026-11-01 amendment to
@@ -284,7 +286,8 @@ pending set together:
   an active site and refuses for a pending one;
 - `pending_chart_namespaces` drops `hospedajedonlolo-com`.
 
-Policy refuses either half alone.
+Policy refuses either half alone. The two changes are issue #429 here and
+snaraj/platform-k8s-infra issue #86.
 
 After both merge, re-verify the digest, the signature and the acquisition
 receipt, and that the media claim is `Bound`. Then patch only the

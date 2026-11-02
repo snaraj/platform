@@ -1,6 +1,9 @@
-# Issue #422, review of platform PR #425: the readiness rule in both directions
+# Issue #422, review of platform PR #425: the readiness rule for active sites
 # and the three per-site table memberships that previously had no attributed
 # negative. Each document trips exactly the arms its .expected sidecar names.
+# The rule's pending direction is unit-tested in
+# policies/conftest/site_readiness_test.rego, since no website is pending
+# (issue #429).
 # Issue #422 finding 4: a third-site Role granting pods/exec. Only the table
 # membership in restricted_role_namespaces makes this arm fire for the site.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -14,7 +17,7 @@ rules:
     verbs: ["create"]
 ---
 # A third-site HelmRelease under an unrelated name and releaseName, otherwise
-# the canonical pending release. Only workload_release_names makes both
+# the canonical active release. Only workload_release_names makes both
 # identity arms fire for the site.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -24,9 +27,9 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: fluxcd
   annotations:
-    platform.snaraj.dev/readiness: suspended-until-hospedajedonlolo-com-chart-release
+    platform.snaraj.dev/readiness: active-via-signature-verified-chart
 spec:
-  suspend: true
+  suspend: false
   interval: 1m0s
   maxHistory: 2
   releaseName: other-release
@@ -45,10 +48,10 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: false
+    deploymentReady: true
 ---
 # A third-site OCIRepository under an unrelated name, otherwise the canonical
-# pending source. Only site_chart_sources makes the identity arm fire.
+# active source. Only site_chart_sources makes the identity arm fire.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
@@ -62,7 +65,7 @@ spec:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
     operation: copy
   ref:
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:2cd06606dbd39bab83ce86ab3f0c432afe8380e1367a92de51131d3ee7280a61
   timeout: 60s
   url: oci://ghcr.io/snaraj/charts/hospedajedonlolo-com
   verify:
@@ -71,8 +74,8 @@ spec:
         subject: ^https://github\.com/snaraj/hospedajedonlolo\.com/\.github/workflows/release-publisher\.yml@refs/heads/main$
     provider: cosign
 ---
-# The pending release claiming readiness. While its selection is the sentinel
-# the only true statement is deploymentReady: false.
+# This ACTIVE site withdrawing readiness. Its selection is the reviewed digest,
+# so the only true statement is deploymentReady: true.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -81,9 +84,9 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: fluxcd
   annotations:
-    platform.snaraj.dev/readiness: suspended-until-hospedajedonlolo-com-chart-release
+    platform.snaraj.dev/readiness: active-via-signature-verified-chart
 spec:
-  suspend: true
+  suspend: false
   interval: 1m0s
   maxHistory: 2
   releaseName: hospedajedonlolo-com
@@ -102,10 +105,11 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: true
+    deploymentReady: false
 ---
-# The other direction: an ACTIVE site (naranjo.online's real release from
-# snaraj/platform-k8s-infra) withdrawing readiness. An active site states true.
+# A sibling ACTIVE site (naranjo.online's real release from
+# snaraj/platform-k8s-infra) withdrawing readiness, so the rule is not special
+# to this namespace. An active site states true.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:

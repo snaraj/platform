@@ -47,7 +47,7 @@ chart_source_namespaces := site_namespaces | {"obsidian"}
 # therefore only appear in the same reviewed change that removes the namespace
 # from this set and records its (tag, digest) pair — the opposite of a gap a
 # selection could drift through.
-pending_chart_namespaces := {"obsidian", "hospedajedonlolo-com"}
+pending_chart_namespaces := {"obsidian"}
 
 sentinel_chart_digest := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -312,13 +312,12 @@ site_chart_releases := {
     "tag": "0.1.0",
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   },
-  # Pending for the same reason: snaraj/hospedajedonlolo.com has not published
-  # its first chart, so its selection is the same fail-closed sentinel. The
-  # audit tag names that first release, 0.1.1, exactly as the pending
-  # composition in snaraj/platform-k8s-infra does.
+  # Selected at its first release (issue #429): snaraj/platform-k8s-infra
+  # selects this exact pair after cosign verified the chart against this
+  # site's main-branch publisher.
   "hospedajedonlolo-com": {
     "tag": "0.1.1",
-    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "digest": "sha256:2cd06606dbd39bab83ce86ab3f0c432afe8380e1367a92de51131d3ee7280a61",
   },
 }
 
