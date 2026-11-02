@@ -8,7 +8,9 @@ would make it fail; the adversarial review mutates those lines.
 from __future__ import annotations
 
 import re
+import socket as socket_module
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -259,9 +261,42 @@ class Scripts(unittest.TestCase):
                 self.assertIn("sudo -u _apt", line, "only the apt user hits the mirror")
         body = text[text.index("ntp_exchange_through_table() {") : text.index("\n}\n", text.index("ntp_exchange_through_table() {"))]
         self.assertIn('for owner in root ntpsec; do', body, "both socket owners must be able to exchange time")
-        self.assertRegex(body, r'timeout \d+ sudo -u "\$\{owner\}" ntpdig -t \d+ -c "\$\{host\}"', "a direct query, not the reach register")
+        self.assertRegex(body, r'timeout \d+ sudo -u "\$\{owner\}" python3 -I -B - "\$\{host\}" \d+ < "\$\{hardening_root\}/ntp-probe\.py"', "a direct exchange by the shipped probe, not the reach register")
         self.assertNotIn("ntpq", body, "reach is history, not proof")
+        self.assertNotIn("ntpdig", body, "ntpdig is a separate package the host does not carry")
         self.assertIn("ntp_exchange_through_table || {", text)
+
+    def test_ntp_probe_exchanges_with_a_server(self) -> None:
+        import socket, threading
+        responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        responder.bind(("127.0.0.1", 0))
+        port = responder.getsockname()[1]
+        seen = {}
+
+        def serve() -> None:
+            responder.settimeout(5)
+            try:
+                data, peer = responder.recvfrom(512)
+            except OSError:
+                return
+            seen["mode"] = data[0] & 0x07
+            seen["len"] = len(data)
+            responder.sendto(b"\x24" + b"\x00" * 47, peer)
+
+        thread = threading.Thread(target=serve); thread.start()
+        src = (HARDENING / "ntp-probe.py").read_text().replace("NTP_PORT = 123", f"NTP_PORT = {port}")
+        rc = subprocess.run([sys.executable, "-I", "-B", "-", "127.0.0.1", "3"], input=src, capture_output=True, text=True).returncode
+        thread.join(); responder.close()
+        self.assertEqual(rc, 0, "a mode-4 answer must pass")
+        self.assertEqual(seen, {"mode": 3, "len": 48}, "the probe sends one 48-byte client packet")
+
+    def test_ntp_probe_fails_closed_without_an_answer(self) -> None:
+        silent = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0)); port = silent.getsockname()[1]
+        src = (HARDENING / "ntp-probe.py").read_text().replace("NTP_PORT = 123", f"NTP_PORT = {port}")
+        rc = subprocess.run([sys.executable, "-I", "-B", "-", "127.0.0.1", "1"], input=src, capture_output=True, text=True).returncode
+        silent.close()
+        self.assertEqual(rc, 1)
 
     def test_cmdline_is_staged_not_activated(self) -> None:
         code = [ln for ln in read("apply-hardening.sh").splitlines() if ln.strip() and not ln.strip().startswith("#")]
