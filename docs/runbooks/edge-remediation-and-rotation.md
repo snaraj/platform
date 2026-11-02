@@ -5,17 +5,19 @@ standard as a pull-request body: every step names what is observed, what would
 falsify it, and what stops the ceremony.
 
 Scope and authority. Nothing here authorizes a change. The owner performs every
-dashboard action, every token rotation, and every API-token issuance; agents
-hold no Cloudflare credential. A PASS from any command below is evidence, never
-permission, and an unknown answer is a stop, not a pass.
+dashboard action, every token rotation, every API-token issuance, and every
+provider mutation. A commissioned review may run the read-only audit with a
+short-lived read-only token the owner issued for it; that supplies evidence
+only. A PASS from any command below is evidence, never permission, and an
+unknown answer is a stop, not a pass.
 
 What each ceremony is for:
 
 | Ceremony | Trigger | Credential |
 |---|---|---|
 | A — two-toggle edge remediation | the pre-toggle probe reports the redirect and TLS-floor gaps | none for the probe; dashboard session for the toggles |
-| B — per-site Tunnel token rotation | quarterly drill, or suspected/confirmed compromise | Tunnel token (owner), plus a short-lived API token for force-disconnect |
-| C — read-only account audit | after any edge change, and on a routine cadence | one just-in-time READ-ONLY API token, at most 60 minutes |
+| B — per-site Tunnel token rotation | quarterly drill, or suspected/confirmed compromise | Tunnel token (owner), plus a short-lived API token for the `cf` force-disconnect |
+| C — read-only account audit | after any edge change, and on a routine cadence | one just-in-time READ-ONLY user API token for `cf`, at most 60 minutes |
 
 Related documents, all still in force for their own scope: ADR 0015 records the
 two per-site Tunnel decision, the HSTS ownership, and the open `www` decision —
@@ -31,8 +33,9 @@ Two commands appear throughout:
 - `scripts/edge-probe.sh` — token-free, read-only, external. Report-only by
   default so it is useful *before* the target state is reached; `--enforce`
   makes an unmet target a nonzero exit.
-- `scripts/cloudflare-account-audit.sh` — owner-run, token-taking, read-only,
-  redacted by default. It reads the configuration facts the probe cannot see.
+- `scripts/cloudflare-account-audit.sh` — owner-run, `cf`-backed, token-taking,
+  read-only, redacted by default. It reads the configuration facts the probe
+  cannot see.
 
 ---
 
@@ -222,9 +225,13 @@ off, and clear it immediately afterwards.
    file, without printing it. Existing connectors keep running on the old
    token; the old token can no longer be used to connect anything new.
 4. **Force-disconnect that Tunnel's existing connections.** This is the step
-   that actually retires the old credential. Use the dashboard control, or a
-   short-lived API token holding exactly the connector-write permission, and
-   never put either bearer in a URL or a command line. Accept the brief
+   that actually retires the old credential. Use the dashboard control, or
+   `cf tunnels connections cleanup <tunnel-id>` with a short-lived API token
+   holding exactly the connector-write permission, passed to `cf` only through
+   `CLOUDFLARE_API_TOKEN`. First require `cf schema tunnels connections
+   cleanup` to show the reviewed bodyless `DELETE`, and bind the exact Tunnel
+   with `--dry-run`. Never put either bearer in a URL or a command line, and
+   never substitute a raw API request. Accept the brief
    interruption for that one site: without this step, any connector already
    holding the old token — including one an attacker controls — keeps serving.
 5. **Install the new token through the approved workflow.** The connector reads
@@ -281,59 +288,99 @@ other, and rotating both at once removes the only healthy comparison you have.
 
 ## Ceremony C — read-only account audit
 
-The audit reads configuration facts that no external probe can observe: plan and
-subscription state, zone settings, DNSSEC status, the Tunnel and connector
-inventory, the absence of a private-network surface, and the DNS record set.
+The audit reads configuration facts that no external probe can observe: the
+account's zone inventory, plan, subscription and billing state, certificate
+products, zone settings, DNSSEC status, the Tunnel and connector inventory, the
+absence of a private-network surface, and the DNS record set.
 
 ### C.1 Issue a just-in-time read-only token
 
-The owner creates an API token with:
+The owner creates one custom **user** API token (under the profile's API
+Tokens; the audit proves the token through the user-token reads, so an
+account-owned token fails) whose complete issued-to-expiry lifetime is at most
+60 minutes:
 
-- **read-only permission groups only** — every group's name ends in `Read`;
-- the narrowest scope that covers the two zones and the account's Tunnel and
-  Zero Trust read surfaces;
-- an expiry of **at most 60 minutes**;
-- a source-address condition where the network allows one.
+- permission groups, exactly: `API Tokens Read`, `Billing Read`,
+  `Cloudflare Tunnel Read`, `DNS Read`, `SSL and Certificates Read`,
+  `Zero Trust Read`, `Zone Read`, and `Zone Settings Read`;
+- account resources: the one account; zone resources: **all zones from that
+  same account**; the user-level `API Tokens Read` applies to the token owner;
+- a client-IP condition where the network allows one.
 
-The audit refuses to treat an unproven credential as usable: a token that is not
-`active` stops the run, and a token that cannot read its own definition is
-reported as a limitation — the permissions were *not* machine-verified — rather
-than as a pass. That is the expected result for a minimal token, and it means
-the scope and expiry must be confirmed by eye in the dashboard.
+All zones of the account, not named zones, is deliberate: a token limited to
+named zones cannot see a zone outside them, so the zone inventory would be
+incomplete by construction and an unexpected or paid zone could never surface.
+Billing Read is mandatory. API Tokens Read lets the token prove its own policy
+shape, issue time, expiry, and resources. The audit rejects named profiles
+because `cf auth whoami` has no schema-backed request contract. It also rejects
+non-Read or deny policies, missing timestamps, a token that is not currently
+active, a total lifetime over 60 minutes, and every other resource shape: a
+global wildcard, named zones, other nesting, a second account or user, or a
+missing account, zones, or user resource.
+
+Record the token's non-secret permission names, resource bounds, issue time and
+expiry in private operational evidence. Unset global API-key/email variables,
+legacy `CF_*` credentials, and account or zone context variables first; the
+audit stops while any is set. The script never creates, refreshes, broadens, or
+revokes authentication.
 
 ### C.2 Run it
 
 ```sh
-read -rs CF_API_TOKEN && export CF_API_TOKEN
-scripts/cloudflare-account-audit.sh | tee cloudflare-audit-$(date -u +%Y%m%dT%H%M%SZ).txt
-unset CF_API_TOKEN
+scripts/cloudflare-account-audit.sh --self-test
+read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
+printf '\n'
+scripts/cloudflare-account-audit.sh \
+  | tee cloudflare-audit-$(date -u +%Y%m%dT%H%M%SZ).txt
+unset CLOUDFLARE_API_TOKEN
 ```
 
 The token is read from the environment only. It is never an argument, never
-printed, never written to a file, and never placed in the process table: it
-reaches curl through a configuration document on standard input. Every request
-the script can issue is a GET; `--self-test` proves that offline, with no token
-and no network, and is the right thing to run first on a new host.
+printed, and never written to a file; it reaches `cf` only through the
+environment of the one adapter process that runs each read. `--self-test`
+needs no token and makes no account request, and is the right thing to run
+first on a new host. The script resolves and hashes the exact `cf` executable,
+requires the reviewed version, and asks `cf schema` to prove every allowlisted
+provider operation is a GET with no request body at the expected path. It then
+runs those fixed commands from mode-0700 scratch space with telemetry disabled,
+a 30-second deadline, a 5 MiB output bound, and explicit pagination until an
+empty page. It does not use `cf cli search`, local simulation, or dry-run
+output as live evidence. The zero-charge section fails unless `cf` proves:
+permanent zero-priced Free subscriptions with no priced component and the exact
+endpoint-specific plan IDs (`teams_free` for the account, including its
+documented uppercase `TEAMS_FREE` response form, and `free` for user-owned and
+directly queried zone subscriptions), v1 billing coverage, zero values in every
+current-period cost field, complete billing history with zero amounts, no
+unpaid invoice or debt, and, on every zone of the account, an active Free plan,
+Universal SSL only, and no Advanced Certificate Manager allocation. A denied
+read, missing field, unknown or lookalike plan ID, or partial collection is a
+finding.
 
 ### C.3 Review the redacted diff
 
 Default output replaces account, zone, Tunnel and connector identifiers with
 stable pseudonyms (`id:` plus twelve hex characters). The same identifier
 produces the same pseudonym on every run and every host, so two captures diff
-cleanly, while the output carries no identifier worth protecting. Diff the new
-capture against the previous one and read every changed line.
+cleanly, while the output carries no identifier worth protecting. A zone or
+Tunnel name outside the expected set is shown only as a pseudonym or a count.
+Diff the new capture against the previous one and read every changed line.
 
-Expect, in a healthy steady state: all subscriptions Free and zero-priced; both
-zone plans Free; the six zone settings at their target values on both zones;
-`naranjo.online` DNSSEC `active` and `lidersea.com` `disabled`; exactly the two
-per-site Tunnels, each with one hostname rule plus the terminal 404 and no idle
-connector; no private route and no WARP profile; exactly one proxied apex CNAME
-per zone targeting that site's own Tunnel, and no other record.
-
-Since the third website's onboarding (issue #422) every per-zone and per-Tunnel
-expectation above covers three sites: `hospedajedonlolo.com` is the third Free
-zone, with DNSSEC `active`, and `hospedajedonlolo-com` is the third per-site
-Tunnel, with the same single hostname rule and terminal 404.
+Expect, in a healthy steady state: a zone inventory holding only the zones ADR
+0006 allows — the three platform zones `naranjo.online`, `lidersea.com` and
+`hospedajedonlolo.com`, plus the unserved owner zone `sloptube.fun`; on every
+listed zone an active Free plan, a permanent zero-priced subscription with no
+priced component, Universal SSL packs only, and no Advanced Certificate Manager
+allocation; all billing cost, history, invoice, and debt amounts zero, where any
+nonzero billing-history amount, a Registrar renewal included, is a finding the
+owner reconciles against ADR 0006 and never an infrastructure pass; the six
+zone settings at their target values on each platform zone; DNSSEC `active` on
+`naranjo.online` and `hospedajedonlolo.com` and `disabled` on `lidersea.com`;
+exactly the three per-site Tunnels `naranjo-online`, `lidersea-com` and
+`hospedajedonlolo-com`, each with one hostname rule plus the terminal 404 and no
+idle connector; no private CIDR or hostname route and no WARP profile; exactly
+one proxied apex CNAME per platform zone targeting that site's own Tunnel, and
+no other record. `sloptube.fun` is not served by this platform, so the audit
+reads no zone setting, DNSSEC state, or DNS record for it.
 
 `--raw` prints the real identifiers. Use it only when a pseudonym is genuinely
 not enough — for example when the DNS check reports a mismatch and the exact
@@ -341,13 +388,16 @@ target must be read. Raw output must never be committed, pasted into an issue,
 pull request, comment or ticket, or shared; delete the capture when the review
 is finished. The script prints that warning itself, at the top of every raw run.
 
-### C.4 Revoke
+### C.4 Revoke the token
 
-Revoke the token as soon as the run is reviewed, and confirm the revocation
-using a *different* credential — a token that reports itself revoked is not
-evidence. Record the non-secret revocation time and independent confirmation in private
-operational evidence. A token left alive after the
-ceremony is the single most likely way this audit turns into an incident.
+As soon as the run is reviewed, unset the variable and have the owner revoke
+the token. Prove revocation with a *different* credential — a token that
+reports itself revoked is not evidence. Record only the token pseudonym from
+the audit, the revocation time, and the independent inactive or absent result
+in private operational evidence. A token left alive after the ceremony is the
+single most likely way this audit turns into an incident. If the `cf`
+verification path is incomplete, record the evidence gap; do not switch to a
+raw API request, Wrangler, dashboard validation, or a Cloudflare MCP tool.
 
 ---
 
