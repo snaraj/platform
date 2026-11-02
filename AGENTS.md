@@ -213,7 +213,8 @@ and dependency-governed Draft capacity is recorded durably in
   history and secret-scan requirements remain intact.
 - `bootstrap/pi/hardening/**` — PLATFORM (host baseline, ADR 0018), with a
   DECLARED CROSSING into `tests/security/test_host_hardening_contract.py`,
-  `docs/runbooks/windows-warp-onboarding.md` and the ADR under the owner's
+  `docs/runbooks/windows-warp-onboarding.md`, the hardening entry in
+  `scripts/validate_no_security_toggles.py` and the ADR under the owner's
   2026-11-02 hardening commission (issue #443, PR #444). The crossing covers
   that pull request's exact scope and grants no standing claim on either
   lane's paths.

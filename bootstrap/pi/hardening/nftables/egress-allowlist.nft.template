@@ -32,7 +32,10 @@ table inet platform_egress {
     # Package downloads run as the apt user; image pulls run as root.
     meta skuid "_apt" tcp dport { 80, 443 } accept
     meta skuid "root" tcp dport 443 accept
-    # Time: NTP and NTS key establishment.
+    # Time: NTP and NTS key establishment. ntpd opens its sockets before it
+    # drops privileges, so they are owned by root; both owners are listed.
+    meta skuid "root" udp dport 123 accept
+    meta skuid "root" tcp dport 4460 accept
     meta skuid "ntpsec" udp dport 123 accept
     meta skuid "ntpsec" tcp dport 4460 accept
     # Interactive accounts (the operator at a shell): web, git over ssh.

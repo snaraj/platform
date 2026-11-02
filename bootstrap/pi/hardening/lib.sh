@@ -68,7 +68,8 @@ restore_path() {
   local f="$1" from="$2"
   if [[ -e "${from}${f}.absent" ]]; then rm -f "$f"; return 0; fi
   [[ -e "${from}${f}" ]] || return 1
-  cp "${from}${f}" "$f" && chmod --reference="${from}${f}" "$f" 2>/dev/null || true
+  cp "${from}${f}" "$f" || return 1
+  chmod --reference="${from}${f}" "$f" 2>/dev/null || true
 }
 
 # latest_backup COMPONENT: newest backup directory of that component, or empty.
