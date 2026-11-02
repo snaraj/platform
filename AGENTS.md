@@ -215,9 +215,9 @@ and dependency-governed Draft capacity is recorded durably in
   DECLARED CROSSING into `tests/security/test_host_hardening_contract.py`,
   `docs/runbooks/windows-warp-onboarding.md`, the hardening entry in
   `scripts/validate_no_security_toggles.py` and the ADR under the owner's
-  2026-11-02 hardening commission (issue #443, PR #444). The crossing covers
-  that pull request's exact scope and grants no standing claim on either
-  lane's paths.
+  2026-11-02 hardening commission (issue #443, PR #444; extended by issue
+  #446, PR #447 over the same paths). The crossing covers those pull
+  requests' exact scope and grants no standing claim on either lane's paths.
 - `kubernetes/flux-system/**` — DELIVERY: the GitOps desired state this
   lane authors, and what the reviewed-state model above pins.
 - `kubernetes/platform/cloudflare-public/**` — DELIVERY, DERIVED from the

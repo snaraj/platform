@@ -62,14 +62,18 @@ connector_settled() {
   done
   return 1
 }
-# True once any NTP peer shows a non-zero reach register, within 90 s.
-ntp_peer_reachable() {
-  local _
-  for _ in $(seq 1 18); do
-    ntpq -pn 2>/dev/null | awk 'NR > 2 && $7 != 0 { found = 1 } END { exit !found }' && return 0
-    sleep 5
+# Prove a fresh NTP exchange through the current table as both socket owners:
+# ntpd's own sockets are root-owned, later ones belong to the ntpsec user.
+# A direct query is used because the reach register is history and would
+# pass for minutes after a table started blocking time.
+ntp_exchange_through_table() {
+  local host owner
+  host="$(awk '$1 == "server" { for (i = 2; i <= NF; i++) if ($i !~ /^-/) { print $i; exit } }' /etc/ntpsec/ntp.conf 2>/dev/null)"
+  [[ -n "${host}" ]] || return 1
+  command -v ntpdig >/dev/null 2>&1 || return 1
+  for owner in root ntpsec; do
+    timeout 12 sudo -u "${owner}" ntpdig -t 4 -c "${host}" >/dev/null 2>&1 || return 1
   done
-  return 1
 }
 check_egress() {
   local ok=1
@@ -80,8 +84,8 @@ check_egress() {
   # Only the apt user is expected to reach the mirror; a root attempt would
   # merely feed the drop log.
   sudo -u _apt curl -fsS --max-time 15 -o /dev/null http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null || { say "apt mirror unreachable as _apt"; ok=0; }
-  # Time must keep flowing: at least one peer reachable within the poll window.
-  ntp_peer_reachable || { say "no NTP peer reachable through the table"; ok=0; }
+  # Time must keep flowing: a fresh exchange as both socket owners.
+  ntp_exchange_through_table || { say "NTP exchange through the table failed"; ok=0; }
   # A denied flow must die here, not leave. The probe targets a host and port
   # that DO accept connections (the mirror on 443), as a uid outside every
   # rule: success is the finding, and a closed port cannot fake a pass.

@@ -237,7 +237,8 @@ class Scripts(unittest.TestCase):
         text = read("apply-hardening.sh")
         units = text[text.index("    units)\n") : text.index("    journald)\n")]
         self.assertLess(units.index("arm_revert units 600 "), units.index("install_file"), "arm before anything is staged")
-        self.assertIn("systemctl stop platform-revert-units.timer; systemctl start platform-revert-units.service", units, "the failure path cancels the timer before reverting once")
+        self.assertIn("systemctl start platform-revert-units.service; systemctl stop platform-revert-units.timer", units, "start the revert before stopping its timer: both are transient and stopping the timer first lets systemd collect the service")
+        self.assertNotIn("systemctl stop platform-revert-units.timer; systemctl start", units)
 
     def test_ipv6_uses_reapply_not_reconnect(self) -> None:
         text = read("apply-hardening.sh")
@@ -253,8 +254,14 @@ class Scripts(unittest.TestCase):
 
     def test_egress_verifier_probes_time_and_only_apt_user_hits_mirror(self) -> None:
         text = read("verify-hardening.sh")
-        self.assertNotRegex(text, r"\n\s+curl -fsS[^\n]*ports\.ubuntu\.com", "a root curl only feeds the drop log")
-        self.assertIn("no NTP peer reachable through the table", text)
+        for line in text.splitlines():
+            if "ports.ubuntu.com" in line and "curl" in line:
+                self.assertIn("sudo -u _apt", line, "only the apt user hits the mirror")
+        body = text[text.index("ntp_exchange_through_table() {") : text.index("\n}\n", text.index("ntp_exchange_through_table() {"))]
+        self.assertIn('for owner in root ntpsec; do', body, "both socket owners must be able to exchange time")
+        self.assertRegex(body, r'timeout \d+ sudo -u "\$\{owner\}" ntpdig -t \d+ -c "\$\{host\}"', "a direct query, not the reach register")
+        self.assertNotIn("ntpq", body, "reach is history, not proof")
+        self.assertIn("ntp_exchange_through_table || {", text)
 
     def test_cmdline_is_staged_not_activated(self) -> None:
         code = [ln for ln in read("apply-hardening.sh").splitlines() if ln.strip() and not ln.strip().startswith("#")]
