@@ -237,7 +237,7 @@ Do not remove the pre-write proof and do not broaden the publisher token. Pin
 `actions/create-github-app-token` to
 `64ab729a6294000f5aa4a4bc0b73d1f32bc45510` (`v3.3.0`), request only
 `permission-administration: read`, scope it explicitly to owner `snaraj` and
-repository `website-infrastructure`, and leave token revocation enabled.
+repository `platform`, and leave token revocation enabled.
 
 Workflow-level `success` is not publication authority: GitHub can report a
 successful workflow even when a job or step is intentionally skipped. The

@@ -69,7 +69,7 @@ The Kubernetes cluster on the production hardware is installed and stable.
 | Platform runtime | 1 | Install failed and recovering; no stable signal yet |
 | Ingress guard | 2 | Merged ([#30](https://github.com/snaraj/website-infrastructure/pull/30)); live apply held |
 | Cloudflare admin plane | 2 | Decided ($0 design complete); provisioning pending, external proof outstanding |
-| Repo production-readiness | 3 | PRs in flight; coverage ~71–77% → target ≥85% |
+| Repo production-readiness | 3 | Coverage as measured in `docs/badges/coverage.json` → target ≥85% |
 | Deploy & cutover | 4 | Not started (blocked on Phases 1–3) |
 | Tag v1.0.0 | 5 | Blocked on all of the above |
 
