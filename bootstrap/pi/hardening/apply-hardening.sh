@@ -84,13 +84,15 @@ apply() {
       # The connector carries the administrative path, so its restart ends the
       # operator's session. The restart, its health check and the decision to
       # keep or revert therefore run in a transient unit that outlives the
-      # session. Success cancels the revert; failure runs it once and cancels
-      # the timer so it cannot run a second time.
+      # session. Success cancels the revert; failure runs the revert service
+      # first and only then stops the timer: both are transient units created
+      # together, and stopping the timer first lets the manager collect the
+      # service before it can be started.
       systemd-run --quiet --collect --unit=platform-apply-units --description="restart sandboxed units and keep or revert" /bin/sh -c '
         systemctl restart ntpsec.service && sleep 3 && systemctl is-active --quiet ntpsec.service \
         && systemctl restart cloudflared.service && sleep 8 && systemctl is-active --quiet cloudflared.service \
         && systemctl stop platform-revert-units.timer && exit 0
-        systemctl stop platform-revert-units.timer; systemctl start platform-revert-units.service; exit 1'
+        systemctl start platform-revert-units.service; systemctl stop platform-revert-units.timer; exit 1'
       say "connector restarting in a transient unit; this session may end here. Result: systemctl status platform-apply-units; verify with verify-hardening.sh units"
       local _
       for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
