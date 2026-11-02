@@ -62,14 +62,26 @@ connector_settled() {
   done
   return 1
 }
+# True once any NTP peer shows a non-zero reach register, within 90 s.
+ntp_peer_reachable() {
+  local _
+  for _ in $(seq 1 18); do
+    ntpq -pn 2>/dev/null | awk 'NR > 2 && $7 != 0 { found = 1 } END { exit !found }' && return 0
+    sleep 5
+  done
+  return 1
+}
 check_egress() {
   local ok=1
   nft list table inet platform_egress >/dev/null 2>&1 || { say "egress table absent"; ok=0; }
   # The services that must keep working.
   systemctl is-active --quiet cloudflared.service || { say "cloudflared not active"; ok=0; }
   connector_settled || true
-  curl -fsS --max-time 15 -o /dev/null -w '' http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null \
-    || sudo -u _apt curl -fsS --max-time 15 -o /dev/null http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null || { say "apt mirror unreachable as _apt"; ok=0; }
+  # Only the apt user is expected to reach the mirror; a root attempt would
+  # merely feed the drop log.
+  sudo -u _apt curl -fsS --max-time 15 -o /dev/null http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null || { say "apt mirror unreachable as _apt"; ok=0; }
+  # Time must keep flowing: at least one peer reachable within the poll window.
+  ntp_peer_reachable || { say "no NTP peer reachable through the table"; ok=0; }
   # A denied flow must die here, not leave. The probe targets a host and port
   # that DO accept connections (the mirror on 443), as a uid outside every
   # rule: success is the finding, and a closed port cannot fake a pass.

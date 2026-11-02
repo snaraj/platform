@@ -45,7 +45,7 @@ apply-hardening.sh apply units         # restarts the connector from a transient
                                        # unit keeps or reverts on its own
 apply-hardening.sh apply egress        # armed with a 10-minute revert
 apply-hardening.sh apply sshd-listen   # armed with a 10-minute revert
-apply-hardening.sh apply ipv6
+apply-hardening.sh apply ipv6          # reapply, no reconnect
 apply-hardening.sh apply cluster-files
 apply-hardening.sh apply cmdline       # staged; the owner reboots
 verify-hardening.sh all

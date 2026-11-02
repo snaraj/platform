@@ -88,6 +88,9 @@ class UnitSandboxing(unittest.TestCase):
 
     def test_ntpsec_keeps_the_clock(self) -> None:
         d = directives("systemd/ntpsec.service.d/70-platform-sandbox.conf")
+        rw = d["ReadWritePaths"][0].split()
+        self.assertIn("-/var/log/ntpsec", rw, "the statistics directory is optional; a missing path must not fail the namespace")
+        self.assertIn("/run", rw, "the PID file lives under /run, read-only under ProtectSystem=strict")
         self.assertNotIn("ProtectClock", d, "ntpd must be able to set the clock")
         self.assertIn("CAP_SYS_TIME", d["CapabilityBoundingSet"][0])
         self.assertEqual(d.get("NoNewPrivileges"), ["yes"])
@@ -103,8 +106,13 @@ class UnitSandboxing(unittest.TestCase):
     def test_no_sshd_service_dropin(self) -> None:
         self.assertFalse((HARDENING / "systemd/ssh.service.d").exists(), "sshd sandboxing is inherited by admin sessions; ADR 0018")
 
+    def test_ssh_socket_dropin_sorts_last(self) -> None:
+        names = [p.name for p in (HARDENING / "systemd/ssh.socket.d").iterdir()]
+        self.assertEqual(names, ["zzz-platform-listen.conf.template"], "a later drop-in's ListenStream= reset would reinstate the wildcard")
+        self.assertIn("ssh.socket.d/zzz-platform-listen.conf", read("apply-hardening.sh"))
+
     def test_ssh_socket_template_drops_wildcard(self) -> None:
-        text = read("systemd/ssh.socket.d/70-platform-listen.conf.template")
+        text = read("systemd/ssh.socket.d/zzz-platform-listen.conf.template")
         self.assertIn("ListenStream=\n", text, "the first ListenStream= must reset the inherited list")
         self.assertIn("ListenStream=127.0.0.1:22", text)
         self.assertIn("ListenStream=@ADMIN_TARGET@:22", text)
@@ -150,6 +158,12 @@ class EgressAllowlist(unittest.TestCase):
         for s in self.code(read(self.TEMPLATE)):
             self.assertNotRegex(s, r"^meta l4proto (tcp|udp) accept", s)
             self.assertNotRegex(s, r"^ct state [a-z,]*new", s)
+
+    def test_time_rules_cover_root_owned_sockets(self) -> None:
+        body = self.code(read(self.TEMPLATE))
+        for owner in ("root", "ntpsec"):
+            self.assertIn(f'meta skuid "{owner}" udp dport 123 accept', body, "ntpd binds before dropping privileges")
+            self.assertIn(f'meta skuid "{owner}" tcp dport 4460 accept', body)
 
     def test_every_service_rule_is_uid_and_port_bound(self) -> None:
         for line in read(self.TEMPLATE).splitlines():
@@ -213,6 +227,29 @@ class Scripts(unittest.TestCase):
         self.assertIn("chmod 0700 /var/lib/etcd", text)
         self.assertIn("chmod 0600 /etc/systemd/system/kubelet.service", text)
         self.assertNotRegex(text, r"chmod [0-7]*[2367][0-7]* /etc/kubernetes", "never widen cluster credentials")
+
+    def test_units_arms_before_staging_and_never_reverts_twice(self) -> None:
+        text = read("apply-hardening.sh")
+        units = text[text.index("    units)\n") : text.index("    journald)\n")]
+        self.assertLess(units.index("arm_revert units 600 "), units.index("install_file"), "arm before anything is staged")
+        self.assertIn("systemctl stop platform-revert-units.timer; systemctl start platform-revert-units.service", units, "the failure path cancels the timer before reverting once")
+
+    def test_ipv6_uses_reapply_not_reconnect(self) -> None:
+        text = read("apply-hardening.sh")
+        self.assertIn('nmcli device reapply "${UPLINK_INTERFACE}"', text)
+        self.assertNotIn("nmcli con up", text, "a reconnect drops the tunnel the operator rides")
+
+    def test_cluster_files_tolerates_empty_dropin_dir(self) -> None:
+        self.assertIn("shopt -s nullglob", read("apply-hardening.sh"))
+        self.assertNotIn("kubelet.service.d/*.conf ;;", read("apply-hardening.sh"))
+
+    def test_restore_path_reports_a_failed_copy(self) -> None:
+        self.assertIn('cp "${from}${f}" "$f" || return 1', read("lib.sh"))
+
+    def test_egress_verifier_probes_time_and_only_apt_user_hits_mirror(self) -> None:
+        text = read("verify-hardening.sh")
+        self.assertNotRegex(text, r"\n\s+curl -fsS[^\n]*ports\.ubuntu\.com", "a root curl only feeds the drop log")
+        self.assertIn("no NTP peer reachable through the table", text)
 
     def test_cmdline_is_staged_not_activated(self) -> None:
         code = [ln for ln in read("apply-hardening.sh").splitlines() if ln.strip() and not ln.strip().startswith("#")]
