@@ -1,0 +1,26 @@
+[Unit]
+Description=Per-service egress allowlist (bootstrap/pi/hardening)
+Documentation=https://github.com/snaraj/platform
+Wants=network-pre.target
+Before=network-pre.target
+After=local-fs.target
+ConditionPathExists=/etc/platform-hardening/egress-allowlist.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/platform-hardening/egress-allowlist.nft
+ExecReload=/usr/sbin/nft -f /etc/platform-hardening/egress-allowlist.nft
+ExecStop=/usr/sbin/nft delete table inet platform_egress
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
