@@ -1,4 +1,6 @@
-# Rendered by apply-hardening.sh from the private admin target. sshd listens
+# Rendered by apply-hardening.sh from the private admin target. The zzz-
+# prefix sorts after every distribution or operator drop-in, because a later
+# `ListenStream=` reset would otherwise reinstate the wildcard listener. sshd listens
 # only where its one legitimate client, the local tunnel connector, dials:
 # loopback and the private admin target address bound on lo. The wildcard
 # listener is removed. FreeBind keeps the socket valid before the target

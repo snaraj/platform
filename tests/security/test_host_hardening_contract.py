@@ -8,7 +8,9 @@ would make it fail; the adversarial review mutates those lines.
 from __future__ import annotations
 
 import re
+import socket as socket_module
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -88,6 +90,9 @@ class UnitSandboxing(unittest.TestCase):
 
     def test_ntpsec_keeps_the_clock(self) -> None:
         d = directives("systemd/ntpsec.service.d/70-platform-sandbox.conf")
+        rw = d["ReadWritePaths"][0].split()
+        self.assertIn("-/var/log/ntpsec", rw, "the statistics directory is optional; a missing path must not fail the namespace")
+        self.assertIn("/run", rw, "the PID file lives under /run, read-only under ProtectSystem=strict")
         self.assertNotIn("ProtectClock", d, "ntpd must be able to set the clock")
         self.assertIn("CAP_SYS_TIME", d["CapabilityBoundingSet"][0])
         self.assertEqual(d.get("NoNewPrivileges"), ["yes"])
@@ -103,8 +108,13 @@ class UnitSandboxing(unittest.TestCase):
     def test_no_sshd_service_dropin(self) -> None:
         self.assertFalse((HARDENING / "systemd/ssh.service.d").exists(), "sshd sandboxing is inherited by admin sessions; ADR 0018")
 
+    def test_ssh_socket_dropin_sorts_last(self) -> None:
+        names = [p.name for p in (HARDENING / "systemd/ssh.socket.d").iterdir()]
+        self.assertEqual(names, ["zzz-platform-listen.conf.template"], "a later drop-in's ListenStream= reset would reinstate the wildcard")
+        self.assertIn("ssh.socket.d/zzz-platform-listen.conf", read("apply-hardening.sh"))
+
     def test_ssh_socket_template_drops_wildcard(self) -> None:
-        text = read("systemd/ssh.socket.d/70-platform-listen.conf.template")
+        text = read("systemd/ssh.socket.d/zzz-platform-listen.conf.template")
         self.assertIn("ListenStream=\n", text, "the first ListenStream= must reset the inherited list")
         self.assertIn("ListenStream=127.0.0.1:22", text)
         self.assertIn("ListenStream=@ADMIN_TARGET@:22", text)
@@ -142,7 +152,7 @@ class EgressAllowlist(unittest.TestCase):
             s = line.strip()
             if s.endswith("accept") and not s.startswith("#"):
                 self.assertTrue(
-                    s.startswith(("oif lo", "ct state", "udp sport 68", "meta l4proto", "meta skuid", "@VPN_TRANSPORT@", "@CLUSTER_CIDRS@")),
+                    s.startswith(("oif lo", "fib daddr type local", "ct state", "udp sport 68", "meta l4proto", "meta skuid", "@VPN_TRANSPORT@", "@CLUSTER_CIDRS@")),
                     f"unqualified accept: {s}",
                 )
 
@@ -150,6 +160,31 @@ class EgressAllowlist(unittest.TestCase):
         for s in self.code(read(self.TEMPLATE)):
             self.assertNotRegex(s, r"^meta l4proto (tcp|udp) accept", s)
             self.assertNotRegex(s, r"^ct state [a-z,]*new", s)
+
+    def test_local_delivery_is_always_allowed(self) -> None:
+        body = self.code(read(self.TEMPLATE))
+        self.assertIn("fib daddr type local accept", body, "API-server and etcd hairpins leave the output hook on the uplink; without this the CNI cannot create sandboxes")
+        self.assertLess(body.index("fib daddr type local accept"), body.index("ct state established,related accept"))
+
+    def test_time_rules_cover_root_owned_sockets(self) -> None:
+        body = self.code(read(self.TEMPLATE))
+        for owner in ("root", "ntpsec"):
+            self.assertIn(f'meta skuid "{owner}" udp dport {{ 123, 4123 }} accept', body, "ntpd binds before dropping privileges; NTS servers also serve on 4123")
+            self.assertIn(f'meta skuid "{owner}" tcp dport 4460 accept', body)
+
+    def test_sysctl_is_reapplied_after_network(self) -> None:
+        d = directives("systemd/platform-sysctl-reapply.service")
+        self.assertEqual(d.get("ExecStart"), ["/usr/sbin/sysctl -p /etc/sysctl.d/99-zz-platform-kernel-hardening.conf"], "only our file: the distribution's keys need capabilities a reduced set lacks")
+        self.assertNotIn("CapabilityBoundingSet", d, "ptrace_scope needs CAP_SYS_PTRACE")
+        self.assertIn("network-online.target", d["After"][0])
+        self.assertIn("kubelet.service", d["After"][0])
+        apply = read("apply-hardening.sh")
+        self.assertIn("systemctl enable platform-sysctl-reapply.service", apply)
+        verify = read("verify-hardening.sh")
+        self.assertIn("systemctl is-enabled --quiet platform-sysctl-reapply.service", verify)
+        self.assertIn('systemctl show -p Result --value platform-sysctl-reapply.service)" == success', verify, "an enabled unit that fails every boot must not pass")
+        self.assertEqual(d.get("Type"), ["oneshot"])
+        self.assertEqual(d.get("Wants"), ["network-online.target"])
 
     def test_every_service_rule_is_uid_and_port_bound(self) -> None:
         for line in read(self.TEMPLATE).splitlines():
@@ -213,6 +248,69 @@ class Scripts(unittest.TestCase):
         self.assertIn("chmod 0700 /var/lib/etcd", text)
         self.assertIn("chmod 0600 /etc/systemd/system/kubelet.service", text)
         self.assertNotRegex(text, r"chmod [0-7]*[2367][0-7]* /etc/kubernetes", "never widen cluster credentials")
+
+    def test_units_arms_before_staging_and_never_reverts_twice(self) -> None:
+        text = read("apply-hardening.sh")
+        units = text[text.index("    units)\n") : text.index("    journald)\n")]
+        self.assertLess(units.index("arm_revert units 600 "), units.index("install_file"), "arm before anything is staged")
+        self.assertIn("systemctl start platform-revert-units.service; systemctl stop platform-revert-units.timer", units, "start the revert before stopping its timer: both are transient and stopping the timer first lets systemd collect the service")
+        self.assertNotIn("systemctl stop platform-revert-units.timer; systemctl start", units)
+
+    def test_ipv6_uses_reapply_not_reconnect(self) -> None:
+        text = read("apply-hardening.sh")
+        self.assertIn('nmcli device reapply "${UPLINK_INTERFACE}"', text)
+        self.assertNotIn("nmcli con up", text, "a reconnect drops the tunnel the operator rides")
+
+    def test_cluster_files_tolerates_empty_dropin_dir(self) -> None:
+        self.assertIn("shopt -s nullglob", read("apply-hardening.sh"))
+        self.assertNotIn("kubelet.service.d/*.conf ;;", read("apply-hardening.sh"))
+
+    def test_restore_path_reports_a_failed_copy(self) -> None:
+        self.assertIn('cp "${from}${f}" "$f" || return 1', read("lib.sh"))
+
+    def test_egress_verifier_probes_time_and_only_apt_user_hits_mirror(self) -> None:
+        text = read("verify-hardening.sh")
+        for line in text.splitlines():
+            if "ports.ubuntu.com" in line and "curl" in line:
+                self.assertIn("sudo -u _apt", line, "only the apt user hits the mirror")
+        body = text[text.index("ntp_exchange_through_table() {") : text.index("\n}\n", text.index("ntp_exchange_through_table() {"))]
+        self.assertIn('for owner in root ntpsec; do', body, "both socket owners must be able to exchange time")
+        self.assertRegex(body, r'timeout \d+ sudo -u "\$\{owner\}" python3 -I -B - "\$\{host\}" \d+ < "\$\{hardening_root\}/ntp-probe\.py"', "a direct exchange by the shipped probe, not the reach register")
+        self.assertNotIn("ntpq", body, "reach is history, not proof")
+        self.assertNotIn("ntpdig", body, "ntpdig is a separate package the host does not carry")
+        self.assertIn("ntp_exchange_through_table || {", text)
+
+    def test_ntp_probe_exchanges_with_a_server(self) -> None:
+        import socket, threading
+        responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        responder.bind(("127.0.0.1", 0))
+        port = responder.getsockname()[1]
+        seen = {}
+
+        def serve() -> None:
+            responder.settimeout(5)
+            try:
+                data, peer = responder.recvfrom(512)
+            except OSError:
+                return
+            seen["mode"] = data[0] & 0x07
+            seen["len"] = len(data)
+            responder.sendto(b"\x24" + b"\x00" * 47, peer)
+
+        thread = threading.Thread(target=serve); thread.start()
+        src = (HARDENING / "ntp-probe.py").read_text().replace("NTP_PORT = 123", f"NTP_PORT = {port}")
+        rc = subprocess.run([sys.executable, "-I", "-B", "-", "127.0.0.1", "3"], input=src, capture_output=True, text=True).returncode
+        thread.join(); responder.close()
+        self.assertEqual(rc, 0, "a mode-4 answer must pass")
+        self.assertEqual(seen, {"mode": 3, "len": 48}, "the probe sends one 48-byte client packet")
+
+    def test_ntp_probe_fails_closed_without_an_answer(self) -> None:
+        silent = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0)); port = silent.getsockname()[1]
+        src = (HARDENING / "ntp-probe.py").read_text().replace("NTP_PORT = 123", f"NTP_PORT = {port}")
+        rc = subprocess.run([sys.executable, "-I", "-B", "-", "127.0.0.1", "1"], input=src, capture_output=True, text=True).returncode
+        silent.close()
+        self.assertEqual(rc, 1)
 
     def test_cmdline_is_staged_not_activated(self) -> None:
         code = [ln for ln in read("apply-hardening.sh").splitlines() if ln.strip() and not ln.strip().startswith("#")]

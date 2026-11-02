@@ -1,0 +1,22 @@
+[Unit]
+Description=Re-apply sysctl policy after the network is up (bootstrap/pi/hardening)
+# systemd-sysctl runs early; the firewall framework's own sysctl file, applied
+# by its init after that, rewrites some net.ipv4.conf.all.* keys (log_martians
+# was found reset to 0 after boot), so
+# this policy file alone is applied once more when everything that writes
+# them has started. Only this file: the distribution's own files set keys
+# (ptrace scope, mmap floor, AppArmor namespaces) that fail under a reduced
+# capability set and would make the whole run exit non-zero.
+After=network-online.target kubelet.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/sysctl -p /etc/sysctl.d/99-zz-platform-kernel-hardening.conf
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

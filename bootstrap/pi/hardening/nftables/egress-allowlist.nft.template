@@ -15,6 +15,9 @@ table inet platform_egress {
   chain output {
     type filter hook output priority -10; policy accept;
     oif lo accept
+    # Hairpins to the host's own addresses (API server, etcd) leave the output
+    # hook with the uplink as their interface; local delivery is always allowed.
+    fib daddr type local accept
     ct state established,related accept
     # DHCP and ICMP keep the uplink alive and diagnosable.
     udp sport 68 udp dport 67 accept
@@ -32,8 +35,12 @@ table inet platform_egress {
     # Package downloads run as the apt user; image pulls run as root.
     meta skuid "_apt" tcp dport { 80, 443 } accept
     meta skuid "root" tcp dport 443 accept
-    # Time: NTP and NTS key establishment.
-    meta skuid "ntpsec" udp dport 123 accept
+    # Time: NTP and NTS key establishment. ntpd opens its sockets before it
+    # drops privileges, so they are owned by root; both owners are listed.
+    # NTS servers may serve time on 4123 instead of 123 (found live).
+    meta skuid "root" udp dport { 123, 4123 } accept
+    meta skuid "root" tcp dport 4460 accept
+    meta skuid "ntpsec" udp dport { 123, 4123 } accept
     meta skuid "ntpsec" tcp dport 4460 accept
     # Interactive accounts (the operator at a shell): web, git over ssh.
     meta skuid @LOGIN_UIDS@ tcp dport { 22, 80, 443 } accept

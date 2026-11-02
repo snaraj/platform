@@ -20,7 +20,7 @@ verify="${hardening_root}/verify-hardening.sh"
 sysctl_dst=/etc/sysctl.d/99-zz-platform-kernel-hardening.conf
 cmdline=/boot/firmware/cmdline.txt
 egress_dst=/etc/platform-hardening/egress-allowlist.nft
-listen_dst=/etc/systemd/system/ssh.socket.d/70-platform-listen.conf
+listen_dst=/etc/systemd/system/ssh.socket.d/zzz-platform-listen.conf
 
 # The container runtime and kubelet are deliberately absent: systemd mount,
 # hostname and kernel-log fences break pod creation (ADR 0018).
@@ -73,8 +73,12 @@ apply() {
   case "$comp" in
     sysctl)
       install_file "${hardening_root}/sysctl/99-zz-platform-kernel-hardening.conf" "${sysctl_dst}" 0644
+      install_file "${hardening_root}/systemd/platform-sysctl-reapply.service" /etc/systemd/system/platform-sysctl-reapply.service 0644
+      systemctl daemon-reload; systemctl enable platform-sysctl-reapply.service >/dev/null 2>&1
       sysctl --system >/dev/null ;;
     units)
+      # Arm first: if arming fails nothing is staged without a health check.
+      arm_revert units 600 /bin/sh -c "rm -f /etc/systemd/system/cloudflared.service.d/70-platform-sandbox.conf /etc/systemd/system/ntpsec.service.d/70-platform-sandbox.conf; systemctl daemon-reload; systemctl restart cloudflared.service ntpsec.service"
       for u in "${units[@]}"; do
         install_file "${hardening_root}/systemd/${u}.service.d/70-platform-sandbox.conf" "/etc/systemd/system/${u}.service.d/70-platform-sandbox.conf" 0644
       done
@@ -82,13 +86,15 @@ apply() {
       # The connector carries the administrative path, so its restart ends the
       # operator's session. The restart, its health check and the decision to
       # keep or revert therefore run in a transient unit that outlives the
-      # session, under a 10-minute revert that only the health check cancels.
-      arm_revert units 600 /bin/sh -c "rm -f /etc/systemd/system/cloudflared.service.d/70-platform-sandbox.conf /etc/systemd/system/ntpsec.service.d/70-platform-sandbox.conf; systemctl daemon-reload; systemctl restart cloudflared.service ntpsec.service"
+      # session. Success cancels the revert; failure runs the revert service
+      # first and only then stops the timer: both are transient units created
+      # together, and stopping the timer first lets the manager collect the
+      # service before it can be started.
       systemd-run --quiet --collect --unit=platform-apply-units --description="restart sandboxed units and keep or revert" /bin/sh -c '
         systemctl restart ntpsec.service && sleep 3 && systemctl is-active --quiet ntpsec.service \
         && systemctl restart cloudflared.service && sleep 8 && systemctl is-active --quiet cloudflared.service \
         && systemctl stop platform-revert-units.timer && exit 0
-        systemctl start platform-revert-units.service; exit 1'
+        systemctl start platform-revert-units.service; systemctl stop platform-revert-units.timer; exit 1'
       say "connector restarting in a transient unit; this session may end here. Result: systemctl status platform-apply-units; verify with verify-hardening.sh units"
       local _
       for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
@@ -132,7 +138,7 @@ apply() {
       target="$(admin_target)" || { say "ADMIN_TARGET_FILE missing or malformed; nothing changed"; result SSHD_LISTEN SKIP; exit 0; }
       backup_path "${listen_dst}"
       install -d -m 0755 "$(dirname "${listen_dst}")"
-      sed "s|@ADMIN_TARGET@|${target}|" "${hardening_root}/systemd/ssh.socket.d/70-platform-listen.conf.template" > "${listen_dst}"
+      sed "s|@ADMIN_TARGET@|${target}|" "${hardening_root}/systemd/ssh.socket.d/zzz-platform-listen.conf.template" > "${listen_dst}"
       arm_revert sshd-listen 600 /bin/sh -c "rm -f ${listen_dst}; systemctl daemon-reload; systemctl restart ssh.socket"
       systemctl daemon-reload; systemctl restart ssh.socket
       if "${verify}" sshd-listen; then disarm_revert sshd-listen
@@ -154,11 +160,14 @@ apply() {
       [[ -n "${con}" ]] || { printf 'no active connection on uplink\n' >&2; exit 2; }
       install -d -m 0700 "${backup_dir}"; nmcli -t -f ipv6.method con show "${con}" > "${backup_dir}/ipv6.method.previous"
       nmcli con modify "${con}" ipv6.method disabled
-      nmcli con up "${con}" >/dev/null ;;
+      # reapply changes the live device without a reconnect, so the tunnel the
+      # operator's session rides stays up.
+      nmcli device reapply "${UPLINK_INTERFACE}" >/dev/null ;;
     cluster-files)
       install -d -m 0700 "${backup_dir}"; stat -c '%a %n' /var/lib/etcd /etc/systemd/system/kubelet.service /etc/systemd/system/kubelet.service.d/*.conf > "${backup_dir}/cluster-files.modes" 2>/dev/null || true
       chmod 0700 /var/lib/etcd
-      chmod 0600 /etc/systemd/system/kubelet.service /etc/systemd/system/kubelet.service.d/*.conf ;;
+      chmod 0600 /etc/systemd/system/kubelet.service
+      shopt -s nullglob; for f in /etc/systemd/system/kubelet.service.d/*.conf; do chmod 0600 "$f"; done; shopt -u nullglob ;;
     *) printf 'unknown component\n' >&2; exit 2 ;;
   esac
   "${verify}" "$comp"
@@ -168,7 +177,7 @@ revert() {
   from="$(latest_backup "${comp}")"; [[ -n "${from}" ]] || { printf 'no backup of %s to revert from\n' "${comp}" >&2; exit 2; }
   local restored=1
   case "$comp" in
-    sysctl)   restore_path "${sysctl_dst}" "${from}" || restored=0; sysctl --system >/dev/null ;;
+    sysctl)   systemctl disable platform-sysctl-reapply.service >/dev/null 2>&1 || true; restore_path "${sysctl_dst}" "${from}" || restored=0; restore_path /etc/systemd/system/platform-sysctl-reapply.service "${from}" || restored=0; systemctl daemon-reload; sysctl --system >/dev/null ;;
     units)    for u in "${units[@]}"; do restore_path "/etc/systemd/system/${u}.service.d/70-platform-sandbox.conf" "${from}" || restored=0; done; systemctl daemon-reload; systemctl restart ntpsec.service cloudflared.service ;;
     journald) restore_path /etc/systemd/journald.conf.d/70-platform-seal.conf "${from}" || restored=0; systemctl restart systemd-journald ;;
     auditd)   restore_path /etc/audit/rules.d/platform.rules "${from}" || restored=0; augenrules --load >/dev/null 2>&1 || true ;;
@@ -178,7 +187,7 @@ revert() {
     egress)   systemctl disable --now platform-egress-allowlist.service >/dev/null 2>&1 || true; nft delete table inet platform_egress 2>/dev/null || true; restore_path "${egress_dst}" "${from}" || restored=0; restore_path /etc/systemd/system/platform-egress-allowlist.service "${from}" || restored=0; systemctl daemon-reload ;;
     sshd-listen) restore_path "${listen_dst}" "${from}" || restored=0; systemctl daemon-reload; systemctl restart ssh.socket ;;
     cmdline)  restore_path "${cmdline}" "${from}" || restored=0 ;;
-    ipv6)     con="$(nmcli -t -f NAME,DEVICE con show --active | awk -F: -v d="${UPLINK_INTERFACE}" '$2==d{print $1; exit}')"; prev="$(sed 's/^ipv6.method://' "${from}/ipv6.method.previous" 2>/dev/null)"; [[ -n "${prev}" ]] || restored=0; nmcli con modify "${con}" ipv6.method "${prev:-auto}"; nmcli con up "${con}" >/dev/null ;;
+    ipv6)     con="$(nmcli -t -f NAME,DEVICE con show --active | awk -F: -v d="${UPLINK_INTERFACE}" '$2==d{print $1; exit}')"; prev="$(sed 's/^ipv6.method://' "${from}/ipv6.method.previous" 2>/dev/null)"; [[ -n "${prev}" ]] || restored=0; nmcli con modify "${con}" ipv6.method "${prev:-auto}"; nmcli device reapply "${UPLINK_INTERFACE}" >/dev/null ;;
     cluster-files) if [[ -f "${from}/cluster-files.modes" ]]; then while read -r mode path; do chmod "${mode}" "${path}"; done < "${from}/cluster-files.modes"; else restored=0; fi ;;
     *) printf 'unknown component\n' >&2; exit 2 ;;
   esac

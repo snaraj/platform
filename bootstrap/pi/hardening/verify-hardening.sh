@@ -20,6 +20,8 @@ check_sysctl() {
     k="${k// /}"; v="${v// /}"; [[ -z "$k" || "$k" == \#* ]] && continue
     [[ "$(sysctl -n "$k" 2>/dev/null | tr -s '\t ' ' ')" == "$v" ]] || { say "sysctl ${k} != ${v}"; ok=0; }
   done < "${hardening_root}/sysctl/99-zz-platform-kernel-hardening.conf"
+  systemctl is-enabled --quiet platform-sysctl-reapply.service || { say "sysctl re-apply unit not enabled"; ok=0; }
+  [[ "$(systemctl show -p Result --value platform-sysctl-reapply.service)" == success ]] || { say "sysctl re-apply unit last result not success"; ok=0; }
   judge SYSCTL "$ok"
 }
 check_units() {
@@ -62,14 +64,31 @@ connector_settled() {
   done
   return 1
 }
+# Prove a fresh NTP exchange through the current table as both socket owners:
+# ntpd's own sockets are root-owned, later ones belong to the ntpsec user.
+# A direct exchange is used because the reach register is history and would
+# pass for minutes after a table started blocking time. The probe is a
+# dependency-free script fed to the interpreter on stdin, so the unprivileged
+# owner never needs read access to this directory.
+ntp_exchange_through_table() {
+  local host owner
+  host="$(awk '$1 == "server" { for (i = 2; i <= NF; i++) if ($i !~ /^-/) { print $i; exit } }' /etc/ntpsec/ntp.conf 2>/dev/null)"
+  [[ -n "${host}" ]] || return 1
+  for owner in root ntpsec; do
+    timeout 12 sudo -u "${owner}" python3 -I -B - "${host}" 4 < "${hardening_root}/ntp-probe.py" >/dev/null 2>&1 || return 1
+  done
+}
 check_egress() {
   local ok=1
   nft list table inet platform_egress >/dev/null 2>&1 || { say "egress table absent"; ok=0; }
   # The services that must keep working.
   systemctl is-active --quiet cloudflared.service || { say "cloudflared not active"; ok=0; }
   connector_settled || true
-  curl -fsS --max-time 15 -o /dev/null -w '' http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null \
-    || sudo -u _apt curl -fsS --max-time 15 -o /dev/null http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null || { say "apt mirror unreachable as _apt"; ok=0; }
+  # Only the apt user is expected to reach the mirror; a root attempt would
+  # merely feed the drop log.
+  sudo -u _apt curl -fsS --max-time 15 -o /dev/null http://ports.ubuntu.com/ubuntu-ports/dists/noble/Release 2>/dev/null || { say "apt mirror unreachable as _apt"; ok=0; }
+  # Time must keep flowing: a fresh exchange as both socket owners.
+  ntp_exchange_through_table || { say "NTP exchange through the table failed"; ok=0; }
   # A denied flow must die here, not leave. The probe targets a host and port
   # that DO accept connections (the mirror on 443), as a uid outside every
   # rule: success is the finding, and a closed port cannot fake a pass.
