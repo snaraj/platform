@@ -195,9 +195,6 @@ def classify(root: Path = ROOT) -> TransitionPlan:
     platform_suspended = STATE.load_parent_suspension("cloudflare-public", root)
     cloudflare_phase = _cloudflare_phase(root, platform_suspended)
 
-    # The direct website loop is independent of any retired admission-controller
-    # premise.
-
     if (
         cloudflare_phase == "initial"
         and platform_suspended

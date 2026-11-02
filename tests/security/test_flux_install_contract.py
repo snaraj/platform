@@ -2948,8 +2948,6 @@ class ToolAndTargetBindingTests(InstallerBehaviourTestCase):
                 self.assertEqual(read(Path(completed.state) / "calls.log").strip(), "")
 
     def test_a_widened_egress_allow_is_refused_although_the_controller_render_is_intact(self):
-        # The exact probe the peer ran: change only the egress root, keep the
-        # reviewed controller digest. Before this round it exited 0.
         widened = self.base / "assets-widened-egress"
         widened.mkdir(exist_ok=True)
         shutil.copy2(self.assets / "controllers.yaml", widened / "controllers.yaml")
@@ -3318,16 +3316,6 @@ class ApplyTransactionTests(InstallerBehaviourTestCase):
     # call BEFORE it sleeps: seeing this line means the installer is inside a
     # foreground command that will not return for FLUX_STUB_DELAY seconds, and
     # bash defers the signal to the end of that command.
-    #
-    # Issue #139: the marker used to be the bare ``--dry-run=client``, which the
-    # egress overlay and the API canary each log FIRST — so the signal landed
-    # one or two calls EARLIER, in the unsynchronised region between them
-    # (``cat``/``grep -cE`` command substitutions), and the run's behaviour
-    # depended on where the scheduler happened to put it. That is what produced
-    # the intermittent ``trap: line 2: unexpected EOF while looking for
-    # matching ')'`` in place of the handler's own message on main CI run
-    # 32208415511. The 4-second stub delay is unchanged: the repair is to point
-    # the wait at the call the delay actually covers, not to wait longer.
     DELAYED_MANIFEST = "controllers.yaml"
     DELAYED_CALL_MARKER = DELAYED_MANIFEST + " --dry-run=client"
 

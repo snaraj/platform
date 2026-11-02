@@ -96,7 +96,6 @@ site_asset_pattern() {
 # ceremony recorded separately as dnssec-parity.
 readonly ZONE_A_DNSSEC='signed'
 readonly ZONE_B_DNSSEC='unsigned'
-# hospedajedonlolo.com was signed when the zone was hardened (issue #422).
 readonly ZONE_C_DNSSEC='signed'
 # Two independent validating resolvers, addressed by name (see header).
 readonly RESOLVER_ONE='one.one.one.one'
@@ -756,6 +755,7 @@ probe_identity() {
       'the apex does not serve its own identity'
     other=''
   else
+    other=''
     for other in ${others}; do
       if "${GREP}" -q -F -e "<title>$(site_title "${other}")</title>" "${out}"; then
         break

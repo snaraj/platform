@@ -235,7 +235,7 @@ The workflow `GITHUB_TOKEN` cannot read `/immutable-releases`: GitHub requires
 repository Administration read, which is not an available workflow permission.
 Do not remove the pre-write proof and do not broaden the publisher token. Pin
 `actions/create-github-app-token` to
-`bcd2ba49218906704ab6c1aa796996da409d3eb1` (`v3.2.0`), request only
+`64ab729a6294000f5aa4a4bc0b73d1f32bc45510` (`v3.3.0`), request only
 `permission-administration: read`, scope it explicitly to owner `snaraj` and
 repository `website-infrastructure`, and leave token revocation enabled.
 

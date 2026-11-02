@@ -20,10 +20,6 @@ PROTECTED_BRANCHES = frozenset({"main", "master", "HEAD"})
 # tuple is the ONE place a new model lane is added, and the contract test binds
 # it to the agent-label roster written into AGENTS.md, so a lane documented
 # there but missing here fails loudly instead of silently denying real work.
-#
-# Before issue #137 this file listed only two lanes, so `opus5/...`,
-# `opus4.8/...`, `sonnet5/...` and `daybreak-blue/...` all returned DENY —
-# every lane the label taxonomy gained after the file was written.
 AGENT_LANES = (
     "5.6-sol",
     "daybreak-blue",

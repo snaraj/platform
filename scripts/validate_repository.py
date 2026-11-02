@@ -2298,9 +2298,6 @@ def flux_rbac_contract_errors(root):
         if kind_match.group(1) == "ClusterRole":
             seen_cluster_roles[name_match.group(1)] = document
             continue
-        # Issue #98 needs only this authored four-line roleRef shape. Keep the
-        # match bounded rather than importing issue #166's generalized parser
-        # and scan-cost work into the RBAC split.
         role_ref_match = re.search(
             r"(?m)^roleRef:\s*$\n"
             r"  apiGroup:\s*rbac\.authorization\.k8s\.io\s*$\n"
