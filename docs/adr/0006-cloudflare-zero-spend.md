@@ -70,3 +70,25 @@ intact.
   does not serve it (`site.Withheld` in the site repository), and the page
   shows its poster image. Only the owner can lift this boundary, through an
   explicit decision followed by a reviewed change in both repositories.
+
+## Amendment (2026-11-02): the hospedajedonlolo.com film
+
+The owner lifted the `NO-GO` above for exactly one file (issue #432). After
+reviewing the live site, the owner was offered three choices: serve the film
+from pie5 through the site's own Tunnel, accept the risk that the self-serve
+terms let the provider limit or disable sites that serve video without its
+paid video products; move it to an unlisted third-party embed loaded on
+click; or keep it withheld. The owner chose to serve it. Prior lines are left
+byte for byte intact.
+
+- Scope: `don-lolo.mp4`, 19,997,437 bytes, SHA-256
+  `084fa3c51ef60288b71477d889701e13a80406bda4a0464ebb10408afe688ebf`, served
+  from the site's read-only media volume at `/assets/don-lolo.mp4` by
+  snaraj/hospedajedonlolo.com v0.1.2 and later. Every other large-media case
+  stays a `NO-GO`, naranjo.online's heavy media included.
+- Zero spend is unchanged: no product, plan, add-on, trial or paid video
+  service is added. If the provider objects, the failure is limited or
+  disabled delivery for the zone, never a charge, and the response is to
+  withhold the film again, never to buy a fallback.
+- Rollback: a site release that withholds the film again, or selecting an
+  earlier site release in snaraj/platform-k8s-infra.
