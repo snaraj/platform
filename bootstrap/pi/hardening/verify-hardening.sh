@@ -64,15 +64,16 @@ connector_settled() {
 }
 # Prove a fresh NTP exchange through the current table as both socket owners:
 # ntpd's own sockets are root-owned, later ones belong to the ntpsec user.
-# A direct query is used because the reach register is history and would
-# pass for minutes after a table started blocking time.
+# A direct exchange is used because the reach register is history and would
+# pass for minutes after a table started blocking time. The probe is a
+# dependency-free script fed to the interpreter on stdin, so the unprivileged
+# owner never needs read access to this directory.
 ntp_exchange_through_table() {
   local host owner
   host="$(awk '$1 == "server" { for (i = 2; i <= NF; i++) if ($i !~ /^-/) { print $i; exit } }' /etc/ntpsec/ntp.conf 2>/dev/null)"
   [[ -n "${host}" ]] || return 1
-  command -v ntpdig >/dev/null 2>&1 || return 1
   for owner in root ntpsec; do
-    timeout 12 sudo -u "${owner}" ntpdig -t 4 -c "${host}" >/dev/null 2>&1 || return 1
+    timeout 12 sudo -u "${owner}" python3 -I -B - "${host}" 4 < "${hardening_root}/ntp-probe.py" >/dev/null 2>&1 || return 1
   done
 }
 check_egress() {
