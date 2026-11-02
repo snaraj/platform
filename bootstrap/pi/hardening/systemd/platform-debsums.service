@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify installed package files against their checksums (bootstrap/pi/hardening)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/debsums -c -s
+Nice=15
+IOSchedulingClass=idle
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

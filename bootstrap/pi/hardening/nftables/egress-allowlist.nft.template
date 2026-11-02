@@ -1,0 +1,43 @@
+#!/usr/sbin/nft -f
+# Rendered by apply-hardening.sh. Per-service egress allowlist on the output
+# hook, evaluated before the distribution firewall. The firewall framework
+# already denies inbound by default; this table closes the remaining gap, an
+# "anything may leave through the uplink or VPN" rule, by naming which local
+# user may open which outbound port. Everything else is logged and dropped.
+#
+# Only this table is flushed on reload. Never `flush ruleset` here: the CNI,
+# the distribution firewall and the VPN own their own tables.
+table inet platform_egress {
+  chain output {
+    type filter hook output priority -10; policy accept;
+    oif lo accept
+    ct state established,related accept
+    # DHCP and ICMP keep the uplink alive and diagnosable.
+    udp sport 68 udp dport 67 accept
+    meta l4proto icmp accept
+    meta l4proto ipv6-icmp accept
+    # Host to its own pods and service VIPs (probes, API hairpins). The CNI
+    # and the cluster NetworkPolicies govern what happens past this point.
+    @CLUSTER_CIDRS@
+    @VPN_TRANSPORT@
+    # Tunnel connector: QUIC/TCP to the edge plus its resolver.
+    meta skuid "cloudflared" udp dport 7844 accept
+    meta skuid "cloudflared" tcp dport 7844 accept
+    meta skuid "cloudflared" udp dport 53 accept
+    meta skuid "cloudflared" tcp dport 53 accept
+    # Package downloads run as the apt user; image pulls run as root.
+    meta skuid "_apt" tcp dport { 80, 443 } accept
+    meta skuid "root" tcp dport 443 accept
+    # Time: NTP and NTS key establishment.
+    meta skuid "ntpsec" udp dport 123 accept
+    meta skuid "ntpsec" tcp dport 4460 accept
+    # Interactive accounts (the operator at a shell): web, git over ssh.
+    meta skuid @LOGIN_UIDS@ tcp dport { 22, 80, 443 } accept
+    # The stub resolver's upstream queries.
+    meta skuid "systemd-resolve" udp dport 53 accept
+    meta skuid "systemd-resolve" tcp dport 53 accept
+    # Everything else leaves a trace and dies here.
+    limit rate 10/minute log prefix "platform-egress-drop " counter drop
+    counter drop
+  }
+}

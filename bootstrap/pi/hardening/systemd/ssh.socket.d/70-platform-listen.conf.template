@@ -1,0 +1,10 @@
+# Rendered by apply-hardening.sh from the private admin target. sshd listens
+# only where its one legitimate client, the local tunnel connector, dials:
+# loopback and the private admin target address bound on lo. The wildcard
+# listener is removed. FreeBind keeps the socket valid before the target
+# address exists at boot.
+[Socket]
+ListenStream=
+ListenStream=127.0.0.1:22
+ListenStream=@ADMIN_TARGET@:22
+FreeBind=yes

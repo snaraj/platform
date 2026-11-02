@@ -1,0 +1,16 @@
+## Managed by bootstrap/pi/hardening. Minimal, low-volume audit trail:
+## what root ran from an interactive login, what changed under /etc, which
+## kernel modules were loaded, and who touched the boot partition or the
+## locally installed operator binaries. Container runtime activity has no
+## login uid and is excluded by design.
+-D
+-b 8192
+-f 1
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k root-exec
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-w /etc/ -p wa -k etc
+-w /boot/firmware/ -p wa -k boot
+-w /usr/local/sbin/ -p wa -k local-sbin
+-w /usr/local/bin/ -p wa -k local-bin
+-w /var/log/journal/ -p wa -k journal
+-e 1
