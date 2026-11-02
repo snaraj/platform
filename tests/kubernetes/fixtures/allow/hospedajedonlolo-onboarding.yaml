@@ -6,10 +6,11 @@
 # the budget bound to the shared site evidence; the connector-egress policy
 # pinned to its own instance and reaching only its own origin on TCP 8080; the
 # connector receiving only its own token; the composition shape
-# snaraj/platform-k8s-infra will carry — default-deny, the chart source at the
-# PENDING sentinel with this site's own publisher identity, and a SUSPENDED
-# release whose values are exactly the site readiness scalar; and the site Pod,
-# Service and ingress policy the site chart renders, with egress denied.
+# snaraj/platform-k8s-infra carries — default-deny, the chart source at the
+# selected v0.1.1 digest with this site's own publisher identity, and an
+# UNSUSPENDED release whose values are exactly deploymentReady: true; and the
+# site Pod, Service and ingress policy the site chart renders, with egress
+# denied.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -124,7 +125,7 @@ spec:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
     operation: copy
   ref:
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    digest: sha256:2cd06606dbd39bab83ce86ab3f0c432afe8380e1367a92de51131d3ee7280a61
   timeout: 60s
   url: oci://ghcr.io/snaraj/charts/hospedajedonlolo-com
   verify:
@@ -141,7 +142,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: fluxcd
 spec:
-  suspend: true
+  suspend: false
   interval: 1m0s
   maxHistory: 2
   releaseName: hospedajedonlolo-com
@@ -160,7 +161,7 @@ spec:
       retries: 0
       strategy: rollback
   values:
-    deploymentReady: false
+    deploymentReady: true
 ---
 apiVersion: v1
 kind: Pod
