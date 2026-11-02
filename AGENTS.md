@@ -537,7 +537,9 @@ authority: the owner alone merges.
 - **Labels.** One taxonomy, identical names/colors/meanings across all
   three repositories: `production-readiness`, `conventions`, `security`,
   `tests`, `ci`, `docs`, `release`, `fix`, `provider-neutrality`,
-  `delivery-lane`, `features`, `requires-review`. New labels are added to
+  `delivery-lane`, `features`, `requires-review`,
+  `cybersecurity-review-requested`, `inprogress`, `priority-high`,
+  `dependencies`. New labels are added to
   all three at once. This repository additionally retains two repo-local
   legacy labels from the separation era (`platform`, `extraction`); the
   shared taxonomy governs new work.

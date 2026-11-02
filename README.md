@@ -4,7 +4,6 @@
 [![CodeQL](https://github.com/snaraj/platform/actions/workflows/codeql.yml/badge.svg)](https://github.com/snaraj/platform/actions/workflows/codeql.yml)
 [![Scheduled security](https://github.com/snaraj/platform/actions/workflows/scheduled-security.yml/badge.svg)](https://github.com/snaraj/platform/actions/workflows/scheduled-security.yml)
 [![Coverage](docs/badges/coverage.svg)](docs/badges/coverage.json)
-[![Platform release](https://img.shields.io/github/v/release/snaraj/platform?sort=semver)](https://github.com/snaraj/platform/releases)
 
 A Kubernetes homelab platform for running services on privately operated
 hardware. It brings host and cluster configuration, installed security
