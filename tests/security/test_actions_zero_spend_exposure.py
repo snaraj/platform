@@ -47,9 +47,6 @@ _PINNED_USES = re.compile(
 # this mapping and must arrive as a reviewed edit to the pin.
 PINNED_CRON_INVENTORY = {
     "codeql.yml": ("37 9 * * 2",),
-    # Hourly on purpose (issue #273): the watchdog's whole value is loud,
-    # prompt detection of silent delivery drift, and its job is a single
-    # sub-minute API sweep on the free public-repo tier.
     "scheduled-security.yml": ("19 10 * * 6",),
     # Daily read-only release metadata audit; no build, artifact or deployment.
     "software-currency.yml": ("41 10 * * *",),

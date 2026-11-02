@@ -57,7 +57,6 @@ readonly ORIGIN_C='http://hospedajedonlolo-com.hospedajedonlolo-com.svc.cluster.
 # ceremony happens, this expectation moves in the same reviewed change.
 readonly DNSSEC_A='active'
 readonly DNSSEC_B='disabled'
-# hospedajedonlolo.com was signed when the zone was hardened, before onboarding.
 readonly DNSSEC_C='active'
 
 # grep is resolved absolutely and every pattern is passed with -e: an

@@ -73,7 +73,6 @@ EXCEPT_COMPARISON = re.compile(
     r'\{cidr \| some cidr in object\.get\([^)]*"except", \[\]\)\} == (?P<operand>\S+)'
 )
 
-# The reviewed consumers, by the exact rule head that opens each body, with the
 REVIEWED_CONSUMERS = (
     ("valid_public_edge_rule(rule)", None),
     ("valid_flux_public_https_rule(rule)", None),
