@@ -168,11 +168,11 @@ This step carries the same storage gates as naranjo's media claim:
 - the large-media terms question in the 2026-11-01 amendment to
   [ADR 0006](../adr/0006-cloudflare-zero-spend.md).
 
-The video stays undelivered under the ADR 0006 `NO-GO`. The site verifies it
-at startup, so it must be staged like every other file, but answers 404 for
-it (`site.Withheld`); the page shows its poster image. Delivering it needs the
-owner's explicit decision on that boundary and then a reviewed change here and
-in the site repository. Neither a merge nor a journal entry is that decision.
+The video was first left undelivered under the ADR 0006 `NO-GO`: the site
+verified it at startup but answered 404 for it. On 2026-11-02 the owner
+lifted that boundary for this one file (ADR 0006, amendment of that date), and
+site v0.1.2 serves it like the photographs. It is staged and verified like
+every other file, so the volume step above is unchanged.
 
 ### Step 4: Tunnel, route, DNS record and token Secret
 
