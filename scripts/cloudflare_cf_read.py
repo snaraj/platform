@@ -202,6 +202,9 @@ def minimal_environment(
         "HOME": scratch,
         "TMPDIR": scratch,
         "DO_NOT_TRACK": "1",
+        # Never hand the call to a project-local cf (#402 review): the global
+        # launcher, version-pinned, answers every read itself.
+        "CF_DELEGATION": "1",
         "CF_SEND_TELEMETRY": "false",
         "WRANGLER_SEND_METRICS": "false",
         "NO_COLOR": "1",

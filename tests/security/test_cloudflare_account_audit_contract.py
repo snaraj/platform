@@ -282,6 +282,8 @@ def fake_cf_source(mode: str, log_path: Path) -> str:
                 "args": logged_args,
                 "account": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
                 "token_present": bool(os.environ.get("CLOUDFLARE_API_TOKEN")),
+                "cwd": os.getcwd(),
+                "delegation": os.environ.get("CF_DELEGATION"),
             }) + "\\n")
 
         runtime = list(args)
@@ -615,8 +617,8 @@ def fake_cf_front_source(mode: str, log_path: Path, python_fake: Path) -> str:
         [ -n "${{CLOUDFLARE_ACCOUNT_ID:-}}" ] && account="\\"$CLOUDFLARE_ACCOUNT_ID\\""
         args=
         for item in "$@"; do args="${{args:+$args, }}\\"$item\\""; done
-        printf '{{"args": [%s], "account": %s, "token_present": %s}}\\n' \\
-          "$args" "$account" "$token" >>{log}
+        printf '{{"args": [%s], "account": %s, "token_present": %s, "cwd": "%s", "delegation": "%s"}}\\n' \\
+          "$args" "$account" "$token" "$PWD" "${{CF_DELEGATION:-}}" >>{log}
         if [ "$1" = --version ]; then
           if [ "$mode" = old-version ]; then echo 'cf v1.0.0-beta.4'; else echo 'cf v1.0.0-beta.5'; fi
           exit 0
@@ -799,6 +801,16 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
     def log_entries(self):
         return read_log(self.log_path)
 
+    def assert_every_cf_call_isolated(self):
+        # A launcher started in the caller's directory, or with hand-off on,
+        # could run a project-local cf before the pin is checked (#402 review).
+        entries = self.log_entries()
+        self.assertTrue(entries)
+        for entry in entries:
+            with self.subTest(args=entry["args"]):
+                self.assertEqual(entry["delegation"], "1")
+                self.assertFalse(Path(entry["cwd"]).resolve().is_relative_to(REPO_ROOT.resolve()), entry["cwd"])
+
     def provider_calls(self, command, zone_id):
         return calls_for(self.log_entries(), command, zone_id)
 
@@ -810,6 +822,7 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
         self.assertIn("raw-api-absent         -> ok", completed.stdout)
         self.assertIn("credential-untouched   -> ok", completed.stdout)
         self.assertIn("failures=0", completed.stdout)
+        self.assert_every_cf_call_isolated()
 
     def test_self_test_rejects_a_schema_that_becomes_mutating(self):
         completed = self.run_script("--self-test", mode="write-schema")
@@ -907,6 +920,7 @@ class CloudflareAccountAuditBehaviourTests(unittest.TestCase):
             self.assertNotIn(identifier, completed.stdout)
         self.assertNotIn("server-returned-secret", completed.stdout + completed.stderr)
 
+        self.assert_every_cf_call_isolated()
         entries = self.log_entries()
         self.assertTrue(any(entry["token_present"] for entry in entries))
         for entry in entries:

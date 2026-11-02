@@ -201,7 +201,16 @@ resolve_tools() {
   else
     die 'a SHA-256 tool (sha256sum or shasum) is required'
   fi
-  CF_VERSION="$(DO_NOT_TRACK=1 "${CF_BIN}" --version | sed -n -E 's/.*(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?).*/\1/p' | head -n 1)"
+  # The launcher can hand a call to a cf it finds from its working directory
+  # (project-local delegation, #402). Like every adapter call, the first one
+  # runs from an empty scratch directory, with a minimal environment and
+  # hand-off off, before the version pin has been checked.
+  local probe
+  probe="$(mktemp -d "${TMPDIR:-/tmp}/cloudflare-cf-version.XXXXXX")" || die 'a private scratch directory could not be created'
+  CF_VERSION="$(cd "${probe}" && env -i PATH="${PATH}" HOME="${probe}" TMPDIR="${probe}" XDG_CONFIG_HOME="${probe}" \
+    DO_NOT_TRACK=1 CF_DELEGATION=1 NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 "${CF_BIN}" --version \
+    | sed -n -E 's/.*(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?).*/\1/p' | head -n 1)" || CF_VERSION=''
+  rm -rf -- "${probe}"
   [[ "${CF_VERSION}" == v1.0.0-beta.5 ]] || die 'cf must be the reviewed pinned version v1.0.0-beta.5'
   # shellcheck disable=SC2086 # DIGEST_TOOL is a fixed one- or two-word command
   CF_BIN_DIGEST="$(${DIGEST_TOOL} "${CF_BIN}" | cut -d ' ' -f 1)"
