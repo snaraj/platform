@@ -1047,5 +1047,56 @@ class EdgeProbeConcurrencySafetyTests(unittest.TestCase):
             self.assertTrue(directory.is_dir())
 
 
+
+class EdgeProbeSingleZoneIdentityTests(unittest.TestCase):
+    """A one-zone run has no other site to compare titles against.
+
+    ``probe_identity`` read ``other`` after a loop over an empty list, which
+    under ``set -u`` aborted every ``--zone`` run before its report (#431).
+    """
+
+    def _identity(self, title):
+        root = private_scratch(self, "edge-probe-identity.")
+        stub = root / "curl"
+        stub.write_text(
+            "#!/bin/sh\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  if [ \"$1\" = --output ]; then shift; out=\"$1\"; fi\n"
+            "  shift\n"
+            "done\n"
+            f"printf '<title>{title}</title><script src=\"/assets/index-a1.js\">' >\"$out\"\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o700)
+        program = (
+            ". '{script}'\n"
+            "WORKDIR='{work}'\n"
+            "mkdir -p \"$WORKDIR\"\n"
+            "RECORDS=\"$WORKDIR/records.tsv\"\n"
+            ": >\"$RECORDS\"\n"
+            "CURL='{curl}'\n"
+            "TIMEOUT=5\n"
+            "probe_identity 1 naranjo.online ''\n"
+            "cat \"$RECORDS\"\n"
+        ).format(script=SCRIPT, work=root / "work", curl=stub)
+        return subprocess.run(
+            [required_tool(BASH, BASH_REQUIRED), "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+
+    def test_one_zone_with_its_own_title_passes(self):
+        completed = self._identity("naranjo.online")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("unbound variable", completed.stderr)
+        self.assertRegex(completed.stdout, r"naranjo\.online\tsite-identity\tassert\tPASS")
+
+    def test_one_zone_with_a_foreign_title_is_still_a_gap(self):
+        completed = self._identity("lidersea.com")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertRegex(completed.stdout, r"naranjo\.online\tsite-identity\tassert\tGAP")
+
+
 if __name__ == "__main__":
     unittest.main()

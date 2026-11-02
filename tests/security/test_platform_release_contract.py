@@ -1327,33 +1327,26 @@ class SettingsReceiptTests(unittest.TestCase):
 
     def test_security_reporting_is_truthful_and_bound_to_the_live_setting(self):
         policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        tokens = (
+            "Private Vulnerability Reporting is enabled",
+            "Do not open a public issue",
+            "vulnerability detail",
+            "private-vulnerability-reporting`\nGET",
+            "reports `enabled: true`",
+            'Security tab →\n"Report a vulnerability"',
+        )
 
         def require_contract(text: str) -> None:
-            for token in (
-                "Private Vulnerability Reporting is currently disabled",
-                "does not presently claim a working\nprivate intake",
-                "detail-free public issue",
-                "withhold all sensitive details",
-                "private-vulnerability-reporting` GET",
-                "both report `enabled: true`",
-                'Security tab →\n"Report a vulnerability"',
-            ):
+            for token in tokens:
                 if token not in text:
                     raise ValueError(f"security reporting contract lost: {token}")
 
         require_contract(policy)
-        for token in (
-            "currently disabled",
-            "does not presently claim a working\nprivate intake",
-            "detail-free public issue",
-            "withhold all sensitive details",
-            "private-vulnerability-reporting` GET",
-            "both report `enabled: true`",
-        ):
+        for token in tokens:
             with self.subTest(deletion=token), self.assertRaises(ValueError):
                 require_contract(policy.replace(token, "", 1))
         with self.assertRaises(ValueError):
-            require_contract(policy.replace("currently disabled", "currently enabled", 1))
+            require_contract(policy.replace("is enabled", "is currently disabled", 1))
 
 
 class ImmutableMetadataTests(unittest.TestCase):
@@ -3315,7 +3308,7 @@ class GitTransitionTests(unittest.TestCase):
 class WorkflowStructureTests(unittest.TestCase):
     """Authority boundaries of the tip-only publisher workflow (issue #397)."""
 
-    APP_PIN = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0"
+    APP_PIN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0"
     ATTESTATION = (
         "needs.immutable-settings.outputs.attestation ==\n"
         "      format('PASS:{0}:{1}:{2}:{3}', github.repository, github.run_id,\n"

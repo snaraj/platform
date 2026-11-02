@@ -756,6 +756,7 @@ probe_identity() {
       'the apex does not serve its own identity'
     other=''
   else
+    other=''
     for other in ${others}; do
       if "${GREP}" -q -F -e "<title>$(site_title "${other}")</title>" "${out}"; then
         break
