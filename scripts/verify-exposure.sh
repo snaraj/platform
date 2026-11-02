@@ -146,7 +146,7 @@ assert_dns_hides_origin() {
 
 assert_unexpected_hostname_denied() {
   local edge_hostname="$1"
-  local body status
+  local body status lookup type
   # --connect-to reaches the already-approved Cloudflare edge while preserving
   # the unexpected Host and TLS identity. No DNS record for the negative name is
   # required, and the residential address is never used for this request.
@@ -156,7 +156,21 @@ assert_unexpected_hostname_denied() {
     die 'unexpected-hostname edge probe could not complete'
   status="${body##*$'\n'}"
   body="${body%$'\n'*}"
-  [[ "$status" =~ ^4[0-9][0-9]$ ]] || die "unexpected hostname was not denied with a 4xx response (HTTP ${status})"
+  if [[ "$status" == '530' ]] && grep -Fq 'error code: 1016' <<<"$body"; then
+    # The edge found no origin for the name. It answers 1016 for a stopped
+    # tunnel's name too, so this is a denial only while the name has no A or
+    # AAAA answer in public DNS (a CNAME or wildcard would be one). A signed
+    # zone answers a missing name with NOERROR and no data, not NXDOMAIN.
+    for type in A AAAA; do
+      lookup="$(dig "$type" "$UNEXPECTED_PUBLIC_HOSTNAME")" || die 'unexpected-hostname DNS lookup could not complete'
+      grep -Eq 'status: (NOERROR|NXDOMAIN),' <<<"$lookup" || die 'unexpected-hostname DNS lookup did not complete cleanly'
+      grep -Fq 'ANSWER: 0,' <<<"$lookup" || \
+        die "unexpected hostname answered 530/1016 but has a public ${type} answer, so it may be routed"
+    done
+  else
+    [[ "$status" =~ ^4[0-9][0-9]$ ]] || \
+      die "unexpected hostname was not denied with a 4xx, or a 530/1016 for a name absent from DNS (HTTP ${status})"
+  fi
   if grep -Eq '<title>(naranjo\.online|lidersea\.com|hospedajedonlolo\.com)</title>|data-static-fallback|Hello World!|<form id="booking">' <<<"$body" || \
     grep -Fq "<title>${HOSPEDAJEDONLOLO_TITLE}</title>" <<<"$body"; then
     die 'unexpected hostname received approved tenant content'
