@@ -139,16 +139,26 @@ class UnexpectedHostnameDenialTests(unittest.TestCase):
     """The edge's answer to an unapproved name must carry no tenant content.
 
     This drives the real assert_unexpected_hostname_denied, not the approved
-    identity check above: the edge answers the unexpected name with a 4xx
-    body, and each site's markers must be refused in that body on their own.
+    identity check above: the edge answers the unexpected name with a 4xx, or
+    a 530/1016 while the name has no DNS answer, and each site's markers must
+    be refused in that body on their own.
     """
 
-    def _deny(self, body, status="404"):
+    def _deny(self, body, status="404", dns="NXDOMAIN:0", dns6=None):
+        # The fake resolver answers "<status>:<answer count>", per type when
+        # $DNS6 is set for AAAA, in dig's own header lines.
         program = (
             ". '{script}' --help >/dev/null\n"
             "curl() {{ printf '%s\\n%s' \"$BODY\" \"$STATUS\"; }}\n"
+            "dig() {{\n"
+            "  [ \"$DNS\" != FAIL ] || return 9\n"
+            "  local v=\"$DNS\"; [ \"$1\" != AAAA ] || v=\"${{DNS6:-$DNS}}\"\n"
+            "  printf ';; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\\n"
+            ";; flags: qr rd ra; QUERY: 1, ANSWER: %s, AUTHORITY: 1, ADDITIONAL: 1\\n' \"${{v%:*}}\" \"${{v#*:}}\"\n"
+            "}}\n"
             "assert_unexpected_hostname_denied naranjo.online\n"
         ).format(script=SCRIPT)
+        extra = {} if dns6 is None else {"DNS6": dns6}
         return subprocess.run(
             [required_tool(BASH, "bash"), "-c", program],
             capture_output=True,
@@ -158,7 +168,9 @@ class UnexpectedHostnameDenialTests(unittest.TestCase):
                 "PATH": "/usr/bin:/bin",
                 "BODY": body,
                 "STATUS": status,
+                "DNS": dns,
                 "UNEXPECTED_PUBLIC_HOSTNAME": "probe.hospedajedonlolo.com",
+                **extra,
             },
         )
 
@@ -166,6 +178,31 @@ class UnexpectedHostnameDenialTests(unittest.TestCase):
         completed = self._deny("<html><body>not found</body></html>")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("PASS unexpected hostname denied", completed.stdout)
+
+    def test_the_edge_origin_dns_error_is_a_denial_only_for_a_name_absent_from_dns(self):
+        # The edge answers an unconfigured name with 530 and error code 1016
+        # (issue #441), and answers a stopped tunnel's routed name the same way.
+        edge = "<html>error code: 1016</html>"
+        # An unsigned zone answers NXDOMAIN; a signed zone answers NOERROR with no data.
+        for dns in ("NXDOMAIN:0", "NOERROR:0"):
+            with self.subTest(case="absent", dns=dns):
+                completed = self._deny(edge, status="530", dns=dns)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIn("PASS unexpected hostname denied", completed.stdout)
+        for label, body, status, dns, dns6 in (
+            ("an A answer (a record, CNAME or wildcard)", edge, "530", "NOERROR:1", None),
+            ("an AAAA answer only", edge, "530", "NOERROR:0", "NOERROR:1"),
+            ("the lookup failed", edge, "530", "SERVFAIL:0", None),
+            ("the lookup command failed", edge, "530", "FAIL", None),
+            ("a routed tunnel that is down", "<html>error code: 1033</html>", "530", "NXDOMAIN:0", None),
+            ("a 530 without the code", "<html></html>", "530", "NXDOMAIN:0", None),
+            ("the code under another status", edge, "502", "NXDOMAIN:0", None),
+            ("tenant content in the edge's answer", edge + "<title>naranjo.online</title>", "530", "NXDOMAIN:0", None),
+        ):
+            with self.subTest(case=label):
+                completed = self._deny(body, status=status, dns=dns, dns6=dns6)
+                self.assertNotEqual(completed.returncode, 0, label)
+                self.assertNotIn("PASS", completed.stdout)
 
     def test_a_served_page_is_not_a_denial(self):
         completed = self._deny("<html></html>", status="200")
