@@ -31,7 +31,8 @@ def own_body(site):
     """The root body a healthy site serves, as far as identity is concerned."""
     if site == "hospedajedonlolo.com":
         return '<title>{}</title> <form id="booking">'.format(TITLES[site])
-    return "<title>{}</title> data-static-fallback Hello World!".format(site)
+    # No page text: a site's content changes with every release (issue #438).
+    return "<title>{}</title> data-static-fallback".format(site)
 
 # A canned edge: every response a healthy site gives, with the root body taken
 # from $BODY so each test chooses what the apex serves.
@@ -103,6 +104,16 @@ class VerifyExposureInventoryTests(unittest.TestCase):
                     )
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn(other, completed.stderr)
+
+    def test_a_built_site_must_still_serve_its_application_fallback(self):
+        for site in ("naranjo.online", "lidersea.com"):
+            with self.subTest(site=site):
+                completed = self._run(
+                    "assert_site_identity '{}'".format(site),
+                    env="export BODY='<title>{}</title> Hello World!'\n".format(site),
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("lacks the built application fallback", completed.stderr)
 
     def test_the_delivered_page_is_held_to_its_own_markers(self):
         # The third site serves the owner's delivered page byte for byte, so it

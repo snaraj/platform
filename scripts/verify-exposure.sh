@@ -105,7 +105,6 @@ assert_site_identity() {
     grep -Fq '<form id="booking">' <<<"$body" || die "${hostname} lacks the delivered booking form"
   else
     grep -Fq 'data-static-fallback' <<<"$body" || die "${hostname} lacks the built application fallback"
-    grep -Fq 'Hello World!' <<<"$body" || die "${hostname} lacks the expected application content"
   fi
   grep -Fq "<title>$(site_title "$hostname")</title>" <<<"$body" || die "${hostname} did not return its exact tenant identity"
   for other_hostname in $APPROVED_HOSTNAMES; do
