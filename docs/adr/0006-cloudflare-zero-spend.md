@@ -92,3 +92,25 @@ byte for byte intact.
   withhold the film again, never to buy a fallback.
 - Rollback: a site release that withholds the film again, or selecting an
   earlier site release in snaraj/platform-k8s-infra.
+
+## Amendment (2026-11-02): a fourth Free zone
+
+A read of the account through Cloudflare's `cf` CLI on 2026-11-02, with the
+default (OAuth) login, shows a fourth domain zone, `sloptube.fun`. The owner
+delegated the decision on 2026-11-02, and the zone was kept, because deleting
+an owner-created zone cannot be undone. Prior lines are left byte for byte
+intact.
+
+- Facts read on 2026-11-02: the zone is active on the Free website plan at $0;
+  it was created on 2026-10-08; it has exactly one Universal certificate pack
+  and no paid pack. It is an owner project and is not served by this
+  platform.
+- The account boundary in the decision above is therefore four active domain
+  zones, each on the Free website plan.
+- The edge hardening targets apply to the three platform zones
+  (`naranjo.online`, `lidersea.com` and `hospedajedonlolo.com`) only. The
+  owner-run account audit holds `sloptube.fun` to the zero-spend checks: the
+  Free plan, a zero-priced subscription with no priced component, and
+  Universal certificate packs only.
+- The zero-spend boundary and every denied product above stay unchanged. No
+  product, plan, add-on or certificate is added.
