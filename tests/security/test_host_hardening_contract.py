@@ -93,11 +93,12 @@ class UnitSandboxing(unittest.TestCase):
         self.assertEqual(d.get("NoNewPrivileges"), ["yes"])
         self.assertEqual(d.get("ProtectSystem"), ["strict"])
 
-    def test_runtime_units_receive_only_safe_fences(self) -> None:
+    def test_no_runtime_or_kubelet_dropin(self) -> None:
         for unit in ("containerd", "kubelet"):
-            d = directives(f"systemd/{unit}.service.d/70-platform-sandbox.conf")
-            for forbidden in ("ProtectSystem", "NoNewPrivileges", "CapabilityBoundingSet", "RestrictNamespaces", "PrivateDevices", "SystemCallFilter"):
-                self.assertNotIn(forbidden, d, f"{forbidden} would break {unit}")
+            self.assertFalse((HARDENING / f"systemd/{unit}.service.d").exists(), f"systemd fences break pod creation under {unit}; ADR 0018")
+        units_line = re.search(r"^units=\((.*)\)$", read("apply-hardening.sh"), re.M)
+        assert units_line
+        self.assertEqual(units_line.group(1).split(), ["cloudflared", "ntpsec"])
 
     def test_no_sshd_service_dropin(self) -> None:
         self.assertFalse((HARDENING / "systemd/ssh.service.d").exists(), "sshd sandboxing is inherited by admin sessions; ADR 0018")
@@ -107,7 +108,10 @@ class UnitSandboxing(unittest.TestCase):
         self.assertIn("ListenStream=\n", text, "the first ListenStream= must reset the inherited list")
         self.assertIn("ListenStream=127.0.0.1:22", text)
         self.assertIn("ListenStream=@ADMIN_TARGET@:22", text)
-        self.assertNotRegex(text, r"ListenStream=(0\.0\.0\.0|\[::\]|\*):22")
+        self.assertNotRegex(text, r"ListenStream=(0\.0\.0\.0|\[::\]|\*)?:?22\s*$", "no wildcard or bare-port listener")
+        for line in text.splitlines():
+            if line.startswith("ListenStream=") and line != "ListenStream=":
+                self.assertRegex(line, r"^ListenStream=(127\.0\.0\.1|@ADMIN_TARGET@):22$", line)
 
 
 class EgressAllowlist(unittest.TestCase):
@@ -117,8 +121,10 @@ class EgressAllowlist(unittest.TestCase):
     def code(text: str) -> list[str]:
         return [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
 
-    def test_flushes_only_itself(self) -> None:
-        self.assertFalse(any("flush" in ln for ln in self.code(read(self.TEMPLATE))), "only apply-hardening may flush, and only this table")
+    def test_flushes_only_its_own_table(self) -> None:
+        flushes = [ln for ln in self.code(read(self.TEMPLATE)) if "flush" in ln]
+        self.assertEqual(flushes, ["flush table inet platform_egress"], "a reload empties this table and nothing else")
+        self.assertIn("add table inet platform_egress", self.code(read(self.TEMPLATE)))
 
     def test_output_hook_ends_in_logged_drop(self) -> None:
         text = read(self.TEMPLATE)
@@ -139,6 +145,11 @@ class EgressAllowlist(unittest.TestCase):
                     s.startswith(("oif lo", "ct state", "udp sport 68", "meta l4proto", "meta skuid", "@VPN_TRANSPORT@", "@CLUSTER_CIDRS@")),
                     f"unqualified accept: {s}",
                 )
+
+    def test_no_protocol_wide_or_new_state_accept(self) -> None:
+        for s in self.code(read(self.TEMPLATE)):
+            self.assertNotRegex(s, r"^meta l4proto (tcp|udp) accept", s)
+            self.assertNotRegex(s, r"^ct state [a-z,]*new", s)
 
     def test_every_service_rule_is_uid_and_port_bound(self) -> None:
         for line in read(self.TEMPLATE).splitlines():
@@ -187,9 +198,10 @@ class Scripts(unittest.TestCase):
 
     def test_lockout_components_arm_a_revert(self) -> None:
         text = read("apply-hardening.sh")
-        for comp in ("egress", "sshd-listen"):
-            self.assertRegex(text, rf"arm_revert {comp} 600", f"{comp} must arm a 10-minute revert")
+        for comp in ("egress", "sshd-listen", "units"):
+            self.assertRegex(text, rf"arm_revert {comp} 600 ", f"{comp} must arm exactly a 10-minute revert")
         self.assertIn("disarm_revert egress", text)
+        self.assertIn("systemctl stop platform-revert-units.timer", text, "the transient unit cancels its own revert on success")
 
     def test_egress_probe_is_not_vacuous(self) -> None:
         text = read("verify-hardening.sh")
@@ -205,7 +217,7 @@ class Scripts(unittest.TestCase):
     def test_cmdline_is_staged_not_activated(self) -> None:
         code = [ln for ln in read("apply-hardening.sh").splitlines() if ln.strip() and not ln.strip().startswith("#")]
         for ln in code:
-            self.assertNotRegex(ln, r"(^|[;&|]\s*|\$\()\s*(systemctl\s+)?(reboot|shutdown|kexec|poweroff)\b", "the owner reboots")
+            self.assertNotRegex(ln, r"(^|[;&|]\s*|\$\()\s*((/usr)?/sbin/|systemctl\s+)?(reboot|shutdown|kexec|poweroff)\b", "the owner reboots")
 
     def test_remover_protects_the_network_stack(self) -> None:
         text = read("remove-unneeded-surfaces.sh")
@@ -233,6 +245,26 @@ class Scripts(unittest.TestCase):
             input=sample, capture_output=True, text=True, check=True,
         ).stdout
         self.assertEqual(out, "host <ip4> via <ip6> mac <mac> mail <email>\n")
+
+    def test_manifest_redacts_adjacent_addresses(self) -> None:
+        sample = "DNS Servers: 192.0.2.1 192.0.2.2 192.0.2.3 2001:db8::1 2001:db8::2\nlink aa:bb:cc:dd:ee:ff aa:bb:cc:dd:ee:00\n"
+        script = "source <(sed -n '/^redact() {/,/^}/p' \"$1\"); redact"
+        out = subprocess.run(["bash", "-c", script, "_", str(HARDENING / "host-manifest.sh")], input=sample, capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out, "DNS Servers: <ip4> <ip4> <ip4> <ip6> <ip6>\nlink <mac> <mac>\n")
+
+    def test_revert_is_per_component_and_honest(self) -> None:
+        lib = read("lib.sh")
+        self.assertIn('backup_dir="${state_root}/$1/${backup_stamp}"', lib)
+        self.assertIn('latest_backup() { find "${state_root}/$1"', lib)
+        apply = read("apply-hardening.sh")
+        self.assertIn('from="$(latest_backup "${comp}")"', apply)
+        self.assertIn('result "REVERT_${comp^^}" INCOMPLETE', apply)
+
+    def test_egress_render_refuses_empty_cidrs_and_never_seds_newlines(self) -> None:
+        text = read("apply-hardening.sh")
+        body = text[text.index("render_egress() {") : text.index("\n}\n", text.index("render_egress() {"))]
+        self.assertIn('[[ -n "${CLUSTER_CIDRS}" ]] ||', body)
+        self.assertNotIn("sed ", body, "placeholders expand line by line, never through a stream editor")
 
     def test_manifest_never_copies_key_material(self) -> None:
         text = read("host-manifest.sh")

@@ -23,10 +23,13 @@ kubeconfig=/etc/kubernetes/admin.conf
 # redact: IPv4, global/link IPv6, MAC addresses and e-mail-shaped tokens.
 # Applied only to network-shaped surfaces; package versions are left alone.
 redact() {
+  # Each address expression loops (label, substitute, branch-if-substituted)
+  # because the delimiter it consumes would otherwise leave every second
+  # address of a run untouched.
   sed -E \
-    -e 's/(^|[^0-9.])(([0-9]{1,3}\.){3}[0-9]{1,3})([^0-9.]|$)/\1<ip4>\4/g' \
-    -e 's/(^|[^0-9a-fA-F:])([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}([^0-9a-fA-F:]|$)/\1<mac>\3/g' \
-    -e 's/(^|[^0-9a-fA-F:])(fe80|fd[0-9a-fA-F]{2}|2[0-9a-fA-F]{3}):[0-9a-fA-F:]+(%[a-z0-9]+)?/\1<ip6>/g' \
+    -e ':a' -e 's/(^|[^0-9.])(([0-9]{1,3}\.){3}[0-9]{1,3})([^0-9.]|$)/\1<ip4>\4/' -e 'ta' \
+    -e ':b' -e 's/(^|[^0-9a-fA-F:])([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}([^0-9a-fA-F:]|$)/\1<mac>\3/' -e 'tb' \
+    -e ':c' -e 's/(^|[^0-9a-fA-F:<])(fe80|fd[0-9a-fA-F]{2}|2[0-9a-fA-F]{3}):[0-9a-fA-F:]+(%[a-z0-9]+)?/\1<ip6>/' -e 'tc' \
     -e 's/\[::\]/<ip6any>/g' \
     -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g'
 }

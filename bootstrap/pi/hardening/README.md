@@ -26,12 +26,15 @@ prove each of those from live state rather than from the files on disk.
 - Outbound becomes a per-service allowlist on the output hook: the connector,
   the apt user, the time daemon, the stub resolver and root image pulls, each
   to the ports they need. Everything else is logged and dropped. The table is
-  evaluated before the distribution firewall and flushes only itself.
+  evaluated before the distribution firewall; a reload empties and redeclares
+  only this table.
 - The kernel runs in `lockdown=integrity` with signed modules enforced, and
   the allocator and stack hardening the brief names; those take effect at the
   owner's reboot and the verifier says `PENDING_REBOOT` until then.
-- Long-running daemons that can be fenced are fenced; sshd is deliberately not,
-  because its children are the administrator's own session.
+- The connector and the time daemon are fenced. sshd is deliberately not,
+  because its children are the administrator's own session; the container
+  runtime and kubelet are not either, because systemd's mount, hostname and
+  kernel-log fences break pod creation (ADR 0018).
 - The journal is sealed; the verification key leaves with the operator.
 - Reboots stay with the owner: unattended upgrades are security-only, never
   reboot, and `needrestart` reports what a reboot would clear.

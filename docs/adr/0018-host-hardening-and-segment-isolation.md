@@ -25,9 +25,9 @@ Two facts decided the design. First, `ssh` from the laptop already rides the
 WARP interface to the local tunnel connector, which dials sshd on an address
 bound to loopback; the only firewall rule admitting port 22 accepts
 connections originated by the connector's uid. The host therefore needs no
-inbound LAN access at all. Second, the home gateway is an ISP-supplied
-Technicolor unit (firmware line 19.4), a class that rarely offers VLANs; its
-real capabilities must be read from its own admin pages.
+inbound LAN access at all. Second, the home gateway is an ISP-supplied unit of a class that rarely
+offers VLANs (vendor and firmware line are recorded in the laptop-only
+operator notes); its real capabilities must be read from its own admin pages.
 
 ## Decision
 
@@ -40,18 +40,28 @@ real capabilities must be read from its own admin pages.
    refuses if a protected package would leave.
 3. **Per-service egress allowlist** as `table inet platform_egress` on the
    output hook at priority -10, keyed on socket uid, with a logged drop.
-   It flushes only itself and coexists with the distribution firewall, the
-   CNI and the VPN. It is independent of whether the VPN stays.
+   A reload creates the table if absent and empties only that table before
+   declaring its rules again, so it coexists with the distribution firewall,
+   the CNI and the VPN and never duplicates rules. It is independent of
+   whether the VPN stays.
 4. **Kernel** `lockdown=integrity module.sig_enforce=1 init_on_alloc=1
    init_on_free=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on`
    staged in the boot command line, plus the sysctl set in
    `sysctl/99-zz-platform-kernel-hardening.conf`. Effective at the owner's reboot.
 5. **Unit sandboxing** for the connector and the time daemon to the limit each
-   tolerates; the container runtime and kubelet receive only the fences that
-   cost them nothing. **sshd is not sandboxed**: systemd sandboxing is
-   inherited by every child, and sshd's children are the administrator's
-   session (`NoNewPrivileges` alone would break `sudo`). OpenSSH's own
-   privilege separation and seccomp remain its defense.
+   tolerates. **The container runtime and kubelet are not sandboxed**: even
+   the fences that look free are not. `ProtectHome` and `ProtectKernelLogs`
+   put the unit in a mount namespace with slave propagation, so kubelet's
+   pod volumes never reach the runtime; `ProtectHostname` installs a seccomp
+   filter on `sethostname` that every shim and container inherits, so no
+   sandbox can start; `ProtectKernelLogs` hides `/dev/kmsg`, which kubelet's
+   OOM watcher needs at start-up. The first cut of this change shipped such
+   drop-ins and the adversarial review caught it before any restart; the
+   test suite now forbids any drop-in for those two units. **sshd is not
+   sandboxed**: systemd sandboxing is inherited by every child, and sshd's
+   children are the administrator's session (`NoNewPrivileges` alone would
+   break `sudo`). OpenSSH's own privilege separation and seccomp remain its
+   defense.
 6. **sshd listens on loopback and the admin target only**; the wildcard
    listener goes.
 7. **IPv6 disabled on the uplink connection** at the network manager, not
@@ -85,6 +95,9 @@ real capabilities must be read from its own admin pages.
     take them from the distribution that maintains them.
 - **Pi 5 signed boot** is one-time programmable and irreversible. Described,
   not enabled.
+- **Compilers and build tools stay.** The owner declared this host the
+  development environment; removing the toolchain is a separate decision,
+  listed below, not a hardening default.
 
 ## Network segment isolation (proposed; owner decisions)
 
@@ -137,14 +150,15 @@ laptop still completes `ssh` and its route still shows the WARP interface.
    point release; it delivers the memory-safe defaults above from the
    distribution and retires the pending raspi kernel gap.
 4. Reboot to activate the staged kernel command line.
-6. The September validation loop mount and its LAN-bound TLS socket: the
+5. The September validation loop mount and its LAN-bound TLS socket: the
    live sync service does not use them (its volumes sit on the root
    filesystem), but the mount holds a dataset, so deleting it is a data
    decision. The remover leaves both alone until the owner names them in
    the env file.
-5. Enrolled devices: two today (a laptop and a phone). The commission names the
-   laptop and a future Windows PC; whether the phone stays enrolled is the
-   owner's.
+6. Enrolled devices: two today. The commission names the laptop and a future
+   Windows PC; whether the second device stays enrolled is the owner's.
+7. Remove the compilers and build tools, or keep the host a development
+   environment.
 
 ## Consequences
 

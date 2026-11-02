@@ -37,9 +37,12 @@ connector and kubelet are still up.
 ## 3. Apply, one component at a time
 
 ```sh
-for c in sysctl units journald auditd apt needrestart debsums; do
+for c in sysctl journald auditd apt needrestart debsums; do
   apply-hardening.sh plan "$c" && apply-hardening.sh apply "$c"
 done
+apply-hardening.sh apply units         # restarts the connector from a transient
+                                       # unit: the session riding it ends; the
+                                       # unit keeps or reverts on its own
 apply-hardening.sh apply egress        # armed with a 10-minute revert
 apply-hardening.sh apply sshd-listen   # armed with a 10-minute revert
 apply-hardening.sh apply ipv6
@@ -48,8 +51,11 @@ apply-hardening.sh apply cmdline       # staged; the owner reboots
 verify-hardening.sh all
 ```
 
-`egress` and `sshd-listen` schedule an automatic revert with `systemd-run`
-before they change anything. If the verifier passes the timer is cancelled
+`units`, `egress` and `sshd-listen` schedule an automatic revert with
+`systemd-run` before they change anything. Run anything that restarts the
+connector, sshd or the uplink detached (`setsid nohup … &`) and expect to
+lose the session; verify from outside afterwards (tunnel health, SSH banner
+through the private route). If the verifier passes the timer is cancelled
 and the change is persisted; if it fails, or the session is lost, the host
 reverts itself.
 
@@ -74,8 +80,10 @@ diff -r "$JOB/before/manifest" "$JOB/after/manifest"
 apply-hardening.sh revert <component>   # restores from the newest backup
 ```
 
-Backups live under `/var/backups/platform-hardening/<timestamp>/`. A plain
-`git revert` of this directory changes nothing on a host; revert on the host.
+Backups live under `/var/backups/platform-hardening/<component>/<timestamp>/`
+and revert restores from the newest backup of that component only, reporting
+`INCOMPLETE` when the backup holds nothing for a path. A plain `git revert`
+of this directory changes nothing on a host; revert on the host.
 
 ## Kernel command line
 

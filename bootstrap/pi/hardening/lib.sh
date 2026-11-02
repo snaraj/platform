@@ -7,8 +7,11 @@
 hardening_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 env_file=/etc/platform-hardening/hardening.env
 state_root=/var/backups/platform-hardening
-# One backup directory per invocation; --revert uses the newest.
-backup_dir="${state_root}/$(date -u +%Y%m%dT%H%M%SZ)"
+# One backup directory per component per invocation; revert uses the newest
+# backup OF THAT COMPONENT, never another component's.
+backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir=''
+set_component() { backup_dir="${state_root}/$1/${backup_stamp}"; }
 
 require_root() { [[ "${EUID}" -eq 0 ]] || { printf 'run as root\n' >&2; exit 2; }; }
 
@@ -57,15 +60,19 @@ install_file() {
   install -D -m "$mode" "$src" "$dst"
 }
 
-# restore_path FILE FROM: put FILE back as it was in backup dir FROM.
+# restore_path FILE FROM: put FILE back as it was in backup dir FROM. Returns
+# non-zero when the backup holds nothing about FILE, so a caller never
+# reports a restore that did not happen. Content and mode are restored; the
+# owner is left to the target filesystem (the boot partition is vfat).
 restore_path() {
   local f="$1" from="$2"
-  if [[ -e "${from}${f}.absent" ]]; then rm -f "$f"
-  elif [[ -e "${from}${f}" ]]; then cp -a "${from}${f}" "$f"
-  fi
+  if [[ -e "${from}${f}.absent" ]]; then rm -f "$f"; return 0; fi
+  [[ -e "${from}${f}" ]] || return 1
+  cp "${from}${f}" "$f" && chmod --reference="${from}${f}" "$f" 2>/dev/null || true
 }
 
-latest_backup() { find "${state_root}" -mindepth 1 -maxdepth 1 -type d -name '*Z' 2>/dev/null | sort | tail -1; }
+# latest_backup COMPONENT: newest backup directory of that component, or empty.
+latest_backup() { find "${state_root}/$1" -mindepth 1 -maxdepth 1 -type d -name '*Z' 2>/dev/null | sort | tail -1; }
 
 # arm_revert NAME SECONDS COMMAND...: schedule an automatic revert; disarm_revert cancels it.
 arm_revert() {

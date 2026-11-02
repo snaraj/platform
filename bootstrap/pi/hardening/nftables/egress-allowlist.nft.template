@@ -5,8 +5,12 @@
 # "anything may leave through the uplink or VPN" rule, by naming which local
 # user may open which outbound port. Everything else is logged and dropped.
 #
-# Only this table is flushed on reload. Never `flush ruleset` here: the CNI,
-# the distribution firewall and the VPN own their own tables.
+# Reloads are idempotent: the table is created if absent and emptied before
+# its rules are declared again, so a reload never duplicates rules. Only this
+# table is touched. Never `flush ruleset` here: the CNI, the distribution
+# firewall and the VPN own their own tables.
+add table inet platform_egress
+flush table inet platform_egress
 table inet platform_egress {
   chain output {
     type filter hook output priority -10; policy accept;
