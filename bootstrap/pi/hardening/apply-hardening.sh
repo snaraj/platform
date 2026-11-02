@@ -73,6 +73,8 @@ apply() {
   case "$comp" in
     sysctl)
       install_file "${hardening_root}/sysctl/99-zz-platform-kernel-hardening.conf" "${sysctl_dst}" 0644
+      install_file "${hardening_root}/systemd/platform-sysctl-reapply.service" /etc/systemd/system/platform-sysctl-reapply.service 0644
+      systemctl daemon-reload; systemctl enable platform-sysctl-reapply.service >/dev/null 2>&1
       sysctl --system >/dev/null ;;
     units)
       # Arm first: if arming fails nothing is staged without a health check.
@@ -175,7 +177,7 @@ revert() {
   from="$(latest_backup "${comp}")"; [[ -n "${from}" ]] || { printf 'no backup of %s to revert from\n' "${comp}" >&2; exit 2; }
   local restored=1
   case "$comp" in
-    sysctl)   restore_path "${sysctl_dst}" "${from}" || restored=0; sysctl --system >/dev/null ;;
+    sysctl)   systemctl disable platform-sysctl-reapply.service >/dev/null 2>&1 || true; restore_path "${sysctl_dst}" "${from}" || restored=0; restore_path /etc/systemd/system/platform-sysctl-reapply.service "${from}" || restored=0; systemctl daemon-reload; sysctl --system >/dev/null ;;
     units)    for u in "${units[@]}"; do restore_path "/etc/systemd/system/${u}.service.d/70-platform-sandbox.conf" "${from}" || restored=0; done; systemctl daemon-reload; systemctl restart ntpsec.service cloudflared.service ;;
     journald) restore_path /etc/systemd/journald.conf.d/70-platform-seal.conf "${from}" || restored=0; systemctl restart systemd-journald ;;
     auditd)   restore_path /etc/audit/rules.d/platform.rules "${from}" || restored=0; augenrules --load >/dev/null 2>&1 || true ;;

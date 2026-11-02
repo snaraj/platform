@@ -169,8 +169,17 @@ class EgressAllowlist(unittest.TestCase):
     def test_time_rules_cover_root_owned_sockets(self) -> None:
         body = self.code(read(self.TEMPLATE))
         for owner in ("root", "ntpsec"):
-            self.assertIn(f'meta skuid "{owner}" udp dport 123 accept', body, "ntpd binds before dropping privileges")
+            self.assertIn(f'meta skuid "{owner}" udp dport {{ 123, 4123 }} accept', body, "ntpd binds before dropping privileges; NTS servers also serve on 4123")
             self.assertIn(f'meta skuid "{owner}" tcp dport 4460 accept', body)
+
+    def test_sysctl_is_reapplied_after_network(self) -> None:
+        d = directives("systemd/platform-sysctl-reapply.service")
+        self.assertEqual(d.get("ExecStart"), ["/usr/sbin/sysctl --system"])
+        self.assertIn("network-online.target", d["After"][0])
+        self.assertIn("kubelet.service", d["After"][0])
+        apply = read("apply-hardening.sh")
+        self.assertIn("systemctl enable platform-sysctl-reapply.service", apply)
+        self.assertIn("platform-sysctl-reapply.service", read("verify-hardening.sh"))
 
     def test_every_service_rule_is_uid_and_port_bound(self) -> None:
         for line in read(self.TEMPLATE).splitlines():
