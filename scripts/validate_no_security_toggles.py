@@ -53,6 +53,13 @@ TOGGLE_PATTERNS = (
 # a line containing the fragment is exempt for that file only.
 ALLOWLIST = (
     (
+        "bootstrap/pi/hardening/baseline-run.sh",
+        '--skip-dirs "${skip}"',
+        "the rootfs scan excludes pseudo-filesystems, container state (scanned "
+        "through the images) and user data; the list is a named variable so the "
+        "exclusion is reviewable in one place",
+    ),
+    (
         ".github/workflows/pull-request.yml",
         "--skip-dirs ./tests/kubernetes/fixtures/deny",
         "trivy must not scan deliberate DENY fixtures as findings",
