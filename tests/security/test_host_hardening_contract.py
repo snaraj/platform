@@ -174,7 +174,8 @@ class EgressAllowlist(unittest.TestCase):
 
     def test_sysctl_is_reapplied_after_network(self) -> None:
         d = directives("systemd/platform-sysctl-reapply.service")
-        self.assertEqual(d.get("ExecStart"), ["/usr/sbin/sysctl --system"])
+        self.assertEqual(d.get("ExecStart"), ["/usr/sbin/sysctl -p /etc/sysctl.d/99-zz-platform-kernel-hardening.conf"], "only our file: the distribution's keys need capabilities a reduced set lacks")
+        self.assertNotIn("CapabilityBoundingSet", d, "ptrace_scope needs CAP_SYS_PTRACE")
         self.assertIn("network-online.target", d["After"][0])
         self.assertIn("kubelet.service", d["After"][0])
         apply = read("apply-hardening.sh")
