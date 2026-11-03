@@ -63,11 +63,12 @@ readonly TUNNEL_C='hospedajedonlolo-com'
 readonly ORIGIN_A='http://naranjo-online.naranjo-online.svc.cluster.local:8080'
 readonly ORIGIN_B='http://lidersea-com.lidersea-com.svc.cluster.local:8080'
 readonly ORIGIN_C='http://hospedajedonlolo-com.hospedajedonlolo-com.svc.cluster.local:8080'
-# naranjo.online is signed; lidersea.com stays unsigned until the owner's
-# signing ceremony, so "disabled" is its expected DNSSEC state today. If the
-# ceremony happens, this expectation moves in the same reviewed change.
+# All three zones are signed. The owner enabled DNSSEC on lidersea.com on
+# 2026-11-02 (issue #154). Cloudflare's own registrar publishes the DS record,
+# and until it appears the zone reads "pending", which this audit reports as a
+# finding rather than a pass.
 readonly DNSSEC_A='active'
-readonly DNSSEC_B='disabled'
+readonly DNSSEC_B='active'
 readonly DNSSEC_C='active'
 
 # grep is resolved absolutely and every pattern is passed with -e: an
