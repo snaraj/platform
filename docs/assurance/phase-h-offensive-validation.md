@@ -100,7 +100,7 @@ H proves it adversarially with a canary "attacker" pod.
 | Inactive-service surface | bitcoind inactive+disabled, electrs absent, tor/cups posture reviewed; nothing extra listening | PLAT-HOST-002 | live (sentinel already tracks the listener set) |
 | CIS benchmark | kube-bench passes the applicable controls | PLAT-HOST-001 | live |
 
-## The admin-plane scope decision (RESOLVED: PLAT-DEC-001 is decided SSH-only)
+## The admin-plane scope decision (PLAT-DEC-001, superseded 2026-11-02)
 
 Should the WireGuard admin plane be able to reach the **cluster API (6443)**,
 or only **host SSH**?
@@ -114,13 +114,20 @@ or only **host SSH**?
   `kubectl` works directly from the laptop. Wider surface; a compromised peer
   key reaches the API's authn/authz boundary directly.
 
-Decision: **SSH-only is decided** as **PLAT-DEC-001** and is now enforced,
-not merely encoded as an expectation: the attack-surface manifest requires
-`admin-peer -> kubernetes-api = denied`, and the merged host-ingress guard
-(`scripts/validate_ingress_guard.py`, `bootstrap/pi/ingress-guard/`) renders
-and verifies the fail-closed nftables denial of 2379/2380/6443/10250 from
-the admin VPN. See `phase-h-ssh-only-ingress-guard.md` for the guard's
-contract and evidence.
+Decision: **SSH-only** was decided as **PLAT-DEC-001**. The attack-surface
+manifest requires `admin-peer -> kubernetes-api = denied`, and an
+in-repository host-ingress guard (an nftables installer with its validators,
+`make check-ingress-guard` and safety invariant 16) was built to enforce the
+denial of 2379/2380/6443/10250 from the admin VPN. Its live apply was held,
+and its unit is not installed on the host (issue #36).
+
+**Superseded by owner decision, 2026-11-02** (issues #36 and #261): the
+in-repository guard is abandoned and its installer, validators, tests, CI
+steps, make target and safety invariant 16 are deleted. Administration stays
+SSH to the host with `kubectl` run there. The host enforces its own posture:
+the host firewall, the VPN kill switch and the ADR 0018 baseline. The
+attack-surface manifest keeps the admin peer's denial toward the cluster API
+as the portable statement of that expectation.
 
 ## Executable artifact (now): the attack-surface manifest
 
@@ -151,7 +158,7 @@ validator, matching the program's contract-now / live-later pattern.
 
 | ID | Type | Item | Disposition |
 | --- | --- | --- | --- |
-| PLAT-DEC-001 | decision | Admin plane: SSH-only vs API-over-VPN | decided SSH-only; manifest requires the denial and the merged ingress guard enforces it |
+| PLAT-DEC-001 | decision | Admin plane: SSH-only vs API-over-VPN | superseded 2026-11-02 by owner decision: in-repository guard deleted; the host enforces its posture (host firewall, VPN kill switch, ADR 0018); manifest still requires the denial |
 | PLAT-OFF-001 | finding-candidate | Passwordless sudo scope for automation | confirm scoped/justified during live host review |
 | PLAT-OFF-002 | gap | Kill-switch fail-closed behavior unproven until a bounded live leak test | post-stable, owner-authorized |
 | PLAT-DEC-002 | decision | External-vantage test scheduling (hotspot) | owner-scheduled (~1 month parked) |

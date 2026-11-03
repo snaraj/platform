@@ -264,10 +264,11 @@ main() {
   local kubeadm_binary="${artifact_dir}/kubeadm"
   local kubelet_binary="${artifact_dir}/kubelet"
   local kubectl_binary="${artifact_dir}/kubectl"
-  local guard_dropin_source="${repo_root}/bootstrap/pi/ingress-guard/systemd/kubelet.service.d/50-website-infrastructure-ingress-guard.conf"
-  local guard_dropin_target='/etc/systemd/system/kubelet.service.d/50-website-infrastructure-ingress-guard.conf'
   local staged_artifacts staged_containerd_archive staged_cni_archive staged_crictl_archive staged_payload
-  local path name index directory fragment_path dropin_paths dropin_entries guard_dropin_hash
+  local path name index directory probe existing
+  # Root of the drop-in absence probe below: empty on a host. The partial-init
+  # matrix slices the gate and points it at a temporary unit tree instead.
+  local unit_root=''
   local -a extracted_containerd_files=()
   local -a extracted_cni_files=()
   local -a required_containerd=(containerd containerd-shim-runc-v2 ctr)
@@ -403,40 +404,44 @@ main() {
   for path in "${target_destinations[@]}"; do
     assert_target_vacant "${path}"
   done
-  # PLAT-DEC-001 installs the SSH-only ingress guard BEFORE this runtime
-  # installation, and the guard ships exactly one additive kubelet drop-in
-  # (Requires=/After= on the guard unit) that therefore legitimately exists
-  # before kubelet.service itself does. Only that state is tolerated here,
-  # and only when it is byte-identical to the tracked source under root-owned
-  # 0644 custody with nothing else beside it. Any kubelet unit file anywhere
-  # in the systemd search path, any other drop-in, any activation state, and
-  # any containerd.service state at all still refuses fail-closed, so the
-  # gate keeps rejecting foreign runtime state without breaking the
-  # sanctioned guard-then-runtime install ordering.
+  # A fresh host is the only runtime-install target. systemctl refuses an
+  # active, enabled or fragment-backed unit. Drop-ins need a filesystem probe:
+  # manager-backed systemd reports a unit without a fragment as not found, so
+  # `systemctl cat` never sees an orphan <unit>.d override that the fragment
+  # installed below would activate. Absence is proven in every system unit
+  # search directory (systemd.unit(5), merged /usr). Any <unit>.d entry
+  # refuses, even an empty directory, and so does a directory that cannot be
+  # read or searched, because absence is then unproven. The type-wide
+  # service.d/ directories are deliberate policy for every service (the host
+  # hardening may rely on them) and are not inspected.
   for name in containerd.service kubelet.service; do
     if systemctl is-active --quiet "${name}" 2>/dev/null \
-      || systemctl is-enabled --quiet "${name}" 2>/dev/null; then
+      || systemctl is-enabled --quiet "${name}" 2>/dev/null \
+      || systemctl cat "${name}" >/dev/null 2>&1; then
       die "refusing to replace or alter existing systemd service state: ${name}"
     fi
-    systemctl cat "${name}" >/dev/null 2>&1 || continue
-    [[ "${name}" == kubelet.service ]] || \
-      die "refusing to replace or alter existing systemd service state: ${name}"
-    fragment_path="$(systemctl show -p FragmentPath --value kubelet.service 2>/dev/null)" || \
-      die 'refusing to replace or alter existing systemd service state: kubelet.service'
-    dropin_paths="$(systemctl show -p DropInPaths --value kubelet.service 2>/dev/null)" || \
-      die 'refusing to replace or alter existing systemd service state: kubelet.service'
-    [[ -z "${fragment_path}" && "${dropin_paths}" == "${guard_dropin_target}" ]] || \
-      die 'refusing to replace or alter existing systemd service state: kubelet.service'
-    dropin_entries="$(find "${guard_dropin_target%/*}" -mindepth 1 -maxdepth 1 -print 2>/dev/null | sort)" || \
-      die 'cannot enumerate the kubelet drop-in directory'
-    [[ "${dropin_entries}" == "${guard_dropin_target}" ]] || \
-      die 'unexpected content beside the tracked ingress-guard kubelet drop-in'
-    [[ "$(stat -c '%u:%g:%a' "${guard_dropin_target}" 2>/dev/null)" == '0:0:644' ]] || \
-      die 'ingress-guard kubelet drop-in custody is not root-owned mode 0644'
-    guard_dropin_hash="$(sha256sum -- "${guard_dropin_source}" | awk '{print $1}')" && \
-      [[ "${guard_dropin_hash}" =~ ^[0-9a-f]{64}$ ]] || \
-      die 'cannot hash the tracked ingress-guard kubelet drop-in source'
-    check_sha "${guard_dropin_hash}" "${guard_dropin_target}"
+    for directory in /etc/systemd/system.control /run/systemd/system.control \
+      /run/systemd/transient /run/systemd/generator.early /etc/systemd/system \
+      /etc/systemd/system.attached /run/systemd/system /run/systemd/system.attached \
+      /run/systemd/generator /usr/local/lib/systemd/system /usr/lib/systemd/system \
+      /lib/systemd/system /run/systemd/generator.late; do
+      # Walk up to the nearest existing path; a missing search directory is
+      # proven absent only when that ancestor is a searchable directory.
+      probe="${directory}"
+      until [[ -z "${probe}" || -e "${unit_root}${probe}" || -L "${unit_root}${probe}" ]]; do
+        probe="${probe%/*}"
+      done
+      existing="${unit_root}${probe:-/}"
+      if [[ "${probe}" == "${directory}" ]]; then
+        [[ -d "${existing}" && -r "${existing}" && -x "${existing}" ]] || \
+          die "cannot establish drop-in absence for ${name} in ${directory}"
+        [[ ! -e "${existing}/${name}.d" && ! -L "${existing}/${name}.d" ]] || \
+          die "refusing to install beneath an existing drop-in directory: ${directory}/${name}.d"
+      else
+        [[ -d "${existing}" && -x "${existing}" ]] || \
+          die "cannot establish drop-in absence for ${name} in ${directory}"
+      fi
+    done
   done
 
   # Artifact staging and collision checks can consume most of the runtime

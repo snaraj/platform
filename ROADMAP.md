@@ -36,10 +36,9 @@ The Kubernetes cluster on the production hardware is installed and stable.
 ### Phase 2 — Admin plane hardened
 
 **Exit criteria:**
-- SSH-only host-ingress guard live-proven on the host (triple-gated apply).
+- Host posture enforced and live-verified on the host itself (ADR 0018).
 - Cloudflare Tunnel + Access admin plane provisioned and proven from an
   external vantage point.
-- WireGuard retired.
 
 ### Phase 3 — Repo production-readiness *(all three repos)*
 
@@ -67,7 +66,6 @@ The Kubernetes cluster on the production hardware is installed and stable.
 | Area | Phase | Status |
 | --- | --- | --- |
 | Platform runtime | 1 | Install failed and recovering; no stable signal yet |
-| Ingress guard | 2 | Merged ([#30](https://github.com/snaraj/website-infrastructure/pull/30)); live apply held |
 | Cloudflare admin plane | 2 | Decided ($0 design complete); provisioning pending, external proof outstanding |
 | Repo production-readiness | 3 | Coverage as measured in `docs/badges/coverage.json` → target ≥85% |
 | Deploy & cutover | 4 | Not started (blocked on Phases 1–3) |

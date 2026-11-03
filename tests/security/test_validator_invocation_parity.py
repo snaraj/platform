@@ -59,18 +59,6 @@ CI_ONLY = {
         "scripts/render-manifests.sh",
         "scripts/validate_release_transition.py",
     ),
-    "validate_ingress_guard.py": (
-        "runs locally through the dedicated ingress-guard lane that "
-        "'make check' includes",
-        "Makefile",
-        "validate_ingress_guard.py repo",
-    ),
-    "validate_admin_ingress_contract.py": (
-        "runs locally through the dedicated ingress-guard lane that "
-        "'make check' includes",
-        "Makefile",
-        "validate_admin_ingress_contract.py EXAMPLE",
-    ),
 }
 
 
@@ -139,9 +127,11 @@ class ValidatorInvocationParityTests(unittest.TestCase):
 
     def test_each_surface_parse_finds_its_known_floor(self):
         # A regex that silently stops matching would make every subset
-        # assertion below pass vacuously; pin each surface's minimum.
+        # assertion below pass vacuously; pin each surface's minimum. The CI
+        # floor is the exact inline count after two host-ingress validators
+        # were retired (issue #261).
         self.assertGreaterEqual(len(self.local), 4, sorted(self.local))
-        self.assertGreaterEqual(len(self.ci), 8, sorted(self.ci))
+        self.assertGreaterEqual(len(self.ci), 6, sorted(self.ci))
 
     def test_every_local_validator_also_runs_in_ci(self):
         missing = self.local - self.ci

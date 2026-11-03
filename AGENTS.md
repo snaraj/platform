@@ -69,12 +69,6 @@ the owner. In order:
     exact units, roots, identities, contents, and recovery evidence stay in the
     ignored local contract. Reactivation requires a new ADR and threat-model
     review.
-16. Keep the admin plane SSH-only (PLAT-DEC-001). Never widen admin-VPN
-    ingress toward 2379, 2380, 6443, or 10250, weaken the host-ingress guard
-    artifacts, or reintroduce kubectl-over-VPN paths in code, policy, or
-    docs; `make check-ingress-guard` and the terminal PR gate enforce the
-    denial and any change to it requires an owner decision superseding
-    PLAT-DEC-001.
 
 ## Change workflow
 
@@ -183,8 +177,8 @@ the owner's lane re-cut of 2026-08-12, the Cloudflare/edge surface:
 and successors). The platform lane — `bootstrap/pi/**`, `versions.env`, the
 remaining ADRs, and the capacity documents — is owned separately:
 delivery-lane changes never edit platform-lane files, and platform
-decisions (the safety invariants above, including PLAT-DEC-001) are
-referenced from here, never restated or reworded.
+decisions (the safety invariants above) are referenced from here, never
+restated or reworded.
 
 **Lane-surface rulings (owner, 2026-08-12; later rulings identify their
 source).** Load-bearing surfaces the two lists above never named, each assigned
@@ -284,6 +278,17 @@ and dependency-governed Draft capacity is recorded durably in
   lane transfer. This crossing permits that ADR and its delivery-owned
   procedure, policy and tests only. It leaves ADR 0012, namespace budgets,
   dependency pins, workload-registry work and all live activation gates intact.
+- `bootstrap/pi/ingress-guard/**` — RETIRED and absent under the owner's
+  2026-11-02 decision (issues #36 and #261), which supersedes PLAT-DEC-001
+  and its former safety invariant 16; the decisions register in
+  `docs/assurance/phase-h-offensive-validation.md` records it. The host
+  enforces its own posture (host firewall, VPN kill switch, ADR 0018);
+  recreating an in-repository host-ingress guard needs a new owner decision,
+  and PLAT-DEC-001 no longer authorizes one. The same decision covers the
+  declared crossing into `bootstrap/pi/install-kubernetes.sh` (its collision
+  gate no longer tolerates the guard's kubelet drop-in and proves on disk that
+  no containerd or kubelet drop-in directory exists), `SECURITY.md` and
+  `ROADMAP.md`.
 - `kubernetes/platform/admission/**` and
   `kubernetes/platform/admission-install/**` — RETIRED and absent under the
   owner's issue #195 decision. No lane may recreate a Kyverno controller,
@@ -948,7 +953,7 @@ is the consolidated command view:
   plus the ambient-artifact check, Kubernetes render + validation in
   the release-transition mode the release-state policy selects, render
   determinism, the assurance-ledger / no-security-toggles /
-  attack-surface-manifest / ingress-guard validators, Conftest hostile-policy
+  attack-surface-manifest validators, Conftest hostile-policy
   tests — plus a separate
   `dependency-review` job (pull requests only; fails on high severity). Main
   pushes run the same repository/infrastructure battery plus the exact
