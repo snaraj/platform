@@ -265,7 +265,10 @@ main() {
   local kubelet_binary="${artifact_dir}/kubelet"
   local kubectl_binary="${artifact_dir}/kubectl"
   local staged_artifacts staged_containerd_archive staged_cni_archive staged_crictl_archive staged_payload
-  local path name index directory
+  local path name index directory probe existing
+  # Root of the drop-in absence probe below: empty on a host. The partial-init
+  # matrix slices the gate and points it at a temporary unit tree instead.
+  local unit_root=''
   local -a extracted_containerd_files=()
   local -a extracted_cni_files=()
   local -a required_containerd=(containerd containerd-shim-runc-v2 ctr)
@@ -401,14 +404,44 @@ main() {
   for path in "${target_destinations[@]}"; do
     assert_target_vacant "${path}"
   done
-  # A fresh host is the only runtime-install target: any activation,
-  # enablement, unit file or drop-in for either service refuses fail-closed.
+  # A fresh host is the only runtime-install target. systemctl refuses an
+  # active, enabled or fragment-backed unit. Drop-ins need a filesystem probe:
+  # manager-backed systemd reports a unit without a fragment as not found, so
+  # `systemctl cat` never sees an orphan <unit>.d override that the fragment
+  # installed below would activate. Absence is proven in every system unit
+  # search directory (systemd.unit(5), merged /usr). Any <unit>.d entry
+  # refuses, even an empty directory, and so does a directory that cannot be
+  # read or searched, because absence is then unproven. The type-wide
+  # service.d/ directories are deliberate policy for every service (the host
+  # hardening may rely on them) and are not inspected.
   for name in containerd.service kubelet.service; do
     if systemctl is-active --quiet "${name}" 2>/dev/null \
       || systemctl is-enabled --quiet "${name}" 2>/dev/null \
       || systemctl cat "${name}" >/dev/null 2>&1; then
       die "refusing to replace or alter existing systemd service state: ${name}"
     fi
+    for directory in /etc/systemd/system.control /run/systemd/system.control \
+      /run/systemd/transient /run/systemd/generator.early /etc/systemd/system \
+      /etc/systemd/system.attached /run/systemd/system /run/systemd/system.attached \
+      /run/systemd/generator /usr/local/lib/systemd/system /usr/lib/systemd/system \
+      /lib/systemd/system /run/systemd/generator.late; do
+      # Walk up to the nearest existing path; a missing search directory is
+      # proven absent only when that ancestor is a searchable directory.
+      probe="${directory}"
+      until [[ -z "${probe}" || -e "${unit_root}${probe}" || -L "${unit_root}${probe}" ]]; do
+        probe="${probe%/*}"
+      done
+      existing="${unit_root}${probe:-/}"
+      if [[ "${probe}" == "${directory}" ]]; then
+        [[ -d "${existing}" && -r "${existing}" && -x "${existing}" ]] || \
+          die "cannot establish drop-in absence for ${name} in ${directory}"
+        [[ ! -e "${existing}/${name}.d" && ! -L "${existing}/${name}.d" ]] || \
+          die "refusing to install beneath an existing drop-in directory: ${directory}/${name}.d"
+      else
+        [[ -d "${existing}" && -x "${existing}" ]] || \
+          die "cannot establish drop-in absence for ${name} in ${directory}"
+      fi
+    done
   done
 
   # Artifact staging and collision checks can consume most of the runtime

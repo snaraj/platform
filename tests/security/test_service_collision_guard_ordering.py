@@ -2,9 +2,11 @@
 """Pin the runtime installer's pre-mutation service-collision gate, textually.
 
 The runtime installer must probe for pre-existing containerd.service and
-kubelet.service state (activation, enablement, unit file or drop-in) BEFORE
-it mutates the host, and must refuse with its documented message when it
-finds any: a fresh host is the only sanctioned runtime-install target.
+kubelet.service state BEFORE it mutates the host — activation, enablement and
+a fragment through systemctl, and a unit-specific drop-in directory through
+the filesystem, since systemctl reports a fragment-less unit as not found —
+and must refuse with its documented messages when it finds any: a fresh host
+is the only sanctioned runtime-install target.
 
 These are textual pins in the style of test_shell_script_modes.py, not
 functional fake-injection probes: the collision gate sits inline in
@@ -56,14 +58,18 @@ class RuntimeInstallerCollisionGateTests(unittest.TestCase):
         return self.script[start:end]
 
     def test_gate_probes_every_service_state_and_tolerates_none(self):
-        # Activation, enablement, and any unit file or drop-in (what
-        # `systemctl cat` renders) each refuse; no state is waved through.
+        # Activation, enablement and a fragment refuse through systemctl; a
+        # <unit>.d drop-in directory, or a search directory whose absence
+        # cannot be proven, refuses through the filesystem probe.
         region = self.gate_region()
         for fragment in (
             'systemctl is-active --quiet "${name}" 2>/dev/null',
             'systemctl is-enabled --quiet "${name}" 2>/dev/null',
             'systemctl cat "${name}" >/dev/null 2>&1; then',
             'die "refusing to replace or alter existing systemd service state: ${name}"',
+            '"${existing}/${name}.d"',
+            'die "refusing to install beneath an existing drop-in directory: ${directory}/${name}.d"',
+            'die "cannot establish drop-in absence for ${name} in ${directory}"',
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, region)

@@ -286,7 +286,8 @@ and dependency-governed Draft capacity is recorded durably in
   recreating an in-repository host-ingress guard needs a new owner decision,
   and PLAT-DEC-001 no longer authorizes one. The same decision covers the
   declared crossing into `bootstrap/pi/install-kubernetes.sh` (its collision
-  gate no longer tolerates the guard's kubelet drop-in), `SECURITY.md` and
+  gate no longer tolerates the guard's kubelet drop-in and proves on disk that
+  no containerd or kubelet drop-in directory exists), `SECURITY.md` and
   `ROADMAP.md`.
 - `kubernetes/platform/admission/**` and
   `kubernetes/platform/admission-install/**` — RETIRED and absent under the
