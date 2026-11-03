@@ -70,7 +70,7 @@ PRIVATE_ZONE_NAME = "private-zone-do-not-print.example"
 
 PLATFORM_ZONES = {
     "naranjo.online": (ZONE_A_ID, TUNNEL_A_ID, "naranjo-online", "active"),
-    "lidersea.com": (ZONE_B_ID, TUNNEL_B_ID, "lidersea-com", "disabled"),
+    "lidersea.com": (ZONE_B_ID, TUNNEL_B_ID, "lidersea-com", "active"),
     "hospedajedonlolo.com": (ZONE_C_ID, TUNNEL_C_ID, "hospedajedonlolo-com", "active"),
 }
 UNSERVED_ZONE = "sloptube.fun"
