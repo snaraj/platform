@@ -1,56 +1,37 @@
 #!/usr/bin/env python3
-"""Hermetic kubelet partial-init state matrix for the collision/ordering gates.
+"""Hermetic kubelet partial-init state matrix for the runtime collision gate.
 
 Issue #49 item 2: a partial control-plane init leaves kubelet.service in
 states the happy-path fixtures never exercised — stopped (``inactive`` with
 the unit still installed and enabled) or crash-looping (``activating`` with
 SubState ``auto-restart``, because systemd keeps restarting a kubelet whose
-control plane never came up). The two recovery-path gates that must hold
-against those states are:
+control plane never came up). The recovery-path gate that must hold against
+those states is the runtime installer's pre-mutation collision gate in
+bootstrap/pi/install-kubernetes.sh (``for name in containerd.service
+kubelet.service``), which must refuse to reinstall over ANY pre-existing
+service state.
 
-* the runtime installer's pre-mutation collision gate in
-  bootstrap/pi/install-kubernetes.sh (``for name in containerd.service
-  kubelet.service``), which must refuse to reinstall over ANY pre-existing
-  service state; and
-* the ingress-guard installer's ordering gate in
-  bootstrap/pi/ingress-guard/install-ingress-guard.sh, which must refuse a
-  live retrofit (``die KUBELET_ALREADY_ACTIVE``).
-
-Both gates sit behind root/exact-confirmation/payload gates, so the whole
-scripts cannot be executed by a test harness (see
+The gate sits behind root/exact-confirmation/payload gates, so the whole
+script cannot be executed by a test harness (see
 test_service_collision_guard_ordering.py, which pins the same contract
 textually). This battery gets functional coverage anyway by executing the
-gates' OWN text: each region is sliced verbatim out of the shipped script
-between load-bearing markers — never re-typed here — prefixed only with
-stub ``die``/``check_sha`` definitions and the two ``guard_dropin_*``
-variables the region reads, and run under the script's own ``set -euo
-pipefail`` discipline. If a platform-lane restructuring moves the markers,
-the slice fails loudly instead of silently testing stale text.
+gate's OWN text: the region is sliced verbatim out of the shipped script
+between load-bearing markers — never re-typed here — prefixed only with a
+stub ``die`` definition, and run under the script's own ``set -euo
+pipefail`` discipline. If a restructuring moves the markers, the slice fails
+loudly instead of silently testing stale text.
 
 The fake-systemctl fixture set makes the run hermetic: a ``systemctl``
 shim earlier on PATH replays one pinned host state per scenario and logs
 every invocation, so no live systemd, host, or network is ever consulted.
-The shim models the real exit-code semantics the gates depend on —
+The shim models the real exit-code semantics the gate depends on —
 verified against systemctl(1) — most importantly that ``is-active``
 succeeds ONLY for an active (or reloading) unit: ``inactive``, ``failed``,
 and ``activating``/auto-restart all exit non-zero, which is exactly why
-the collision gate's enablement and unit-file probes are load-bearing for
-partial-init states and an activation probe alone would wave them through.
-``stat`` and ``sha256sum`` are shimmed beside it (custody is host state a
-test cannot own, and sha256sum does not exist on every dev platform; the
-shim still computes the REAL digest via hashlib so the recorded hash is
-verifiable). Everything else (find, sort, awk) runs real against
-temporary directories only.
-
-The guard gate now delegates ActiveState parsing to the shared transaction
-library and then admits only ``inactive``. The matrix therefore extracts and
-executes both shipped regions together: ``active`` retains the documented
-``KUBELET_ALREADY_ACTIVE`` refusal, while crash-looping ``activating`` fails
-closed as ``KUBELET_STATE_INVALID``. Nothing here retypes or broadens what the
-shipped scripts enforce.
+the gate's enablement and unit-file probes are load-bearing for partial-init
+states and an activation probe alone would wave them through.
 """
 
-import hashlib
 import os
 import shutil
 import subprocess
@@ -63,37 +44,12 @@ from .support import required_tool
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "bootstrap" / "pi" / "install-kubernetes.sh"
-GUARD_INSTALLER = (
-    REPO_ROOT / "bootstrap" / "pi" / "ingress-guard" / "install-ingress-guard.sh"
-)
-TRANSACTION_LIBRARY = (
-    REPO_ROOT / "bootstrap" / "pi" / "ingress-guard" / "transaction-lib.sh"
-)
-# The tracked drop-in source the collision gate hashes on its tolerance leg;
-# read-only platform-lane input, byte-copied into each scenario's temp tree.
-GUARD_DROPIN_SOURCE = (
-    REPO_ROOT
-    / "bootstrap"
-    / "pi"
-    / "ingress-guard"
-    / "systemd"
-    / "kubelet.service.d"
-    / "50-website-infrastructure-ingress-guard.conf"
-)
-GUARD_DROPIN_NAME = "50-website-infrastructure-ingress-guard.conf"
 
 # Slice markers. COLLISION_LOOP matches the textual pin in
 # test_service_collision_guard_ordering.py; the region ends at the loop's
-# own two-space ``done``. The guard gate delegates its one ActiveState probe
-# to the shipped shared helper and then permits only inactive kubelet state.
+# own two-space ``done``.
 COLLISION_LOOP = "for name in containerd.service kubelet.service; do"
 COLLISION_END = "\n  done\n"
-SYSTEMCTL_STATE_START = "ig_systemctl_state() {"
-SYSTEMCTL_STATE_END = "\n}\n"
-GUARD_GATE_START = 'kubelet_state="$(ig_systemctl_state kubelet.service ActiveState)"'
-GUARD_GATE_END = (
-    '[[ "${kubelet_state}" == inactive ]] || ig_die KUBELET_STATE_INVALID\n'
-)
 
 BASH = shutil.which("bash")
 
@@ -103,11 +59,6 @@ BASH = shutil.which("bash")
 DIE_STATUS = 70
 STUB_PREAMBLE = """set -euo pipefail
 die() { printf 'DIE %s\\n' "$1" >&2; exit 70; }
-ig_die() { die "$@"; }
-ig_run_bounded() { "$@"; }
-check_sha() { printf 'check_sha %s %s\\n' "$1" "$2" >>"${FAKE_SYSTEMCTL_LOG}"; }
-guard_dropin_source="${FAKE_GUARD_DROPIN_SOURCE}"
-guard_dropin_target="${FAKE_GUARD_DROPIN_TARGET}"
 """
 
 # --- The fake-systemctl fixture set. -------------------------------------
@@ -136,7 +87,7 @@ case "${1:-}" in
     # systemctl(1): is-active succeeds only when the unit IS active (or
     # reloading). inactive, failed, and activating/auto-restart all exit
     # 3 — the crash-looping partial-init kubelet is invisible to this
-    # probe, which is why the gates cannot rely on it alone.
+    # probe, which is why the gate cannot rely on it alone.
     [[ "${active_state}" == active ]] && exit 0
     exit 3
     ;;
@@ -144,7 +95,7 @@ case "${1:-}" in
     [[ "${2:-}" == --quiet && -n "${3:-}" ]] || unmodeled "$@"
     load_state "$3"
     # enabled exits 0; disabled exits 1; a unit with no unit file at all
-    # fails with a lookup error. The gates branch only on success.
+    # fails with a lookup error. The gate branches only on success.
     [[ "${unit_file_state}" == enabled ]] && exit 0
     exit 1
     ;;
@@ -153,8 +104,7 @@ case "${1:-}" in
     load_state "$2"
     # cat renders whatever unit files exist — fragment and/or drop-ins —
     # and fails only when there are none. A drop-in without a fragment
-    # (the sanctioned guard-before-runtime state) therefore SUCCEEDS,
-    # which is what routes the collision gate into its tolerance leg.
+    # therefore SUCCEEDS, so the gate refuses it like any other unit file.
     if [[ -n "${fragment_path}" || -n "${dropin_paths}" ]]; then
       printf '# %s\\n' "${fragment_path:-${dropin_paths}}"
       exit 0
@@ -162,52 +112,12 @@ case "${1:-}" in
     printf 'No files found for %s.\\n' "$2" >&2
     exit 1
     ;;
-  show)
-    [[ "${2:-}" == -p && -n "${3:-}" && "${4:-}" == --value && -n "${5:-}" ]] || unmodeled "$@"
-    load_state "$5"
-    # show succeeds even for unloaded units, printing the property value
-    # (possibly empty) — the gates parse stdout, not the exit code.
-    case "$3" in
-      ActiveState) printf '%s\\n' "${active_state}" ;;
-      UnitFileState) printf '%s\\n' "${unit_file_state}" ;;
-      FragmentPath) printf '%s\\n' "${fragment_path}" ;;
-      DropInPaths) printf '%s\\n' "${dropin_paths}" ;;
-      *) unmodeled "$@" ;;
-    esac
-    exit 0
-    ;;
   *) unmodeled "$@" ;;
 esac
 """
 
-# Custody is host state a non-root test cannot own, so the tolerance leg's
-# one stat invocation is replayed from the fixture (root-owned 0644 by
-# default, matching what the gate demands of the real drop-in).
-FAKE_STAT = """#!/usr/bin/env bash
-set -u
-printf 'stat %s\\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
-[[ "${1:-}" == -c && "${2:-}" == '%u:%g:%a' && -n "${3:-}" ]] || exit 97
-printf '%s\\n' "${FAKE_STAT_CUSTODY:-0:0:644}"
-"""
-
-# sha256sum is absent on some development platforms; the shim computes the
-# REAL digest through hashlib so the hash the gate records stays verifiable
-# against the tracked source instead of becoming fixture fiction.
-FAKE_SHA256SUM = """#!/usr/bin/env bash
-set -u
-printf 'sha256sum %s\\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
-exec python3 - "$@" <<'PYEOF'
-import hashlib
-import sys
-
-for path in [argument for argument in sys.argv[1:] if argument != "--"]:
-    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-    print(digest + "  " + path)
-PYEOF
-"""
-
 # Real unit-file locations as the installer creates them; used verbatim in
-# fixtures so FragmentPath refusals exercise the true post-partial-init
+# fixtures so unit-file refusals exercise the true post-partial-init
 # shape rather than a placeholder.
 KUBELET_FRAGMENT = "/etc/systemd/system/kubelet.service"
 CONTAINERD_FRAGMENT = "/etc/systemd/system/containerd.service"
@@ -234,9 +144,9 @@ def slice_region(text, start_marker, end_marker):
 
 
 @unittest.skipUnless(os.name == "posix", "the harness drives bash with a PATH shim")
-@unittest.skipUnless(BASH, "bash is required to execute the extracted gates")
+@unittest.skipUnless(BASH, "bash is required to execute the extracted gate")
 class FakeSystemctlHarness(unittest.TestCase):
-    """Shared machinery: build the shim set, run one extracted gate region."""
+    """Shared machinery: build the shim, run the extracted gate region."""
 
     maxDiff = None
 
@@ -251,47 +161,28 @@ class FakeSystemctlHarness(unittest.TestCase):
             BASH, "bash not found - the partial-init matrix cannot run"
         )
 
-    def run_gate(self, region, kubelet, containerd=UNIT_ABSENT, with_dropin_file=False):
-        """Execute one extracted gate under the fake-systemctl fixture set.
+    def run_gate(self, region, kubelet, containerd=UNIT_ABSENT):
+        """Execute the extracted gate under the fake-systemctl fixture.
 
         Returns ``(completed, log_lines)`` where ``log_lines`` is every
-        shim invocation in order. ``with_dropin_file`` byte-copies the
-        tracked guard drop-in into the scenario's temp drop-in directory
-        so the tolerance leg's real ``find`` enumeration sees exactly the
-        sanctioned single entry. A ``__TARGET__`` placeholder in the
-        kubelet state resolves to the per-run temp drop-in path, which
-        only exists once the harness has built it.
+        shim invocation in order.
         """
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             fake_bin = Path(directory) / "bin"
             fake_bin.mkdir()
-            for name, body in (
-                ("systemctl", FAKE_SYSTEMCTL),
-                ("stat", FAKE_STAT),
-                ("sha256sum", FAKE_SHA256SUM),
-            ):
-                shim = fake_bin / name
-                shim.write_text(body, encoding="utf-8")
-                shim.chmod(0o700)
+            shim = fake_bin / "systemctl"
+            shim.write_text(FAKE_SYSTEMCTL, encoding="utf-8")
+            shim.chmod(0o700)
             log_path = Path(directory) / "invocations.log"
             log_path.touch()
-            dropin_dir = Path(directory) / "kubelet.service.d"
-            dropin_dir.mkdir()
-            dropin_target = dropin_dir / GUARD_DROPIN_NAME
-            if with_dropin_file:
-                dropin_target.write_bytes(GUARD_DROPIN_SOURCE.read_bytes())
             environment = os.environ.copy()
             environment.update(
                 {
                     "PATH": str(fake_bin) + os.pathsep + environment.get("PATH", ""),
                     "FAKE_SYSTEMCTL_LOG": str(log_path),
-                    "FAKE_KUBELET_STATE": kubelet.replace(
-                        "__TARGET__", str(dropin_target)
-                    ),
+                    "FAKE_KUBELET_STATE": kubelet,
                     "FAKE_CONTAINERD_STATE": containerd,
-                    "FAKE_GUARD_DROPIN_SOURCE": str(GUARD_DROPIN_SOURCE),
-                    "FAKE_GUARD_DROPIN_TARGET": str(dropin_target),
                 }
             )
             completed = subprocess.run(
@@ -330,9 +221,8 @@ class RuntimeInstallerCollisionGateMatrixTests(FakeSystemctlHarness):
         for fragment in (
             'systemctl is-active --quiet "${name}" 2>/dev/null',
             'systemctl is-enabled --quiet "${name}" 2>/dev/null',
-            'systemctl cat "${name}" >/dev/null 2>&1 || continue',
+            'systemctl cat "${name}" >/dev/null 2>&1; then',
             "refusing to replace or alter existing systemd service state",
-            'check_sha "${guard_dropin_hash}" "${guard_dropin_target}"',
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, self.region)
@@ -364,25 +254,24 @@ class RuntimeInstallerCollisionGateMatrixTests(FakeSystemctlHarness):
             ],
         )
 
-    def test_tracked_guard_dropin_state_passes_with_verified_custody(self):
-        # Guard-then-runtime ordering (PLAT-DEC-001): the only other allow
-        # row is kubelet carrying EXACTLY the tracked ingress-guard drop-in
-        # under root-owned 0644 custody. The recorded hash must be the real
-        # digest of the tracked source — the tolerance is byte-bound, not
-        # name-bound.
+    def test_dropin_only_kubelet_refuses_via_the_unit_file_probe(self):
+        # A kubelet drop-in with no fragment, no activation and no
+        # enablement is still foreign service state: `systemctl cat`
+        # renders it, so the gate refuses rather than installing beneath it.
         completed, log_lines = self.run_gate(
             self.region,
-            kubelet=unit_state(dropins="__TARGET__"),
-            with_dropin_file=True,
+            kubelet=unit_state(
+                dropins="/etc/systemd/system/kubelet.service.d/50-foreign.conf"
+            ),
         )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        recorded = [line for line in log_lines if line.startswith("check_sha ")]
-        self.assertEqual(len(recorded), 1, log_lines)
-        digest = hashlib.sha256(GUARD_DROPIN_SOURCE.read_bytes()).hexdigest()
-        self.assertEqual(recorded[0].split(" ")[1], digest)
-        self.assertTrue(
-            any(line.startswith("stat -c %u:%g:%a ") for line in log_lines),
-            log_lines,
+        self.assert_refused_for(completed, "kubelet.service")
+        self.assertEqual(
+            log_lines[-3:],
+            [
+                "systemctl is-active --quiet kubelet.service",
+                "systemctl is-enabled --quiet kubelet.service",
+                "systemctl cat kubelet.service",
+            ],
         )
 
     def assert_refused_for(self, completed, unit):
@@ -438,28 +327,22 @@ class RuntimeInstallerCollisionGateMatrixTests(FakeSystemctlHarness):
         self.assertIn("systemctl is-enabled --quiet kubelet.service", log_lines)
         self.assertNotIn("systemctl cat kubelet.service", log_lines)
 
-    def test_inactive_disabled_kubelet_unit_refuses_via_the_unit_file_probes(self):
+    def test_inactive_disabled_kubelet_unit_refuses_via_the_unit_file_probe(self):
         # An operator who disabled kubelet mid-recovery but left the unit
         # file: activation and enablement probes both miss, so the refusal
-        # falls to the cat probe and the FragmentPath validation — a real
-        # kubelet.service fragment can never satisfy the drop-in-only
-        # tolerance.
+        # falls to the cat probe.
         completed, log_lines = self.run_gate(
             self.region,
             kubelet=unit_state(
                 active="inactive",
                 unit_file="disabled",
                 fragment=KUBELET_FRAGMENT,
-                dropins="__TARGET__",
             ),
         )
         self.assert_refused_for(completed, "kubelet.service")
-        self.assertIn("systemctl cat kubelet.service", log_lines)
-        self.assertIn(
-            "systemctl show -p FragmentPath --value kubelet.service", log_lines
-        )
+        self.assertEqual(log_lines[-1], "systemctl cat kubelet.service")
 
-    def test_restarting_disabled_kubelet_unit_refuses_via_the_unit_file_probes(self):
+    def test_restarting_disabled_kubelet_unit_refuses_via_the_unit_file_probe(self):
         # The crash-loop variant of the same recovery posture: disabled but
         # manually started into auto-restart. Same unit-file refusal.
         completed, log_lines = self.run_gate(
@@ -468,14 +351,10 @@ class RuntimeInstallerCollisionGateMatrixTests(FakeSystemctlHarness):
                 active="activating",
                 unit_file="disabled",
                 fragment=KUBELET_FRAGMENT,
-                dropins="__TARGET__",
             ),
         )
         self.assert_refused_for(completed, "kubelet.service")
-        self.assertIn("systemctl cat kubelet.service", log_lines)
-        self.assertIn(
-            "systemctl show -p FragmentPath --value kubelet.service", log_lines
-        )
+        self.assertEqual(log_lines[-1], "systemctl cat kubelet.service")
 
     def test_full_partial_init_host_refuses_on_containerd_before_kubelet(self):
         # The faithful whole-host state after a partial init: containerd
@@ -495,73 +374,6 @@ class RuntimeInstallerCollisionGateMatrixTests(FakeSystemctlHarness):
         self.assertEqual(
             log_lines, ["systemctl is-active --quiet containerd.service"]
         )
-
-
-class IngressGuardOrderingGateMatrixTests(FakeSystemctlHarness):
-    """Drive the guard installer's kubelet refusal across the same states."""
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        helper = slice_region(
-            TRANSACTION_LIBRARY.read_text(encoding="utf-8"),
-            SYSTEMCTL_STATE_START,
-            SYSTEMCTL_STATE_END,
-        )
-        gate = slice_region(
-            GUARD_INSTALLER.read_text(encoding="utf-8"),
-            GUARD_GATE_START,
-            GUARD_GATE_END,
-        )
-        cls.region = helper + gate
-
-    def test_extracted_region_is_the_ordering_refusal_and_nothing_more(self):
-        self.assertIn("die KUBELET_ALREADY_ACTIVE", self.region)
-        for mutation in ("install_exact", "systemctl start", "systemctl enable"):
-            with self.subTest(mutation=mutation):
-                self.assertNotIn(mutation, self.region)
-
-    def probe_gate(self, active_state):
-        completed, log_lines = self.run_gate(
-            self.region,
-            kubelet=unit_state(
-                active=active_state,
-                unit_file="enabled",
-                fragment=KUBELET_FRAGMENT,
-            ),
-        )
-        # The gate's one probe, in its exact shipped shape.
-        self.assertEqual(
-            log_lines,
-            ["systemctl show -p ActiveState --value kubelet.service"],
-        )
-        return completed
-
-    def test_active_kubelet_is_refused(self):
-        completed = self.probe_gate("active")
-        self.assertEqual(completed.returncode, DIE_STATUS, completed.stderr)
-        self.assertIn("DIE KUBELET_ALREADY_ACTIVE", completed.stderr)
-
-    def test_inactive_kubelet_after_partial_init_proceeds(self):
-        # The sanctioned recovery posture: kubelet fully stopped. Guard
-        # installation before (re)init is exactly the guard-then-runtime
-        # ordering PLAT-DEC-001 prescribes, so the gate must not refuse.
-        completed = self.probe_gate("inactive")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-
-    def test_restarting_kubelet_fails_closed_as_invalid_state(self):
-        # The shared parser rejects the unclosed activating state before the
-        # installer can enter its inactive-only transaction path.
-        completed = self.probe_gate("activating")
-        self.assertEqual(completed.returncode, DIE_STATUS)
-        self.assertIn("DIE KUBELET_STATE_INVALID", completed.stderr)
-
-    def test_failed_kubelet_fails_closed_as_invalid_state(self):
-        # Failed is a recognized systemd state, but it is still not the only
-        # offline posture the installer admits: fully inactive.
-        completed = self.probe_gate("failed")
-        self.assertEqual(completed.returncode, DIE_STATUS)
-        self.assertIn("DIE KUBELET_STATE_INVALID", completed.stderr)
 
 
 if __name__ == "__main__":

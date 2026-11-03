@@ -11,7 +11,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # standalone control path. Every other tracked shell file is user- or CI-run.
 SOURCE_ONLY_SHELL_FILES = {
     "bootstrap/pi/host-prerequisites/lib.sh",
-    "bootstrap/pi/ingress-guard/transaction-lib.sh",
 }
 
 

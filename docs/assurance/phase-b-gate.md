@@ -6,7 +6,7 @@ is the **`repository-and-infrastructure`** job in
 branch protection/rulesets and must not be renamed casually. Companion jobs:
 `analyze` (CodeQL) and `dependency-review`. Local parity:
 `make check` runs the credential-free layers (validators, tests, gitleaks
-tree scan, shellcheck, actionlint, render/policy, ingress guard; plus opt-in
+tree scan, shellcheck, actionlint, render/policy; plus opt-in
 `make check-determinism` and `make coverage`). CI-only layers with no local
 equivalent in `make check`: the Trivy vuln/secret and misconfig scans, the
 immutable PR-history proof with history-ranged gitleaks, and the
@@ -37,7 +37,6 @@ hash-pinned coverage gate — rehearse the history gate with
 | Evidence-ledger validation (schema, order, unique IDs, forbidden patterns) | **`validate_assurance_ledger.py`** in the terminal gate + `validate-security.sh`; closes PLAT-GAP-002 | LIVE (this PR) |
 | Security-toggle sweep (Coinkite law, Phase C) | **`validate_no_security_toggles.py`** over the tracked tree in the terminal gate + `validate-security.sh` | LIVE |
 | Offensive-validation attack-surface contract (Phase H) | **`validate_attack_surface_manifest.py`** on `docs/assurance/attack-surface-manifest.json` in the terminal gate | LIVE |
-| SSH-only host-ingress guard artifacts (PLAT-DEC-001) | **`validate_ingress_guard.py repo`** + **`validate_admin_ingress_contract.py EXAMPLE`** in the terminal gate and `make check-ingress-guard` | LIVE |
 | Coverage floor, drift bound, and badge integrity | **`scripts/ci/coverage_gate.py gate`** after the instrumented suite (hash-pinned wheel, no external service) | LIVE (this PR) |
 
 ## Required CI properties

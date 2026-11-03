@@ -16,7 +16,7 @@
 | Legacy archive operator | Preserve and verify an explicitly declared inactive archive through the protected local path | Runtime activation, public/Tunnel route, Kubernetes/Flux/CI access, broad filesystem operations, secret disclosure |
 | Flux source controller | Anonymous HTTPS Git fetch | Git write, deploy keys, cluster-wide tenant mutation |
 | Tenant reconciler | Named namespace resources | Other namespaces and cluster-scoped privilege |
-| Admin laptop | TCP 22 after identity/device policy — SSH-only, PLAT-DEC-001; `kubectl` runs on the Pi | Kubernetes API 6443, etcd 2379/2380, kubelet 10250 (host-ingress guard), other Pi traffic, WARP-off remote access |
+| Admin laptop | TCP 22 after identity/device policy — SSH-only; `kubectl` runs on the Pi | Kubernetes API 6443, etcd 2379/2380, kubelet 10250 (host firewall), other Pi traffic, WARP-off remote access |
 | Git publishing identity | Reviewed workstation commit/push through protected `main` workflow | Pi/Flux/CI storage, Cloudflare or cluster deployment authority |
 
 Namespaces `cloudflare-public`, `naranjo-online`, `lidersea-com`,

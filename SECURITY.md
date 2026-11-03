@@ -39,10 +39,10 @@ Cloudflare and cluster mutations are manual, local, exit-gated operations.
 - MFA/passkeys on Cloudflare and GitHub; minimal administrator membership.
 - SSH keys only, no root or password authentication, applied only after a tested
   second session and physical/LAN recovery path exist.
-- SSH-only admin plane (PLAT-DEC-001): the admin VPN reaches host SSH and
-  nothing else; 2379/2380/6443/10250 are terminally denied from that path by
-  the fail-closed host-ingress guard (`make check-ingress-guard` verifies the
-  tracked artifacts).
+- Administration is SSH to the host; the cluster API, etcd and kubelet are
+  never exposed to the admin path. The host enforces this itself (host
+  firewall, VPN kill switch and the ADR 0018 baseline); the repository
+  carries no host-ingress code.
 - Restricted Pod Security, non-root containers, read-only root filesystems,
   RuntimeDefault seccomp, all capabilities dropped, and no API token mounts.
 - Default-deny ingress and egress per workload namespace.
