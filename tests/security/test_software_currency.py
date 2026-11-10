@@ -141,14 +141,44 @@ class SoftwareCurrencyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             redirect.redirect_request(request, None, 302, "", {}, target)
 
-    def test_main_exits_red_for_drift_and_unknown(self):
-        for state, expected in (("CURRENT", 0), ("UPDATE", 1), ("UNKNOWN", 1)):
-            with patch.object(MODULE, "check", side_effect=lambda key, pins: (key, "1.2.3", "1.2.3", "1.2.3", state)), \
-                    contextlib.redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(MODULE.main(), expected)
-            self.assertEqual(output.getvalue().count("| " + state + " |"), 19)
+    def run_main(self, states):
+        """Drive main() with one scripted state per pin, in PROJECTS order."""
+        scripted = dict(zip(MODULE.PROJECTS, states))
+        def check(key, pins):
+            return key, "v1.0.0", "v1.0.1", "v1.1.0", scripted[key]
+        with patch.object(MODULE, "check", side_effect=check), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            status = MODULE.main()
+        return status, output.getvalue()
+
+    def test_exit_follows_evidence_quality_never_drift(self):
+        keys = list(MODULE.PROJECTS)
+        # (states for the 19 pins, expected exit): only an unverifiable row,
+        # or a state outside the closed set, fails the run.
+        for name, states, expected in (
+            ("all current", ["CURRENT"] * 19, 0),
+            ("all update", ["UPDATE"] * 19, 0),
+            ("mixed current and update", ["UPDATE", "CURRENT"] * 9 + ["UPDATE"], 0),
+            ("one unknown among current", ["CURRENT"] * 18 + ["UNKNOWN"], 1),
+            ("one unknown among updates", ["UPDATE"] * 18 + ["UNKNOWN"], 1),
+            ("an unrecognised state", ["CURRENT"] * 18 + ["DRIFT"], 1),
+        ):
+            with self.subTest(name):
+                status, output = self.run_main(states)
+                self.assertEqual(status, expected)
+                updates = [key for key, state in zip(keys, states) if state == "UPDATE"]
+                for key in keys:
+                    self.assertEqual(f"| {key} | v1.0.0 | v1.0.1 |" in output, key in updates, key)
+                self.assertEqual("| Component | Pinned | Latest |" in output, bool(updates))
+                self.assertEqual("### Upstream version not established" in output, bool(expected))
+                self.assertIn(f"{states.count('UPDATE')} UPDATE", output.splitlines()[0])
         with patch.object(MODULE, "read_pins", side_effect=ValueError), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(MODULE.main(), 1)
+
+    def test_the_summary_table_is_the_job_summary(self):
+        workflow = (ROOT / ".github/workflows/software-currency.yml").read_text()
+        self.assertIn('scripts/ci/check_software_currency.py | tee -a "$GITHUB_STEP_SUMMARY"', workflow)
+        self.assertEqual(MODULE.STATES, ("CURRENT", "UPDATE", "UNKNOWN"))
 
     def test_daily_job_preserves_pipe_failure_and_read_only_permissions(self):
         workflow = (ROOT / ".github/workflows/software-currency.yml").read_text()

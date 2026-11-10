@@ -64,6 +64,20 @@ connector_settled() {
   done
   return 1
 }
+# The first time source named in an ntp.conf: a `server` or `pool` line, in
+# file order, skipping option words that start with '-'.
+ntp_server_host() {
+  awk '$1 == "server" || $1 == "pool" { for (i = 2; i <= NF; i++) if ($i !~ /^-/) { print $i; exit } }' "$1" 2>/dev/null
+}
+# One exchange as one owner, tried up to three times: a single lost UDP
+# datagram must not fail the check and revert a good table.
+ntp_probe_as() {
+  local _
+  for _ in 1 2 3; do
+    timeout 12 sudo -u "$1" python3 -I -B - "$2" 4 < "${hardening_root}/ntp-probe.py" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
 # Prove a fresh NTP exchange through the current table as both socket owners:
 # ntpd's own sockets are root-owned, later ones belong to the ntpsec user.
 # A direct exchange is used because the reach register is history and would
@@ -72,10 +86,10 @@ connector_settled() {
 # owner never needs read access to this directory.
 ntp_exchange_through_table() {
   local host owner
-  host="$(awk '$1 == "server" { for (i = 2; i <= NF; i++) if ($i !~ /^-/) { print $i; exit } }' /etc/ntpsec/ntp.conf 2>/dev/null)"
+  host="$(ntp_server_host /etc/ntpsec/ntp.conf)"
   [[ -n "${host}" ]] || return 1
   for owner in root ntpsec; do
-    timeout 12 sudo -u "${owner}" python3 -I -B - "${host}" 4 < "${hardening_root}/ntp-probe.py" >/dev/null 2>&1 || return 1
+    ntp_probe_as "${owner}" "${host}" || return 1
   done
 }
 check_egress() {

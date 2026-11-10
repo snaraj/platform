@@ -227,7 +227,7 @@ foreign-integration, inverted, update-restricted, or bypass-bearing result emits
 no receipt. A successful receipt is necessary but not sufficient for Ready:
 exact-head CI, current base, resolved findings, and a fresh independent approval
 remain required. The receipt grants no settings-write or merge authority; only
-the coordinator changes Draft/Ready and only the repository owner merges.
+the coordinator changes Draft/Ready and merges, under AGENTS.md "Merge authority".
 
 ## Release App provisioning and job separation
 

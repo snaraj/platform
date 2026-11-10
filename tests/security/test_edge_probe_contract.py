@@ -902,10 +902,13 @@ class EdgeProbeCommandLineTests(unittest.TestCase):
             with self.subTest(zone=zone):
                 self.assertEqual(self._run("--zone", zone, "--help").returncode, 0)
 
-    def test_the_third_zone_is_probed_against_its_signed_expectation(self):
+    def test_every_zone_is_probed_against_its_signed_expectation(self):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("readonly ZONE_C='hospedajedonlolo.com'", source)
-        self.assertIn("readonly ZONE_C_DNSSEC='signed'", source)
+        # lidersea.com is signed since issue #154; a DS record at both public
+        # resolvers would read as GAP against a stale "unsigned" expectation.
+        for zone in ("A", "B", "C"):
+            self.assertIn(f"readonly ZONE_{zone}_DNSSEC='signed'", source)
         self.assertIn('"${ZONE_C}") expectation="${ZONE_C_DNSSEC}" ;;', source)
         self.assertIn('readonly ALL_ZONES="${ZONE_A} ${ZONE_B} ${ZONE_C}"', source)
         self.assertIn('ZONES="${ALL_ZONES}"', source)

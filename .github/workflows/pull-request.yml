@@ -220,15 +220,28 @@ jobs:
       - name: Validate the private obsync TLS transport
         run: make check-obsync-proxy
       - name: Scan the pinned obsync proxy image
+        # A CVE published against the unchanged upstream pin is not caused by
+        # an unrelated change, so PR and main CI scan only when the range
+        # touches what defines or scans the image; scheduled-security scans
+        # main unconditionally. A skip still ends this step in success, which
+        # the required job and the publisher's exact-step admission rely on.
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.event.after }}
         run: |
           set -euo pipefail
-          proxy_image="$(sed -n 's/^OBSYNC_TLS_PROXY_IMAGE=//p' versions.env)"
-          [[ "$proxy_image" =~ ^docker\.io/nginx/nginx-unprivileged:[a-z0-9.-]+@sha256:[0-9a-f]{64}$ ]]
-          docker_config="$(mktemp -d "${RUNNER_TEMP}/proxy-scan-config.XXXXXX")"
-          for platform in linux/amd64 linux/arm64; do
-            DOCKER_CONFIG="$docker_config" trivy image --image-src remote --platform "$platform" \
-              --exit-code 1 --scanners vuln --severity HIGH,CRITICAL "$proxy_image"
-          done
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request) scope="$(python3 -I -B scripts/ci/proxy_image_scan_scope.py "${PR_BASE_SHA}" "${PR_HEAD_SHA}")" ;;
+            push) scope="$(python3 -I -B scripts/ci/proxy_image_scan_scope.py "${PUSH_BASE_SHA}" "${PUSH_HEAD_SHA}")" ;;
+            *) scope=scan ;;
+          esac
+          case "${scope}" in
+            scan) ./scripts/ci/scan-proxy-image.sh ;;
+            skip) printf 'SKIP proxy image scan: this range leaves the image and its scan unchanged; scheduled-security scans main.\n' ;;
+            *) exit 1 ;;
+          esac
       - name: Scan IaC and configuration
         # Negative fixtures are rejected by Conftest. Separating
         # this pass keeps them inside the full-tree secret scan above.

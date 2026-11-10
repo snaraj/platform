@@ -61,8 +61,8 @@ identities. `platform-k8s-infra` consumes their independently verified releases:
 2. A composition change verifies the release, chart, image, provenance, and
    source bindings and records the acquisition receipt.
 3. Required CI and the exact-head review checks validate the proposed change.
-4. The owner merges the PR. Flux reads protected `main`, verifies the selected
-   chart, and reconciles its digest-bound workload.
+4. The coordinator merges the Ready PR. Flux reads protected `main`, verifies
+   the selected chart, and reconciles its digest-bound workload.
 
 Every protected-main merge is covered by a **platform source release**. The
 publisher releases the green main tip, binding every changelog fragment merged
@@ -82,8 +82,9 @@ single-owner homelab. It assumes trusted application workloads and explicit
 owner control of production changes. Adding independent tenants, untrusted
 workloads, or new public interfaces requires a fresh threat-model decision.
 
-- **Protected changes.** Only the owner merges PRs. Required checks, signed
-  commits, immutable history, and independent review govern security changes.
+- **Protected changes.** Only a Ready PR merges (AGENTS.md "Merge
+  authority"). Required checks, signed commits, immutable history, and
+  independent review govern security changes.
 - **Artifact identity.** Deployments select full digests. Chart verification
   binds to the exact application publisher; provenance and acquisition
   receipts keep source, chart, and workload identities together.

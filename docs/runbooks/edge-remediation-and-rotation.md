@@ -374,7 +374,7 @@ allocation; all billing cost, history, invoice, and debt amounts zero, where any
 nonzero billing-history amount, a Registrar renewal included, is a finding the
 owner reconciles against ADR 0006 and never an infrastructure pass; the six
 zone settings at their target values on each platform zone; DNSSEC `active` on
-`naranjo.online` and `hospedajedonlolo.com` and `disabled` on `lidersea.com`;
+all three platform zones;
 exactly the three per-site Tunnels `naranjo-online`, `lidersea-com` and
 `hospedajedonlolo-com`, each with one hostname rule plus the terminal 404 and no
 idle connector; no private CIDR or hostname route and no WARP profile; exactly

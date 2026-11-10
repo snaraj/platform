@@ -22,6 +22,28 @@ def read(rel: str) -> str:
     return (HARDENING / rel).read_text(encoding="utf-8")
 
 
+def shell_function(text: str, name: str) -> str:
+    """One top-level function definition, from its name to its closing brace."""
+    start = text.index(f"\n{name}() {{\n") + 1
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+# Options that make /proc/sys read-only, drop root's capabilities or its
+# identity inside the sysctl re-apply unit; any of them turns every boot's
+# re-apply into a failure (issue #449). A deny-list of dangerous constructs,
+# not an inventory: other hardening options may be added freely.
+REAPPLY_UNIT_FORBIDDEN = ("ProtectKernelTunables", "ReadOnlyPaths", "InaccessiblePaths", "PrivateUsers",
+                          "CapabilityBoundingSet", "User", "DynamicUser")
+
+
+def reapply_unit_denial(text: str) -> str | None:
+    for line in text.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if "=" in line and not line.lstrip().startswith(("#", ";")) and key in REAPPLY_UNIT_FORBIDDEN:
+            return f"{key} would keep the re-apply unit from writing /proc/sys"
+    return None
+
+
 def directives(rel: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for line in read(rel).splitlines():
@@ -179,7 +201,10 @@ class EgressAllowlist(unittest.TestCase):
         self.assertIn("network-online.target", d["After"][0])
         self.assertIn("kubelet.service", d["After"][0])
         apply = read("apply-hardening.sh")
-        self.assertIn("systemctl enable platform-sysctl-reapply.service", apply)
+        # --now: a never-run oneshot reports Result=success, so the verifier's
+        # Result check would be vacuous until the first boot without it.
+        self.assertIn("systemctl enable --now platform-sysctl-reapply.service", apply)
+        self.assertIsNone(reapply_unit_denial(read("systemd/platform-sysctl-reapply.service")))
         verify = read("verify-hardening.sh")
         self.assertIn("systemctl is-enabled --quiet platform-sysctl-reapply.service", verify)
         self.assertIn('systemctl show -p Result --value platform-sysctl-reapply.service)" == success', verify, "an enabled unit that fails every boot must not pass")
@@ -273,11 +298,14 @@ class Scripts(unittest.TestCase):
         for line in text.splitlines():
             if "ports.ubuntu.com" in line and "curl" in line:
                 self.assertIn("sudo -u _apt", line, "only the apt user hits the mirror")
-        body = text[text.index("ntp_exchange_through_table() {") : text.index("\n}\n", text.index("ntp_exchange_through_table() {"))]
+        body = shell_function(text, "ntp_exchange_through_table")
         self.assertIn('for owner in root ntpsec; do', body, "both socket owners must be able to exchange time")
-        self.assertRegex(body, r'timeout \d+ sudo -u "\$\{owner\}" python3 -I -B - "\$\{host\}" \d+ < "\$\{hardening_root\}/ntp-probe\.py"', "a direct exchange by the shipped probe, not the reach register")
-        self.assertNotIn("ntpq", body, "reach is history, not proof")
-        self.assertNotIn("ntpdig", body, "ntpdig is a separate package the host does not carry")
+        self.assertIn('ntp_probe_as "${owner}" "${host}" || return 1', body)
+        probe = shell_function(text, "ntp_probe_as")
+        self.assertRegex(probe, r'timeout \d+ sudo -u "\$1" python3 -I -B - "\$2" \d+ < "\$\{hardening_root\}/ntp-probe\.py"', "a direct exchange by the shipped probe, not the reach register")
+        for name in ("ntp_exchange_through_table", "ntp_probe_as", "ntp_server_host"):
+            self.assertNotIn("ntpq", shell_function(text, name), "reach is history, not proof")
+            self.assertNotIn("ntpdig", shell_function(text, name), "ntpdig is a separate package the host does not carry")
         self.assertIn("ntp_exchange_through_table || {", text)
 
     def test_ntp_probe_exchanges_with_a_server(self) -> None:
@@ -375,6 +403,97 @@ class Scripts(unittest.TestCase):
                 key, _, value = line.partition("=")
                 if key not in ("UPLINK_INTERFACE", "LOGIN_UID_MIN", "LOGIN_UID_MAX"):
                     self.assertEqual(value.strip('"'), "", f"{key} must ship empty")
+
+
+
+class NtpVerification(unittest.TestCase):
+    """Issue #449: the probe's answer checks, the server parse and the retry."""
+
+    def probe_against(self, reply: bytes | None) -> int:
+        import threading
+        responder = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+        responder.bind(("127.0.0.1", 0))
+        port = responder.getsockname()[1]
+
+        def serve() -> None:
+            responder.settimeout(5)
+            try:
+                _, peer = responder.recvfrom(512)
+            except OSError:
+                return
+            if reply is not None:
+                responder.sendto(reply, peer)
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        src = (HARDENING / "ntp-probe.py").read_text().replace("NTP_PORT = 123", f"NTP_PORT = {port}")
+        rc = subprocess.run([sys.executable, "-I", "-B", "-", "127.0.0.1", "2"], input=src, capture_output=True, text=True).returncode
+        thread.join()
+        responder.close()
+        return rc
+
+    def test_probe_requires_a_full_server_mode_answer(self) -> None:
+        self.assertEqual(self.probe_against(b"\x24" + b"\x00" * 47), 0, "a 48-byte mode-4 answer passes")
+        self.assertEqual(self.probe_against(b"\x24" + b"\x00" * 46), 1, "a short packet must fail")
+        for mode_byte in (b"\x23", b"\x25", b"\x26"):  # client, broadcast, control
+            with self.subTest(mode=mode_byte[0] & 7):
+                self.assertEqual(self.probe_against(mode_byte + b"\x00" * 47), 1, "only mode 4 is a server answer")
+
+    def run_functions(self, script: str) -> subprocess.CompletedProcess:
+        text = read("verify-hardening.sh")
+        defined = "".join(shell_function(text, name) for name in ("ntp_server_host", "ntp_probe_as", "ntp_exchange_through_table"))
+        return subprocess.run(["bash", "-c", f"set -uo pipefail\nhardening_root='{HARDENING}'\n{defined}\n{script}"],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_server_parse_accepts_pool_and_server_lines_in_file_order(self) -> None:
+        import tempfile
+        cases = {
+            "pool only": ("driftfile /var/lib/ntpsec/ntp.drift\npool time.example.invalid iburst\n", "time.example.invalid"),
+            "server only": ("server -4 one.example.invalid iburst\n", "one.example.invalid"),
+            "pool before server": ("# comment server x\npool two.example.invalid\nserver one.example.invalid\n", "two.example.invalid"),
+            "server before pool": ("server one.example.invalid\npool two.example.invalid\n", "one.example.invalid"),
+            "no time source": ("restrict default kod\n", ""),
+        }
+        with tempfile.TemporaryDirectory() as scratch:
+            for name, (conf, expected) in cases.items():
+                with self.subTest(name):
+                    path = Path(scratch) / "ntp.conf"
+                    path.write_text(conf)
+                    self.assertEqual(self.run_functions(f"ntp_server_host '{path}'").stdout.strip(), expected)
+
+    def exchange(self, failures: dict[str, int]) -> tuple[int, str]:
+        """Run the owner loop with each owner's first N attempts failing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as scratch:
+            log = Path(scratch) / "attempts"
+            stubs = (
+                "ntp_server_host() { printf 'time.example.invalid\\n'; }\n"
+                "timeout() { shift; \"$@\"; }\n"
+                f"sudo() {{ printf '%s\\n' \"$2\" >> '{log}'; "
+                f"local limit=\"fail_$2\"; [[ $(grep -cx \"$2\" '{log}') -gt ${{!limit:-0}} ]]; }}\n"
+            )
+            limits = "".join(f"fail_{owner}={count}\n" for owner, count in failures.items())
+            done = self.run_functions(stubs + limits + "ntp_exchange_through_table; printf 'rc=%s\\n' $?")
+            attempts = log.read_text() if log.exists() else ""
+        return int(done.stdout.strip().rpartition("rc=")[2]), attempts
+
+    def test_one_lost_datagram_is_retried_and_a_dead_owner_fails(self) -> None:
+        self.assertEqual(self.exchange({}), (0, "root\nntpsec\n"))
+        self.assertEqual(self.exchange({"root": 1, "ntpsec": 2}), (0, "root\nroot\nntpsec\nntpsec\nntpsec\n"))
+        # Three lost answers for one owner is a real failure, and it must not
+        # be swallowed by the loop that probes the next owner.
+        self.assertEqual(self.exchange({"root": 3}), (1, "root\nroot\nroot\n"))
+        self.assertEqual(self.exchange({"ntpsec": 3})[0], 1)
+
+    def test_reapply_unit_option_check_refuses_read_only_proc_sys(self) -> None:
+        shipped = read("systemd/platform-sysctl-reapply.service")
+        self.assertIsNone(reapply_unit_denial(shipped))
+        for option in ("ProtectKernelTunables=yes", "ProtectKernelTunables = true", "ReadOnlyPaths=/proc/sys",
+                       "PrivateUsers=yes", "User=nobody", "CapabilityBoundingSet=CAP_NET_ADMIN"):
+            with self.subTest(option=option):
+                hostile = shipped.replace("[Service]\n", f"[Service]\n{option}\n")
+                self.assertIsNotNone(reapply_unit_denial(hostile))
+        self.assertIsNone(reapply_unit_denial(shipped.replace("[Service]\n", "[Service]\n# ProtectKernelTunables=yes\n")))
 
 
 if __name__ == "__main__":

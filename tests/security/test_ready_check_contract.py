@@ -1,8 +1,12 @@
 """Pin `scripts/ready_check.py`: the ReadyRuleTests cases that survived the promoter's deleted auto-Ready machinery, on the one-APPROVE rule."""
 
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from .support import load_script
+from .support import hermetic_git_environment, load_script
 
 MODULE = load_script("ready_check.py")
 HEAD = "1" * 40
@@ -195,3 +199,135 @@ class BodyBindingTests(unittest.TestCase):
         self.assertEqual(lanes, [])
         self.assertIn("a receipt at this head binds a different pull request body; the body was edited after the receipt", blockers)
         self.assertNotIn("a REQUEST-CHANGES receipt binds this head", blockers)
+
+
+class CarryTests(unittest.TestCase):
+    """Issue #456: an App APPROVE carries to a re-cut head only when the change
+    is byte-identical, the old head is GitHub-recorded, and this head is green.
+
+    The patch identities are computed by real Git on a disposable repository:
+    B1 -> OLD (the reviewed change), B1 -> B2 (main moved), B2 -> NEW (the
+    same change re-cut), plus near-identical variants that must not carry.
+    """
+
+    # Both functions share every line within three of the insertion point, so
+    # git's default-context patch-id cannot tell which one a hunk lands in.
+    BODY = "    pass\n    x = 1\n    y = 2\n    z = 3\n    return x\n    # end\n    # end\n    # end\n"
+    FILE = "def first():\n" + BODY + "def second():\n" + BODY
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        env = hermetic_git_environment(identity=("Example", "example@example.invalid"))
+
+        def git(*args):
+            return subprocess.run(["git", "-c", "commit.gpgSign=false", *args], cwd=self.root, env=env,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+
+        def commit(base, name, text, mode=None):
+            git("checkout", "-q", "--detach", base)
+            (self.root / "a.py").write_text(text)
+            if mode:
+                (self.root / "a.py").chmod(mode)
+            git("commit", "-qam", name)
+            return git("rev-parse", "HEAD")
+
+        git("init", "-q", "-b", "main")
+        (self.root / "a.py").write_text(self.FILE)
+        (self.root / "b.txt").write_text("base\n")
+        git("add", "--all")
+        git("commit", "-qm", "base")
+        self.b1 = git("rev-parse", "HEAD")
+        change = self.FILE.replace("    y = 2\n", "    y = 2\n    audit()\n", 1)
+        self.old = commit(self.b1, "change", change)
+        git("checkout", "-q", "--detach", self.b1)
+        (self.root / "b.txt").write_text("main moved\n")
+        git("commit", "-qam", "main moved")
+        self.b2 = git("rev-parse", "HEAD")
+        self.new = commit(self.b2, "re-cut", change)
+        self.one_line = commit(self.b2, "one line", change.replace("audit()", "audit(False)"))
+        self.reindented = commit(self.b2, "indent", change.replace("    audit()", "        audit()"))
+        cut = self.FILE.rindex("    y = 2\n") + len("    y = 2\n")
+        self.elsewhere = commit(self.b2, "elsewhere", self.FILE[:cut] + "    audit()\n" + self.FILE[cut:])
+        self.executable = commit(self.b2, "mode", change, mode=0o755)
+
+    def identity(self, base, head):
+        return MODULE.patch_identity(base, head, root=self.root)
+
+    def test_patch_identity_is_byte_exact_and_whole_file(self):
+        original = self.identity(self.b1, self.old)
+        self.assertRegex(original, r"^[0-9a-f]{40}$")
+        self.assertEqual(self.identity(self.b2, self.new), original, "the same change re-cut on a moved base")
+        for name, head in (("one changed line", self.one_line), ("re-indented line", self.reindented),
+                           ("same hunk in another function", self.elsewhere), ("mode change", self.executable)):
+            with self.subTest(name):
+                self.assertNotEqual(self.identity(self.b2, head), original)
+        # The reason for whole-file context: at git's default three lines the
+        # hunk replayed in the other function is indistinguishable.
+        default = [subprocess.run(["git", "diff", "--binary", "--full-index", base, head], cwd=self.root,
+                                  capture_output=True, check=True).stdout for base, head in
+                   ((self.b1, self.old), (self.b2, self.elsewhere))]
+        ids = [subprocess.run(["git", "patch-id", "--verbatim"], cwd=self.root, input=diff, capture_output=True,
+                              check=True).stdout.split()[0] for diff in default]
+        self.assertEqual(ids[0], ids[1])
+        self.assertIsNone(self.identity(self.b1, self.b1))
+        with self.assertRaisesRegex(MODULE.Refusal, "not available locally"):
+            self.identity(self.b1, "e" * 40)
+
+    def carry(self, comments, head, recorded=None):
+        pull = {"head": head, "comments": comments, "baseRef": "main", "mergeBase": self.b2}
+        real = MODULE.patch_identity
+        with patch.object(MODULE, "gh", return_value={"merge_base_commit": {"sha": self.b1}}), \
+                patch.object(MODULE, "recorded_heads", return_value={self.old} if recorded is None else recorded), \
+                patch.object(MODULE, "patch_identity", lambda base, tip: real(base, tip, root=self.root)):
+            return MODULE.carried_lanes("snaraj/platform", 7, pull, [7])
+
+    def test_an_identical_re_cut_keeps_the_app_approval_and_nothing_else_does(self):
+        lanes, notes = self.carry([comment(head=self.old)], self.new)
+        self.assertEqual(lanes, ["opus5"])
+        self.assertEqual(MODULE.ready_decision(self.new, LABELS, [comment(head=self.old)], checks(), 0,
+                                               carried=lanes, **OPEN), (["opus5"], ["security"], []))
+        for name, comments, head, recorded, reason in (
+            ("one changed line", [comment(head=self.old)], self.one_line, None, "not byte-identical"),
+            ("re-indented line", [comment(head=self.old)], self.reindented, None, "not byte-identical"),
+            ("a non-App author", [comment(head=self.old, login="snaraj", uid=39077795, kind="User", app=None)],
+             self.new, None, "no App-posted receipt"),
+            ("the bot login without the App", [comment(head=self.old, app=None)], self.new, None, "no App-posted receipt"),
+            ("a later REQUEST-CHANGES", [comment(head=self.old), comment(head=self.one_line, verdict="REQUEST-CHANGES")],
+             self.new, None, "not an APPROVE"),
+            ("an unrecorded old head", [comment(head=self.old)], self.new, {self.new}, "recorded head history"),
+        ):
+            with self.subTest(name):
+                lanes, notes = self.carry(comments, head, recorded)
+                self.assertEqual(lanes, [])
+                self.assertIn(reason, notes[0])
+                self.assertIn("no adversarial APPROVE receipt binds this head",
+                              MODULE.ready_decision(head, LABELS, comments, checks(), 0, carried=lanes, **OPEN)[2])
+
+    def test_a_carried_approval_never_waives_this_heads_checks_or_verdicts(self):
+        carried = self.carry([comment(head=self.old)], self.new)[0]
+        for name, comments, check_runs, reason in (
+            ("required checks missing", [], [], "required check repository-and-infrastructure appears 0 times"),
+            ("a required check failed", [], checks("failure"), "has not succeeded at this head"),
+            ("REQUEST-CHANGES at this head", [comment(head=self.new, verdict="REQUEST-CHANGES")], checks(),
+             "a REQUEST-CHANGES receipt binds this head"),
+        ):
+            with self.subTest(name):
+                blockers = MODULE.ready_decision(self.new, LABELS, comments, check_runs, 0, carried=carried, **OPEN)[2]
+                self.assertTrue(any(reason in blocker for blocker in blockers), blockers)
+
+    def test_carry_verdict_names_each_refusal(self):
+        last = (self.old, "APPROVE", "opus5", False)
+        self.assertIsNone(MODULE.carry_verdict(self.new, last, {self.old}, "p", "p"))
+        for name, args, reason in (
+            ("no receipt", (None, {self.old}, "p", "p"), "no App-posted receipt"),
+            ("same head", ((self.new, "APPROVE", "opus5", False), {self.new}, "p", "p"), "already binds this head"),
+            ("request changes", ((self.old, "REQUEST-CHANGES", "opus5", False), {self.old}, "p", "p"), "not an APPROVE"),
+            ("body bound", ((self.old, "APPROVE", "opus5", True), {self.old}, "p", "p"), "binds a pull request body"),
+            ("unrecorded", (last, set(), "p", "p"), "recorded head history"),
+            ("different patch", (last, {self.old}, "p", "q"), "not byte-identical"),
+            ("empty patch", (last, {self.old}, None, None), "not byte-identical"),
+        ):
+            with self.subTest(name):
+                self.assertIn(reason, MODULE.carry_verdict(self.new, *args))

@@ -36,6 +36,8 @@ PROJECTS = {
     "SHELLCHECK_VERSION": "koalaman/shellcheck",
 }
 VERSION = re.compile(r"(?:kustomize/)?v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})")
+# Every row ends in exactly one of these. Anything else counts as UNKNOWN.
+STATES = ("CURRENT", "UPDATE", "UNKNOWN")
 
 
 def version(value):
@@ -125,7 +127,13 @@ def check(key, pins, fetch=download):
 
 
 def main():
-    """Exit nonzero on drift or incomplete evidence, independently of PR CI."""
+    """Exit nonzero only when the evidence is incomplete, never for drift.
+
+    UPDATE is a proven fact about upstream, so the run passes and lists it in
+    the job summary; drift is routine and a daily red run would carry no
+    information. UNKNOWN means a lookup could not be verified, and an invalid
+    registry means nothing was checked: both fail the run.
+    """
     try:
         root = Path(__file__).resolve().parents[2]
         pins = read_pins((root / "versions.env").read_text(encoding="utf-8"))
@@ -134,14 +142,20 @@ def main():
         return 1
     with ThreadPoolExecutor(max_workers=4) as pool:
         rows = list(pool.map(lambda key: check(key, pins), PROJECTS))
-    print("| Pin | Committed | Update candidate | Upstream latest | Result |")
-    print("| --- | --- | --- | --- | --- |")
-    for row in rows:
-        print("| " + " | ".join(row) + " |")
+    counts = {state: sum(row[-1] == state for row in rows) for state in STATES}
+    print("Software currency: " + ", ".join(f"{counts[state]} {state}" for state in STATES))
+    updates = [row for row in rows if row[-1] == "UPDATE"]
+    if updates:
+        print("\n### Updates available\n\n| Component | Pinned | Latest |\n| --- | --- | --- |")
+        for key, current, target, _latest, _state in updates:
+            print(f"| {key} | {current} | {target} |")
+    unknown = [row[0] for row in rows if row[-1] != "CURRENT" and row[-1] != "UPDATE"]
+    if unknown:
+        print("\n### Upstream version not established\n\n" + "\n".join(f"- {key}" for key in unknown))
     print("\nKubernetes stays on the reviewed minor. Its kubeadm DNS/etcd/pause bundle and matching CRI tools move through the upgrade procedure.")
     print("Flux controller versions move with the Flux bundle. Frozen selector build inputs retain their reviewed identity until retirement.")
     print("This checks committed dependency pins; installed versions and health require separate operator evidence.")
-    return int(any(row[-1] != "CURRENT" for row in rows))
+    return int(bool(unknown))
 
 
 if __name__ == "__main__":

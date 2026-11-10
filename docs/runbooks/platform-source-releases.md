@@ -4,8 +4,8 @@
 
 This runbook implements issue #164. It changes source-release bookkeeping only:
 it grants no merge, tag, live-system, provider, cluster, deployment, or settings
-authority. The owner alone merges, and merging is the owner's only routine
-release action (issue #397). GitHub Actions may create only the annotated
+authority. Merges follow AGENTS.md "Merge authority", and merging is the only
+routine release action (issue #397). GitHub Actions may create only the annotated
 platform source tag of the current protected-main tip and its immutable Release
 with the exact signed identity asset pair, after the tip's CI, CodeQL and the
 settings proof pass. `v0.1.40` is the sole zero-asset transition predecessor; it
@@ -155,7 +155,7 @@ Git subprocess error.
 
 This is the queue expected for security issues blocked by #164: they may be
 authored and reviewed in parallel, stay Draft while predecessors remain open,
-and move one at a time under owner merge authority.
+and move one at a time under AGENTS.md "Merge authority".
 
 ## Rollout and recovery
 
