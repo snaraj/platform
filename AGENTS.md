@@ -330,7 +330,7 @@ and dependency-governed Draft capacity is recorded durably in
 **A path in neither list is not implicitly delivery.** Silence is not
 permission. Declare the crossing in the pull request body before touching
 the path, obtain an owner or peer ruling (a scope adjudication only —
-never a merge approval), and then — this part
+never a merge approval, and the owner alone merges), and then — this part
 is an obligation, not a courtesy — amend the rulings above with the
 answer, in the same pull request or the next one you open. A ruling left
 in a review thread is a question the next agent has to ask again.
@@ -341,10 +341,10 @@ Delivery-lane requirements, explicit and numbered:
    and the GitHub-hosted runner only, and no third-party service ever
    receives repository content, tokens, or measurements — the coverage gate
    is self-hosted for exactly this reason.
-2. Merges and immutable history: only "Merge authority" below merges. No
-   agent auto-merges, rebases into or pushes `main`, force-pushes, deletes
-   refs, or creates tags or Releases by hand; it stops and questions even a
-   later request to. Corrections are additive commits or a fresh branch.
+2. Owner-only merges and immutable history: the repository owner alone merges. An agent must
+   NEVER merge, auto-merge, squash, rebase into, or push `main`; must never
+   force-push, delete refs, or create tags; and must stop and question even a
+   later request to do so. Corrections are additive commits or a fresh branch.
 3. Commit-metadata privacy: the GitHub noreply address appears in both the
    author and the committer fields of every outgoing commit; the
    immutable-history gate (`scripts/validate_publication_history.py`)
@@ -382,7 +382,7 @@ Delivery-lane requirements, explicit and numbered:
    it), requires the latest Release to be exact, derives exactly one next patch,
    and publishes an annotated plain `vX.Y.Z` tag plus an exact immutable GitHub
    Release at the current main tip, binding every fragment merged since the
-   previous Release. Merging is the only routine release action. Starting
+   previous Release. Merging is the owner's only routine release action. Starting
    with `v0.1.41`, that Release carries exactly the canonical identity JSON and
    its detached Sigstore bundle; `v0.1.40` is the sole zero-asset transition
    predecessor. Release notes bind the
@@ -443,7 +443,8 @@ Four tiers, and a change takes the highest tier any of its paths earns:
   signing, digests, immutable artifacts, destructive operations, workflows,
   policies, validators, the safety invariants, and anything the delivery-lane
   requirements gate — take focused tests, a mutation kill matrix, one full CI
-  cycle at the exact head, and ONE independent adversarial review.
+  cycle at the exact head, ONE independent adversarial review, and owner
+  merge.
 - **Normal code changes** take focused tests and one full local gate; a live
   check only when runtime behavior changes; one review.
 - **Documentation and metadata** run the relevant checks and take one
@@ -452,8 +453,8 @@ Four tiers, and a change takes the highest tier any of its paths earns:
 - **Live or destructive work** adds an owner checkpoint to the tier it earns.
   No tier ever skips the secret scans or the publication gate.
 
-Nothing here relaxes a fail-closed control at a real trust boundary: the safety
-invariants, the merge conditions, commit identity and signing, digest-only
+Nothing here relaxes a fail-closed control at a real trust boundary: the
+safety invariants, owner-only merge, commit identity and signing, digest-only
 deploys, the secretless repository, protected-branch settings, and the release
 transition gates are the same in every tier. Exact-head discipline is also
 unchanged for whatever review DOES run — a verdict binds the head it names.
@@ -483,19 +484,19 @@ experiment, and removes the worktree afterward.
 above is what makes it a second party rather than a self-approval. A normal PR
 comment contains exactly one `HEAD: <40-lowercase-hex>` line, exactly one
 `VERDICT: APPROVE` or `VERDICT: REQUEST-CHANGES`, and ends
-`- <Agent> (adversarial reviewer)`. A head change invalidates it, except that a
-re-cut whose change is byte-identical keeps it ("Dependent pull requests").
-Validate the shape with
+`- <Agent> (adversarial reviewer)`. Any head change invalidates it and requires
+a fresh independent review; patch equality may narrow that review's scope to
+the delta, never replace its receipt. Validate the shape with
 `scripts/validate_review_receipt.py --head <head> --resource-kind
 pull-request <receipt>`; the
 validator rejects issue resources and proves receipt SHAPE only — it never
 sees who posted the comment, so the coordinator reads the posting actor from
-GitHub. If a merge came first, record a post-merge audit rather than
+GitHub. If the owner merged first, record a post-merge audit rather than
 retroactive approval.
 
 **Main Worker Ready receipt — RETIRED** (owner reduction, 2026-08-22). There is
 no separate Main Worker pass: after an exact-head `APPROVE` and green required
-checks at that head, the coordinator flips Ready and merges. No
+checks at that head, the coordinator flips Ready and the owner merges. No
 `ROLE: MAIN-WORKER` receipt is required, none is a Ready input, and no lane may
 reintroduce one as a local convention.
 
@@ -552,8 +553,9 @@ neither the author nor the reviewer performs the readiness flip. The
 coordinator context is distinct from both author and reviewer and
 performs that flip. The flip happens only once the verdict is APPROVE
 (or its findings are fixed and re-verified), no owner or peer comment is
-outstanding, and every check is green at the exact head; the merge then
-follows "Merge authority". The evidence comment remains the permanent record.
+outstanding, and every check is green at the exact head. A coordination
+action never confers merge authority; the owner alone merges. The evidence
+comment remains on the PR as the permanent record.
 
 A receipt is at most 6,000 bytes, enforced by
 `scripts/validate_review_receipt.py`; a PR body is at most 6,000 bytes. The
@@ -564,15 +566,14 @@ defensive machinery, and the reviewer names that reset rather than more
 findings. `scripts/ready_check.py` is the Ready rule in code and the only
 place it is expressed outside this file: it proves the pull request is open,
 targets the default branch, is not behind it, carries an App-posted exact-head
-APPROVE (or one carried to a byte-identical re-cut) with no REQUEST-CHANGES at
-that head, and has green required checks and intact labels. It judges no
-approving lane against a risk tier — that
+APPROVE with no REQUEST-CHANGES at that head, and has green required checks
+and intact labels. It judges no approving lane against a risk tier — that
 match is the coordinator's. NO TOOL FLIPS READY, promoter included. The commission states an estimate (files, net lines, review rounds)
 and the PR body the actuals; a material overrun — a doubling — takes a design
 reset before Ready, and green gates alone never make a PR Ready.
 
 A green check, a peer approval, or a ready state is evidence, never
-authority: only "Merge authority" merges.
+authority: the owner alone merges.
 
 ## GitHub conventions
 
@@ -605,11 +606,11 @@ authority: only "Merge authority" merges.
   cross-repository issue-review label exists. Existing issue uses of
   `requires-review` are migration residue for coordinator cleanup, not review
   readiness. The label is never a substitute for Draft/Ready state, a fresh
-  APPROVE receipt, or the merge conditions.
+  APPROVE receipt, or owner merge authority.
   The APPROVE verdict and the flip by the coordinator are necessary but not
   sufficient. Ready means zero unresolved blockers across code, CI, review,
   sequencing, settings, metadata, or any other declared gate.
-  Owner review or merge authority does not waive a blocker; a
+  Owner review or owner merge authority does not waive a blocker; a
   blocker-bearing PR stays Draft.
   Ordinary labels, body text, and process comments are coordination signals,
   never security invariants: they are written by the same lane that authored
@@ -644,19 +645,18 @@ authority: only "Merge authority" merges.
   there is no fixed count ceiling. Publish independent and dependent work as
   Draft PRs when dependency edges, collision paths, one-writer-per-branch
   ownership, and reviewer capacity are explicit. Open work never broadens
-  authority; unresolved sequencing or collision risk keeps a PR Draft.
-- **Merge authority** (owner direction, 2026-11-03). The coordinator merges
-  (squash, through the owner's account) a PR it flipped Ready: current with
-  `main`, every required check green and an App-posted APPROVE binding (or
-  carried to) its exact head, no unresolved blocker; it then drives delivery
-  end to end. The owner may merge too. Authors and reviewers never merge or
-  self-approve; nobody force-pushes a shared ref. Every PR opens as a draft.
+  authority: the owner alone merges, and unresolved sequencing or collision
+  risk keeps each affected PR Draft.
+- **Merge authority.** THE OWNER ALONE MERGES. Never merge, never
+  self-approve, never treat a peer approval or a green check as
+  authority, and never force-push a shared ref. Every PR opens as a
+  draft.
 - **Milestones.** Every PR and issue carries one. Release milestones close
   when the release ships; completed arcs close their milestone.
 - **Assignee.** The owner is assignee on every PR and issue (authorship is
   already the owner's account by token identity).
 - **Linear history.** Merge commits are disabled in repository settings;
-  merges are squash (or rebase). Branches auto-delete on merge;
+  the owner merges by squash (or rebase). Branches auto-delete on merge;
   stale local branches are pruned as work lands. History is append-only
   and never rewritten.
 - **Commits.** Detailed bodies to the review protocol's evidence standard —
@@ -678,8 +678,8 @@ authority: only "Merge authority" merges.
   APPROVE receipt, all exact-head
   checks succeed, protected base is current, all discussions/findings are
   resolved, metadata/scope/order remain exact, and the platform patch-release
-  consequence is proven. Only the coordinator flips Ready, re-verifies and
-  merges; author and reviewer never do.
+  consequence is proven. Only the coordinator flips Ready and re-verifies;
+  author and reviewer never do. Nobody but the repository owner merges.
 
 ## Parallel agents in one checkout
 
@@ -723,7 +723,7 @@ skills folder that a fresh clone does not carry.
   are pinned per command per "Commit identity mechanics", and one lane's
   config write poisons all of them. A branch checked out in any worktree
   cannot be deleted or checked out elsewhere; that lock marks live ownership.
-- **Clean only your own lane, and only after the merge.** Confirm the
+- **Clean only your own lane, and only after the owner merges.** Confirm the
   merge against the remote, then remove your worktree and delete your branch
   from the main checkout with `git worktree remove` and `git branch -d` — no
   `--force`, no `-D`. Those refusals are the safety net: a dirty tree or an
@@ -780,8 +780,8 @@ The complete delivery loop, each step gated by the sections around it:
    every required check green, the coordinator flips Ready — there is no
    second receipt between them.
 8. **Owner comments** are handled per the owner review protocol below.
-9. **The coordinator merges** under "Merge authority" and follows the
-   change through main CI, the publisher and any promotion.
+9. **The owner merges.** Nothing you can do — approval, green checks,
+   ready state — substitutes for that.
 
 ## Commit identity mechanics
 
@@ -871,20 +871,21 @@ Keep dependent work Draft and publish a directed merge order using exact
 `Depends on PR #N` lines plus the corresponding issue relationships. Independent
 parallel PRs target `main` and add distinct fragments; a predecessor merge never
 forces a replacement merely because a shared version or changelog slot moved.
-Every PR that targets main adds its own fragment and passes the release gate.
-
-**A behind PR is re-cut on current main.** Strict rulesets merge only a current
-branch. The owner may refresh one in place with **Update with rebase** (never
-plain **Update branch**: its merge commit poisons the PR); agents never rebase
-or force-push a published branch, so they re-cut: a fresh branch from current
-`origin/main` carrying only the residual diff, every gate rerun, a replacement
-PR, and the old PR closed as superseded (its branch stays; ref deletion is the
-owner's). Precedent: #109 → #123. Either way the head is new. A byte-identical
-change keeps its review: `scripts/ready_check.py <PR> [--carried-from <old PR>]`
-carries the App's latest receipt only when it is an APPROVE naming a head
-GitHub recorded for that PR, the whole-file `git patch-id --verbatim` from each
-merge base matches, and every check is green at the new head. Any other
-change, one line or whitespace included, needs a fresh exact-head review.
+Re-query the current base and composed merge, rerun the gates, and refresh
+review evidence whose claims changed. The only in-place refresh after a base
+move is owner-operated: in GitHub's **Update branch** menu the owner selects
+**Update with rebase** (never plain **Update branch**, whose merge commit
+poisons the PR). That server rewrite creates a new head and invalidates every
+old check and exact-head receipt; agents never invoke it. A behind PR is re-cut
+on current `main`: a fresh branch and replacement PR, never a rebase or
+force-push of a published branch. A re-cut needs a fresh exact-head review;
+patch equality may narrow that review's scope to the delta, never replace its
+receipt. The re-cut ports only the residual diff, adds the new fragment, reruns
+every gate, and closes the stale PR as superseded; the branch stays, because ref
+deletion is the owner's (precedent #109 → #123). A Draft whose published history
+no longer resembles the change under review after repeated rounds is re-cut the
+same way. Every PR that eventually targets main independently adds one fragment
+and passes the release gate.
 
 **Serialize review, not authoring.** Drafts may be authored in parallel, but a
 reviewer claims a PR only once every predecessor it depends on has merged and
