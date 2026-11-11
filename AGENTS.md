@@ -247,8 +247,8 @@ and dependency-governed Draft capacity is recorded durably in
   DECLARED CROSSING into `tests/security/test_host_hardening_contract.py`,
   `docs/runbooks/windows-warp-onboarding.md`, the hardening entry in
   `scripts/validate_no_security_toggles.py` and the ADR under the owner's
-  2026-11-02 hardening commission (issue #443, PR #444; extended by issue
-  #446, PR #447 over the same paths). The crossing covers those pull
+  2026-11-02 hardening commission (issue #443, PR #444; extended by issues
+  #446 and #449 over the same paths). The crossing covers those pull
   requests' exact scope and grants no standing claim on either lane's paths.
 - `kubernetes/flux-system/**` — DELIVERY: the GitOps desired state this
   lane authors, and what the reviewed-state model above pins.
@@ -485,7 +485,8 @@ above is what makes it a second party rather than a self-approval. A normal PR
 comment contains exactly one `HEAD: <40-lowercase-hex>` line, exactly one
 `VERDICT: APPROVE` or `VERDICT: REQUEST-CHANGES`, and ends
 `- <Agent> (adversarial reviewer)`. Any head change invalidates it and requires
-a fresh independent review. Validate the shape with
+a fresh independent review; patch equality may narrow that review's scope to
+the delta, never replace its receipt. Validate the shape with
 `scripts/validate_review_receipt.py --head <head> --resource-kind
 pull-request <receipt>`; the
 validator rejects issue resources and proves receipt SHAPE only — it never
@@ -662,8 +663,11 @@ authority: the owner alone merges.
   problem, mechanism, enumerated changes, evidence — signed per lane.
 - **Dependabot.** Dependency PRs obey the same issue/milestone/assignee,
   one-fragment release consequence, exact-head review, CI/coverage, and base freshness
-  controls. Tool or runner outages are reported as infrastructure failures;
-  they never waive a real product failure. When Dependabot splits a
+  controls. `make adopt-dependabot PR=<n> LANE=<lane-effort>
+  SIGNATURE='- <Agent>'` re-derives an action-pin PR, read only as data, as one
+  signed local branch carrying its fragment; push it and open the superseding
+  PR. Tool or runner outages are reported as infrastructure failures; they
+  never waive a real product failure. When Dependabot splits a
   version-locked pair into separate PRs — precedent: `github/codeql-action`
   `init` and `analyze` as #124 and #125 — one agent PR supersedes BOTH,
   applying the paired bump AND the root-cause fix in the same commit: a
@@ -867,32 +871,26 @@ Keep dependent work Draft and publish a directed merge order using exact
 `Depends on PR #N` lines plus the corresponding issue relationships. Independent
 parallel PRs target `main` and add distinct fragments; a predecessor merge never
 forces a replacement merely because a shared version or changelog slot moved.
-Re-query the current base and composed merge, rerun the gates, and refresh review
-evidence whose claims changed. The only in-place refresh after a base move is
-owner-operated: in GitHub's **Update branch** menu the owner selects **Update
-with rebase**. That server rewrite creates a new head and invalidates every old
-check and exact-head receipt; agents never invoke it, rebase the published branch,
-or force-push. If that owner action is unavailable, conflicts, or is declined,
-re-cut onto a fresh branch and replacement PR. A fresh branch is otherwise
-required only for a real code or semantic dependency, conflict, or current-main
-repair; port only the residual diff. Every PR that eventually targets main
-independently adds one fragment and passes the release gate.
+Re-query the current base and composed merge, rerun the gates, and refresh
+review evidence whose claims changed. The only in-place refresh after a base
+move is owner-operated: in GitHub's **Update branch** menu the owner selects
+**Update with rebase** (never plain **Update branch**, whose merge commit
+poisons the PR). That server rewrite creates a new head and invalidates every
+old check and exact-head receipt; agents never invoke it. A behind PR is re-cut
+on current `main`: a fresh branch and replacement PR, never a rebase or
+force-push of a published branch. A re-cut needs a fresh exact-head review;
+patch equality may narrow that review's scope to the delta, never replace its
+receipt. The re-cut ports only the residual diff, adds the new fragment, reruns
+every gate, and closes the stale PR as superseded; the branch stays, because ref
+deletion is the owner's (precedent #109 → #123). A Draft whose published history
+no longer resembles the change under review after repeated rounds is re-cut the
+same way. Every PR that eventually targets main independently adds one fragment
+and passes the release gate.
 
 **Serialize review, not authoring.** Drafts may be authored in parallel, but a
 reviewer claims a PR only once every predecessor it depends on has merged and
 its base is current with `main`; a claim on a stale-base or blocked PR is void
 and the coordinator says so, and the body's scope field states that order.
-
-**Stale concurrent Drafts are re-cut, never rewritten.** A Draft that has
-fallen far behind current protected `main`, or that has absorbed repeated
-REQUEST-CHANGES rounds against a moving base until its published history no
-longer resembles the change under review, is superseded rather than repaired
-in place: branch fresh from current `origin/main`, port only the reviewed
-residual diff, add the new fragment, rerun every gate, obtain a fresh
-exact-head review, and close the stale PR as superseded — the branch stays,
-because ref deletion is the owner's. That is the #109 → #123 precedent, and
-it is a re-cut precisely because rebasing or force-pushing a published branch
-is barred by delivery-lane requirement 2.
 
 ## Quality gates — exact commands and patterns
 

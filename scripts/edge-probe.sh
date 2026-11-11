@@ -90,12 +90,12 @@ site_asset_pattern() {
     *) printf '%s' '/assets/index-[A-Za-z0-9_-]+\.(js|css)' ;;
   esac
 }
-# Encoded per-zone DNSSEC expectation. naranjo.online is signed and validating;
-# lidersea.com is unsigned pending the owner's signing ceremony, so "unsigned"
-# is that zone's expected state today and is reported as PASS with the pending
-# ceremony recorded separately as dnssec-parity.
+# Encoded per-zone DNSSEC expectation. All three zones are signed and
+# validating; lidersea.com's DS record published after the owner enabled
+# signing on 2026-11-02 (issue #154). A zone recorded "unsigned" would be
+# reported as PASS with the pending ceremony recorded as dnssec-parity.
 readonly ZONE_A_DNSSEC='signed'
-readonly ZONE_B_DNSSEC='unsigned'
+readonly ZONE_B_DNSSEC='signed'
 readonly ZONE_C_DNSSEC='signed'
 # Two independent validating resolvers, addressed by name (see header).
 readonly RESOLVER_ONE='one.one.one.one'
@@ -179,9 +179,7 @@ Target state asserted (attestation 2026-08-12, ADR 0015):
   minimum TLS         1.2 (TLS 1.0 and 1.1 refused, 1.2 and 1.3 accepted)
   0-RTT               off (Max Early Data: 0 on every session ticket)
   HSTS                exactly max-age=31536000 (no includeSubDomains/preload)
-  DNSSEC              naranjo.online and hospedajedonlolo.com signed and
-                      validating; lidersea.com unsigned until the owner's
-                      signing ceremony
+  DNSSEC              every zone signed and validating
   /readyz             200
   www.<apex>          absent (NXDOMAIN, or NOERROR/NODATA on the signed zone)
   identity            each apex serves its own <title> and its own assets

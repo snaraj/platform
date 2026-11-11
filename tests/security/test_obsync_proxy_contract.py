@@ -70,10 +70,16 @@ class ObsyncProxyContract(unittest.TestCase):
         self.assertEqual(smoke, [{"name": "Validate the private obsync TLS transport", "run": "make check-obsync-proxy"}])
         scans = [step for step in steps if step.get("name") == "Scan the pinned obsync proxy image"]
         self.assertEqual(len(scans), 1)
-        self.assertEqual(set(scans[0]), {"name", "run"})
-        scan = scans[0]["run"]
-        self.assertEqual(hashlib.sha256(scan.encode()).hexdigest(), "929f4f28bf4bd26a3a2f27d57ab5d371a2eef9d56a1157f568acae143e673bb5")
-        # Exercise the workflow's actual admission prefix against the selected
+        self.assertEqual(set(scans[0]), {"name", "env", "run"})
+        self.assertIn("\n  scan) ./scripts/ci/scan-proxy-image.sh ;;\n", scans[0]["run"])
+        self.assertIn("\n  *) exit 1 ;;\nesac\n", scans[0]["run"])
+        # The scan and its policy moved byte for byte into one script that the
+        # scheduled run also calls (issue #456); this digest pins that policy.
+        scan = (ROOT / "scripts/ci/scan-proxy-image.sh").read_text()
+        self.assertEqual(hashlib.sha256(scan.encode()).hexdigest(), "32ccc6fc5fbe865567b79bbc2ad9861f7869d34873ca6228b1d6fbe143ad45df")
+        scheduled = json.loads(subprocess.run(["conftest", "parse", str(ROOT / ".github/workflows/scheduled-security.yml")], capture_output=True, text=True, check=True, timeout=30).stdout)
+        self.assertIn({"name": "Scan the pinned obsync proxy image", "run": "./scripts/ci/scan-proxy-image.sh"}, scheduled["jobs"]["scan"]["steps"])
+        # Exercise the script's actual admission prefix against the selected
         # image; a stale namespace must fail locally before CI reaches Trivy.
         admission, separator, _ = scan.partition('docker_config=')
         self.assertTrue(separator)
@@ -88,7 +94,7 @@ class ObsyncProxyContract(unittest.TestCase):
                 (Path(directory) / "versions.env").write_text("OBSYNC_TLS_PROXY_IMAGE=" + candidate + "\n")
                 result = subprocess.run(["bash", "-c", admission], cwd=directory, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode == 0, accepted)
-        self.assertTrue(scan.startswith("set -euo pipefail\n"))
+        self.assertIn("\nset -euo pipefail\n", scan.partition("proxy_image=")[0])
         self.assertIn("for platform in linux/amd64 linux/arm64; do\n", scan)
         self.assertIn('trivy image --image-src remote --platform "$platform"', scan)
         self.assertIn('--exit-code 1 --scanners vuln --severity HIGH,CRITICAL "$proxy_image"', scan)

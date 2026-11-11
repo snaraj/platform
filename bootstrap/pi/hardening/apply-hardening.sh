@@ -74,7 +74,7 @@ apply() {
     sysctl)
       install_file "${hardening_root}/sysctl/99-zz-platform-kernel-hardening.conf" "${sysctl_dst}" 0644
       install_file "${hardening_root}/systemd/platform-sysctl-reapply.service" /etc/systemd/system/platform-sysctl-reapply.service 0644
-      systemctl daemon-reload; systemctl enable platform-sysctl-reapply.service >/dev/null 2>&1
+      systemctl daemon-reload; systemctl enable --now platform-sysctl-reapply.service >/dev/null 2>&1
       sysctl --system >/dev/null ;;
     units)
       # Arm first: if arming fails nothing is staged without a health check.

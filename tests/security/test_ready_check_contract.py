@@ -1,8 +1,11 @@
 """Pin `scripts/ready_check.py`: the ReadyRuleTests cases that survived the promoter's deleted auto-Ready machinery, on the one-APPROVE rule."""
 
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
-from .support import load_script
+from .support import hermetic_git_environment, load_script
 
 MODULE = load_script("ready_check.py")
 HEAD = "1" * 40
@@ -195,3 +198,73 @@ class BodyBindingTests(unittest.TestCase):
         self.assertEqual(lanes, [])
         self.assertIn("a receipt at this head binds a different pull request body; the body was edited after the receipt", blockers)
         self.assertNotIn("a REQUEST-CHANGES receipt binds this head", blockers)
+
+
+class RecutReviewTests(unittest.TestCase):
+    """A matching patch never approves a new head (issue #456 review).
+
+    The reviewer's counterexample in real Git: a consumer change approved on
+    B1; B2 flips the consumer's policy dependency from default-deny to
+    default-allow; the same change replayed on B2 keeps an identical whole-file
+    `git patch-id --verbatim` while the composed behaviour differs. Only a
+    receipt binding the new head approves it; patch equality is for narrowing
+    that review, never for replacing it.
+    """
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        self.env = hermetic_git_environment(identity=("Example", "example@example.invalid"))
+        self.git("init", "-q", "-b", "main")
+        (self.root / "consumer.py").write_text("def decide(request):\n    return policy(request)\n")
+        (self.root / "policy.txt").write_text("default: deny\n")
+        (self.root / "README.md").write_text("docs\n")
+        self.git("add", "--all")
+        self.git("commit", "-qm", "base")
+        self.b1 = self.git("rev-parse", "HEAD")
+        self.old = self.commit(self.b1, "consumer.py", "def decide(request):\n    log(request)\n    return policy(request)\n")
+        self.allow = self.commit(self.b1, "policy.txt", "default: allow\n")
+        self.docs = self.commit(self.b1, "README.md", "more docs\n")
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "commit.gpgSign=false", *args], cwd=self.root, env=self.env,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, base, path, text):
+        self.git("checkout", "-q", "--detach", base)
+        (self.root / path).write_text(text)
+        self.git("commit", "-qam", f"change {path}")
+        return self.git("rev-parse", "HEAD")
+
+    def replay(self, base):
+        """The approved consumer change, re-cut on ``base``."""
+        self.git("checkout", "-q", "--detach", base)
+        self.git("cherry-pick", self.old)
+        return self.git("rev-parse", "HEAD")
+
+    def patch_id(self, base, head):
+        diff = subprocess.run(["git", "diff", "--binary", "--full-index", "--unified=100000000", base, head],
+                              cwd=self.root, env=self.env, check=True, capture_output=True).stdout
+        return subprocess.run(["git", "patch-id", "--verbatim"], cwd=self.root, env=self.env, input=diff,
+                              check=True, capture_output=True).stdout.split()[0]
+
+    def test_identical_patch_over_a_flipped_dependency_is_not_ready(self):
+        new = self.replay(self.allow)
+        self.assertEqual(self.patch_id(self.b1, self.old), self.patch_id(self.allow, new), "the hazard: equal identity")
+        self.assertNotEqual(self.git("show", f"{self.b1}:policy.txt"), self.git("show", f"{new}:policy.txt"))
+        lanes, _, blockers = MODULE.ready_decision(new, LABELS, [comment(head=self.old)], checks(), 0, **OPEN)
+        self.assertEqual(lanes, [])
+        self.assertIn("no adversarial APPROVE receipt binds this head", blockers)
+
+    def test_identical_patch_on_an_unrelated_base_move_is_still_not_ready(self):
+        new = self.replay(self.docs)
+        self.assertEqual(self.patch_id(self.b1, self.old), self.patch_id(self.docs, new))
+        lanes, _, blockers = MODULE.ready_decision(new, LABELS, [comment(head=self.old)], checks(), 0, **OPEN)
+        self.assertEqual(lanes, [])
+        self.assertIn("no adversarial APPROVE receipt binds this head", blockers)
+
+    def test_a_fresh_exact_head_receipt_on_the_re_cut_is_ready(self):
+        new = self.replay(self.allow)
+        self.assertEqual(MODULE.ready_decision(new, LABELS, [comment(head=self.old), comment(head=new)], checks(), 0, **OPEN),
+                         (["opus5"], ["security"], []))

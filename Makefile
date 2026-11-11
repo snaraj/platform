@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 PYTHON ?= python3
 .DEFAULT_GOAL := help
 
-.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-shell check-determinism check-obsync-proxy coverage coverage-refresh
+.PHONY: help check check-fast release-check pre-push-security check-gitleaks check-workflows check-kubernetes check-shell check-determinism check-obsync-proxy coverage coverage-refresh adopt-dependabot
 
 help:
 	@printf '%s\n' \
@@ -19,7 +19,8 @@ help:
 	  'check-determinism Prove two renders of the selected mode are identical' \
 	  'check-obsync-proxy Run isolated Docker TLS/header/upload/stream checks' \
 	  'coverage         Measure suite coverage and enforce floor/drift/badge' \
-	  'coverage-refresh Re-measure and rewrite the committed coverage ledger/badge'
+	  'coverage-refresh Re-measure and rewrite the committed coverage ledger/badge' \
+	  'adopt-dependabot PR=<n> LANE=<lane[-effort]> SIGNATURE=<- Agent>  Re-derive a Dependabot pin PR as a signed branch'
 
 check: check-fast check-gitleaks check-shell check-workflows check-kubernetes
 
@@ -62,6 +63,10 @@ check-determinism:
 # PR CI runs this mandatory target on its disposable hosted runner.
 check-obsync-proxy:
 	@$(PYTHON) -B tests/obsync_proxy_smoke.py
+
+# Prints the new local branch; pushing and the Draft PR stay with the caller.
+adopt-dependabot:
+	@$(PYTHON) -I -B scripts/adopt_dependabot.py "$(PR)" --lane "$(LANE)" --signature "$(SIGNATURE)"
 
 
 # Coverage measurement writes its data outside the checkout (measurement
